@@ -1,12 +1,12 @@
-"""Labeling module for video data collection."""
-from .models import Video, Move, FrameTag, MOVE_TYPES, MOVE_TYPE_QUESTIONS
+"""Labeling module for FMS assessment data collection."""
+from .models import Video, Assessment, FrameTag, FMS_TESTS, FMS_SCORING_CRITERIA
 from .database import Database
 
 __all__ = [
     'Video',
-    'Move',
+    'Assessment',
     'FrameTag',
-    'MOVE_TYPES',
-    'MOVE_TYPE_QUESTIONS',
+    'FMS_TESTS',
+    'FMS_SCORING_CRITERIA',
     'Database',
 ]

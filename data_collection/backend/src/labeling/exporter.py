@@ -16,32 +16,31 @@ class Exporter:
     def export_video(self, video_id: int, delete_video: bool = False) -> str:
         """
         Export combined data for a video.
-        
+
         Args:
             video_id: ID of the video to export
             delete_video: If True, delete the video file after successful export
-            
+
         Returns path to exported CSV.
         """
         # Get video
         video = self.db.get_video(video_id)
         if not video:
             raise ValueError(f"Video {video_id} not found")
-        
-        # Get all moves and frame tags for this video
-        moves = self.db.get_moves_for_video(video_id)
-        
+
+        # Get all assessments and frame tags for this video
+        assessments = self.db.get_assessments_for_video(video_id)
+
         # Build frame -> label mapping
         frame_labels = {}
-        for move in moves:
-            tags = self.db.get_frame_tags_for_move(move.id)
-            for frame in range(move.frame_start, move.frame_end + 1):
+        for assessment in assessments:
+            tags = self.db.get_frame_tags_for_assessment(assessment.id)
+            for frame in range(assessment.frame_start, assessment.frame_end + 1):
                 frame_labels[frame] = {
-                    'move_id': move.id,
-                    'move_type': move.move_type,
-                    'form_quality': move.form_quality,
-                    'effort_level': move.effort_level,
-                    'technique_modifiers': ','.join(move.technique_modifiers) if move.technique_modifiers else '',
+                    'assessment_id': assessment.id,
+                    'test_type': assessment.test_type,
+                    'score': assessment.score,
+                    'compensations': ','.join(assessment.compensations) if assessment.compensations else '',
                     'tags': [],
                 }
             # Add frame tags
@@ -70,9 +69,9 @@ class Exporter:
         with open(raw_csv_path, 'r') as infile, open(export_path, 'w', newline='') as outfile:
             reader = csv.DictReader(infile)
             
-            # New fieldnames - added technique_modifiers
+            # New fieldnames for FMS assessment data
             fieldnames = list(reader.fieldnames) + [
-                'move_id', 'move_type', 'form_quality', 'effort_level', 'technique_modifiers',
+                'assessment_id', 'test_type', 'score', 'compensations',
                 'tag_type', 'tag_level', 'tag_locations', 'tag_note'
             ]
             
@@ -84,11 +83,10 @@ class Exporter:
                 labels = frame_labels.get(frame_num, {})
                 
                 # Add label columns
-                row['move_id'] = labels.get('move_id', '')
-                row['move_type'] = labels.get('move_type', '')
-                row['form_quality'] = labels.get('form_quality', '')
-                row['effort_level'] = labels.get('effort_level', '')
-                row['technique_modifiers'] = labels.get('technique_modifiers', '')
+                row['assessment_id'] = labels.get('assessment_id', '')
+                row['test_type'] = labels.get('test_type', '')
+                row['score'] = labels.get('score', '')
+                row['compensations'] = labels.get('compensations', '')
                 
                 # Add first tag (if any)
                 tags = labels.get('tags', [])

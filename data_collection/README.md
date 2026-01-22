@@ -96,13 +96,13 @@ npm run dev
 
 The labeled CSV contains:
 - **Pose data**: frame_number, timestamp, joint angles, landmark positions
-- **Move labels**: move_id, move_type, form_quality, effort_level
+- **Assessment labels**: assessment_id, test_type, score, compensations
 - **Frame tags**: tag_type, tag_level, tag_locations, tag_note
 
 Example row with labels:
 ```csv
-frame,timestamp_ms,...,move_id,move_type,form_quality,effort_level,tag_type,tag_level,tag_locations,tag_note
-29,964.01,...,7,lock_off,3,5,weak,5,Left Elbow,
+frame,timestamp_ms,...,assessment_id,test_type,score,compensations,tag_type,tag_level,tag_locations,tag_note
+29,964.01,...,7,deep_squat,2,heel_rise,weakness,5,left_knee,
 ```
 
 ## API Endpoints
@@ -165,3 +165,72 @@ data_collection/
 - [ ] Batch video processing
 - [ ] Progress indicator for labeling sessions
 - [ ] Skeleton overlay scaling fix
+
+## Model Training Approaches
+
+### Rule-Based Engine
+
+Best for **FMS assessments** because the scoring criteria are explicit and well-defined. The FMS manual provides specific, measurable criteria that can be directly translated into rules:
+
+- Example: "torso parallel to tibia + femur below horizontal = score 3"
+- Example: "heels lift off floor during squat = score 2 maximum"
+- Example: "loss of balance at any point = score 1"
+
+**Advantages:**
+- Works immediately without training data
+- 100% explainable - can show exactly why a score was given
+- Easy to audit and adjust based on PT feedback
+- PTs only need to validate edge cases, not label thousands of videos
+
+**Best for:** Standardized assessments with published scoring criteria (FMS, Y-Balance, movement screens)
+
+### Data-Labeled ML
+
+Required for **climbing injury prevention** because movement patterns are complex and subjective:
+
+- No standardized "correct" form for dynamic movements
+- Risk factors are subtle and context-dependent
+- Individual variation in safe movement patterns
+- Injury indicators may involve timing, load distribution, and fatigue patterns
+
+**Requirements:**
+- 500-2000+ labeled examples for reliable predictions
+- Diverse dataset covering different climbers, styles, and conditions
+- Expert labelers who can identify subtle risk patterns
+
+**Advantages:**
+- Can catch patterns humans might miss
+- Learns from real-world injury correlation data
+- Handles complex, multi-factor assessments
+- Improves over time with more data
+
+**Best for:** Complex movement analysis, injury prediction, performance optimization
+
+## Recommended Approach for FMS
+
+### Start Rule-Based, Validate with Data
+
+The most efficient path for FMS scoring:
+
+1. **Build rules from FMS criteria**
+   - Translate the official FMS scoring manual into pose-based rules
+   - Use joint angles, body segment alignment, and timing from MediaPipe data
+   - Implement each test's specific scoring thresholds
+
+2. **Have PTs review AI predictions**
+   - Run the rule engine on sample videos
+   - PTs mark where they agree/disagree with automated scores
+   - Focus review time on borderline cases (e.g., score 2 vs 3)
+
+3. **Collect targeted training data only where rules fail**
+   - Identify systematic disagreements between rules and PT scores
+   - These edge cases become your training data
+   - May only need 50-100 examples per problematic pattern
+
+4. **Hybrid system**
+   - Rules handle clear-cut cases (majority of assessments)
+   - ML model handles ambiguous cases flagged by rules
+   - Continuous improvement as edge cases are identified
+
+This approach minimizes labeling effort while maximizing accuracy where it matters most.
+

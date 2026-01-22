@@ -1,5 +1,5 @@
 """
-FastAPI application for data collection UI.
+FastAPI application for FMS assessment data collection.
 
 Clean REST API with proper error handling and validation.
 """
@@ -17,15 +17,15 @@ import subprocess
 
 from ..labeling.database import Database
 from ..labeling.models import (
-    Video, Move, FrameTag,
-    MOVE_TYPES, MOVE_TYPE_QUESTIONS, BODY_PARTS, TAG_TYPES, TECHNIQUE_MODIFIERS
+    Video, Assessment, FrameTag,
+    FMS_TESTS, FMS_SCORING_CRITERIA, FMS_SCORES, COMPENSATION_PATTERNS, BODY_PARTS, TAG_TYPES
 )
 from ..labeling.exporter import Exporter
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Dynalytics Data Collection API",
-    description="API for labeling climbing movement data",
+    title="Dynalytics FMS Assessment API",
+    description="API for FMS movement assessment data",
     version="1.0.0"
 )
 
@@ -72,59 +72,56 @@ class VideoResponse(BaseModel):
     uploaded_at: str
 
 
-class MoveCreate(BaseModel):
-    """Schema for creating a move."""
+class AssessmentCreate(BaseModel):
+    """Schema for creating an assessment."""
     video_id: int
     frame_start: int
     frame_end: int
     timestamp_start_ms: float
     timestamp_end_ms: float
-    move_type: str
-    form_quality: int = Field(ge=1, le=5)
-    effort_level: int = Field(ge=0, le=10)
-    contextual_data: dict = {}
-    technique_modifiers: List[str] = []
+    test_type: str
+    score: int = Field(ge=0, le=3)
+    criteria_data: dict = {}
+    compensations: List[str] = []
     tags: List[str] = []
-    description: str = ""
+    notes: str = ""
 
 
-class MoveUpdate(BaseModel):
-    """Schema for updating a move."""
+class AssessmentUpdate(BaseModel):
+    """Schema for updating an assessment."""
     frame_start: Optional[int] = None
     frame_end: Optional[int] = None
     timestamp_start_ms: Optional[float] = None
     timestamp_end_ms: Optional[float] = None
-    move_type: Optional[str] = None
-    form_quality: Optional[int] = Field(None, ge=1, le=5)
-    effort_level: Optional[int] = Field(None, ge=0, le=10)
-    contextual_data: Optional[dict] = None
-    technique_modifiers: Optional[List[str]] = None
+    test_type: Optional[str] = None
+    score: Optional[int] = Field(None, ge=0, le=3)
+    criteria_data: Optional[dict] = None
+    compensations: Optional[List[str]] = None
     tags: Optional[List[str]] = None
-    description: Optional[str] = None
+    notes: Optional[str] = None
 
 
-class MoveResponse(BaseModel):
-    """Schema for move response."""
+class AssessmentResponse(BaseModel):
+    """Schema for assessment response."""
     id: int
     video_id: int
     frame_start: int
     frame_end: int
     timestamp_start_ms: float
     timestamp_end_ms: float
-    move_type: str
-    form_quality: int
-    effort_level: int
-    contextual_data: dict
-    technique_modifiers: List[str] = []
+    test_type: str
+    score: int
+    criteria_data: dict
+    compensations: List[str] = []
     tags: List[str]
-    description: str
-    labeled_at: str
+    notes: str
+    assessed_at: str
     frame_tag_count: int = 0
 
 
 class FrameTagCreate(BaseModel):
     """Schema for creating a frame tag."""
-    move_id: int
+    assessment_id: int
     frame_number: int
     timestamp_ms: float
     tag_type: str
@@ -136,7 +133,7 @@ class FrameTagCreate(BaseModel):
 class FrameTagResponse(BaseModel):
     """Schema for frame tag response."""
     id: int
-    move_id: int
+    assessment_id: int
     frame_number: int
     timestamp_ms: float
     tag_type: str
@@ -148,9 +145,10 @@ class FrameTagResponse(BaseModel):
 
 class ConfigResponse(BaseModel):
     """Schema for configuration data."""
-    move_types: List[str]
-    move_type_questions: dict
-    technique_modifiers: List[dict]
+    fms_tests: List[str]
+    fms_scoring_criteria: dict
+    fms_scores: dict
+    compensation_patterns: List[dict]
     body_parts: List[str]
     tag_types: dict
 
@@ -169,19 +167,19 @@ def process_video(video_path: Path) -> dict:
     Returns video metadata.
     """
     import cv2
-    
+
     print(f"DEBUG: About to process video: {video_path}")
-    
+
     # Get video metadata
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise ValueError(f"Could not open video: {video_path}")
-    
+
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration_ms = (total_frames / fps) * 1000 if fps > 0 else 0
     cap.release()
-    
+
     # Run pose extraction
     csv_path = Path('data') / f"{video_path.stem}.csv"
     result = subprocess.run(
@@ -189,19 +187,19 @@ def process_video(video_path: Path) -> dict:
         capture_output=True,
         text=True
     )
-    
+
     if result.returncode != 0:
         raise RuntimeError(f"Pose extraction failed: {result.stderr}")
-    
+
     metadata = {
         'fps': fps,
         'total_frames': total_frames,
         'duration_ms': duration_ms,
         'csv_path': str(csv_path)
     }
-    
+
     print(f"DEBUG: Processing complete: {metadata}")
-    
+
     return metadata
 
 
@@ -219,26 +217,25 @@ def video_to_response(video: Video) -> VideoResponse:
     )
 
 
-def move_to_response(move: Move) -> MoveResponse:
-    """Convert Move model to response schema."""
+def assessment_to_response(assessment: Assessment) -> AssessmentResponse:
+    """Convert Assessment model to response schema."""
     # Get frame tag count
-    tags = db.get_frame_tags_for_move(move.id)
-    
-    return MoveResponse(
-        id=move.id,
-        video_id=move.video_id,
-        frame_start=move.frame_start,
-        frame_end=move.frame_end,
-        timestamp_start_ms=move.timestamp_start_ms,
-        timestamp_end_ms=move.timestamp_end_ms,
-        move_type=move.move_type,
-        form_quality=move.form_quality,
-        effort_level=move.effort_level,
-        contextual_data=move.contextual_data,
-        technique_modifiers=move.technique_modifiers,
-        tags=move.tags,
-        description=move.description,
-        labeled_at=move.labeled_at.isoformat() if move.labeled_at else "",
+    tags = db.get_frame_tags_for_assessment(assessment.id)
+
+    return AssessmentResponse(
+        id=assessment.id,
+        video_id=assessment.video_id,
+        frame_start=assessment.frame_start,
+        frame_end=assessment.frame_end,
+        timestamp_start_ms=assessment.timestamp_start_ms,
+        timestamp_end_ms=assessment.timestamp_end_ms,
+        test_type=assessment.test_type,
+        score=assessment.score,
+        criteria_data=assessment.criteria_data,
+        compensations=assessment.compensations,
+        tags=assessment.tags,
+        notes=assessment.notes,
+        assessed_at=assessment.assessed_at.isoformat() if assessment.assessed_at else "",
         frame_tag_count=len(tags)
     )
 
@@ -247,7 +244,7 @@ def frame_tag_to_response(tag: FrameTag) -> FrameTagResponse:
     """Convert FrameTag model to response schema."""
     return FrameTagResponse(
         id=tag.id,
-        move_id=tag.move_id,
+        assessment_id=tag.assessment_id,
         frame_number=tag.frame_number,
         timestamp_ms=tag.timestamp_ms,
         tag_type=tag.tag_type,
@@ -263,16 +260,17 @@ def frame_tag_to_response(tag: FrameTag) -> FrameTagResponse:
 @app.get("/")
 async def root():
     """Health check endpoint."""
-    return {"status": "ok", "message": "Dynalytics API is running"}
+    return {"status": "ok", "message": "Dynalytics FMS API is running"}
 
 
 @app.get("/api/config", response_model=ConfigResponse)
 async def get_config():
-    """Get configuration data (move types, questions, body parts, etc.)."""
+    """Get configuration data (FMS tests, scoring criteria, body parts, etc.)."""
     return ConfigResponse(
-        move_types=MOVE_TYPES,
-        move_type_questions=MOVE_TYPE_QUESTIONS,
-        technique_modifiers=TECHNIQUE_MODIFIERS,
+        fms_tests=FMS_TESTS,
+        fms_scoring_criteria=FMS_SCORING_CRITERIA,
+        fms_scores=FMS_SCORES,
+        compensation_patterns=COMPENSATION_PATTERNS,
         body_parts=BODY_PARTS,
         tag_types=TAG_TYPES
     )
@@ -284,7 +282,7 @@ async def get_config():
 async def upload_video(file: UploadFile = File(...)):
     """
     Upload and process a video.
-    
+
     1. Saves video file
     2. Runs pose extraction
     3. Stores metadata in database
@@ -295,13 +293,13 @@ async def upload_video(file: UploadFile = File(...)):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid file type. Please upload .mov, .mp4, or .avi"
         )
-    
+
     # Generate unique filename to avoid collisions
     import uuid
     unique_id = uuid.uuid4().hex
     safe_filename = f"video_{unique_id}_{file.filename}"
     video_path = Path('videos') / safe_filename
-    
+
     # Save file
     try:
         with open(video_path, 'wb') as buffer:
@@ -311,7 +309,7 @@ async def upload_video(file: UploadFile = File(...)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to save video: {str(e)}"
         )
-    
+
     # Process video (pose extraction)
     try:
         metadata = process_video(video_path)
@@ -322,7 +320,7 @@ async def upload_video(file: UploadFile = File(...)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Video processing failed: {str(e)}"
         )
-    
+
     # Create database record
     video = Video(
         filename=safe_filename,
@@ -333,9 +331,9 @@ async def upload_video(file: UploadFile = File(...)):
         duration_ms=metadata['duration_ms'],
         uploaded_at=datetime.now()
     )
-    
+
     video.id = db.create_video(video)
-    
+
     return video_to_response(video)
 
 
@@ -367,14 +365,14 @@ async def get_video_csv(video_id: int):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Video {video_id} not found"
         )
-    
+
     csv_path = Path(video.csv_path)
     if not csv_path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="CSV file not found"
         )
-    
+
     return FileResponse(csv_path, media_type='text/csv', filename=csv_path.name)
 
 
@@ -382,10 +380,10 @@ async def get_video_csv(video_id: int):
 async def export_video_endpoint(video_id: int, delete_video: bool = False):
     """
     Export labeled data for a video.
-    
-    Combines pose data with move/tag labels into a single CSV.
+
+    Combines pose data with assessment labels into a single CSV.
     Optionally deletes the video file after export to save storage.
-    
+
     Query params:
         delete_video: If true, delete the video file after successful export
     """
@@ -408,73 +406,72 @@ async def download_export(video_id: int):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Video {video_id} not found"
         )
-    
+
     raw_csv_path = Path(video.csv_path)
     export_path = Path('data/exports') / f"{raw_csv_path.stem}_labeled.csv"
-    
+
     if not export_path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Export not found. Run export first."
         )
-    
+
     return FileResponse(export_path, media_type='text/csv', filename=export_path.name)
 
 
-# ==================== MOVE ENDPOINTS ====================
+# ==================== ASSESSMENT ENDPOINTS ====================
 
-@app.post("/api/moves", response_model=MoveResponse, status_code=status.HTTP_201_CREATED)
-async def create_move(move_data: MoveCreate):
-    """Create a new move."""
+@app.post("/api/assessments", response_model=AssessmentResponse, status_code=status.HTTP_201_CREATED)
+async def create_assessment(assessment_data: AssessmentCreate):
+    """Create a new assessment."""
     # Validate video exists
-    video = db.get_video(move_data.video_id)
+    video = db.get_video(assessment_data.video_id)
     if not video:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Video {move_data.video_id} not found"
+            detail=f"Video {assessment_data.video_id} not found"
         )
-    
-    # Validate move type
-    if move_data.move_type not in MOVE_TYPES:
+
+    # Validate test type
+    if assessment_data.test_type not in FMS_TESTS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid move type: {move_data.move_type}"
+            detail=f"Invalid test type: {assessment_data.test_type}"
         )
-    
-    # Validate technique modifiers
-    valid_modifier_ids = [m['id'] for m in TECHNIQUE_MODIFIERS]
-    for modifier in move_data.technique_modifiers:
-        if modifier not in valid_modifier_ids:
+
+    # Validate compensation patterns
+    valid_compensation_ids = [c['id'] for c in COMPENSATION_PATTERNS]
+    for compensation in assessment_data.compensations:
+        if compensation not in valid_compensation_ids:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid technique modifier: {modifier}"
+                detail=f"Invalid compensation pattern: {compensation}"
             )
-    
-    # Create move
-    move = Move(
-        video_id=move_data.video_id,
-        frame_start=move_data.frame_start,
-        frame_end=move_data.frame_end,
-        timestamp_start_ms=move_data.timestamp_start_ms,
-        timestamp_end_ms=move_data.timestamp_end_ms,
-        move_type=move_data.move_type,
-        form_quality=move_data.form_quality,
-        effort_level=move_data.effort_level,
-        contextual_data=move_data.contextual_data,
-        technique_modifiers=move_data.technique_modifiers,
-        tags=move_data.tags,
-        description=move_data.description,
-        labeled_at=datetime.now()
+
+    # Create assessment
+    assessment = Assessment(
+        video_id=assessment_data.video_id,
+        frame_start=assessment_data.frame_start,
+        frame_end=assessment_data.frame_end,
+        timestamp_start_ms=assessment_data.timestamp_start_ms,
+        timestamp_end_ms=assessment_data.timestamp_end_ms,
+        test_type=assessment_data.test_type,
+        score=assessment_data.score,
+        criteria_data=assessment_data.criteria_data,
+        compensations=assessment_data.compensations,
+        tags=assessment_data.tags,
+        notes=assessment_data.notes,
+        assessed_at=datetime.now()
     )
-    
-    move.id = db.create_move(move)
-    
-    return move_to_response(move)
+
+    assessment.id = db.create_assessment(assessment)
+
+    return assessment_to_response(assessment)
 
 
-@app.get("/api/videos/{video_id}/moves", response_model=List[MoveResponse])
-async def list_moves(video_id: int):
-    """Get all moves for a video."""
+@app.get("/api/videos/{video_id}/assessments", response_model=List[AssessmentResponse])
+async def list_assessments(video_id: int):
+    """Get all assessments for a video."""
     # Validate video exists
     video = db.get_video(video_id)
     if not video:
@@ -482,70 +479,68 @@ async def list_moves(video_id: int):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Video {video_id} not found"
         )
-    
-    moves = db.get_moves_for_video(video_id)
-    return [move_to_response(m) for m in moves]
+
+    assessments = db.get_assessments_for_video(video_id)
+    return [assessment_to_response(a) for a in assessments]
 
 
-@app.get("/api/moves/{move_id}", response_model=MoveResponse)
-async def get_move(move_id: int):
-    """Get a specific move by ID."""
-    move = db.get_move(move_id)
-    if not move:
+@app.get("/api/assessments/{assessment_id}", response_model=AssessmentResponse)
+async def get_assessment(assessment_id: int):
+    """Get a specific assessment by ID."""
+    assessment = db.get_assessment(assessment_id)
+    if not assessment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Move {move_id} not found"
+            detail=f"Assessment {assessment_id} not found"
         )
-    return move_to_response(move)
+    return assessment_to_response(assessment)
 
 
-@app.put("/api/moves/{move_id}", response_model=MoveResponse)
-async def update_move(move_id: int, move_data: MoveUpdate):
-    """Update an existing move."""
-    move = db.get_move(move_id)
-    if not move:
+@app.put("/api/assessments/{assessment_id}", response_model=AssessmentResponse)
+async def update_assessment(assessment_id: int, assessment_data: AssessmentUpdate):
+    """Update an existing assessment."""
+    assessment = db.get_assessment(assessment_id)
+    if not assessment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Move {move_id} not found"
+            detail=f"Assessment {assessment_id} not found"
         )
-    
+
     # Update fields
-    if move_data.frame_start is not None:
-        move.frame_start = move_data.frame_start
-    if move_data.frame_end is not None:
-        move.frame_end = move_data.frame_end
-    if move_data.timestamp_start_ms is not None:
-        move.timestamp_start_ms = move_data.timestamp_start_ms
-    if move_data.timestamp_end_ms is not None:
-        move.timestamp_end_ms = move_data.timestamp_end_ms
-    if move_data.move_type is not None:
-        move.move_type = move_data.move_type
-    if move_data.form_quality is not None:
-        move.form_quality = move_data.form_quality
-    if move_data.effort_level is not None:
-        move.effort_level = move_data.effort_level
-    if move_data.contextual_data is not None:
-        move.contextual_data = move_data.contextual_data
-    if move_data.technique_modifiers is not None:
-        move.technique_modifiers = move_data.technique_modifiers
-    if move_data.tags is not None:
-        move.tags = move_data.tags
-    if move_data.description is not None:
-        move.description = move_data.description
-    
-    db.update_move(move)
-    
-    return move_to_response(move)
+    if assessment_data.frame_start is not None:
+        assessment.frame_start = assessment_data.frame_start
+    if assessment_data.frame_end is not None:
+        assessment.frame_end = assessment_data.frame_end
+    if assessment_data.timestamp_start_ms is not None:
+        assessment.timestamp_start_ms = assessment_data.timestamp_start_ms
+    if assessment_data.timestamp_end_ms is not None:
+        assessment.timestamp_end_ms = assessment_data.timestamp_end_ms
+    if assessment_data.test_type is not None:
+        assessment.test_type = assessment_data.test_type
+    if assessment_data.score is not None:
+        assessment.score = assessment_data.score
+    if assessment_data.criteria_data is not None:
+        assessment.criteria_data = assessment_data.criteria_data
+    if assessment_data.compensations is not None:
+        assessment.compensations = assessment_data.compensations
+    if assessment_data.tags is not None:
+        assessment.tags = assessment_data.tags
+    if assessment_data.notes is not None:
+        assessment.notes = assessment_data.notes
+
+    db.update_assessment(assessment)
+
+    return assessment_to_response(assessment)
 
 
-@app.delete("/api/moves/{move_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_move(move_id: int):
-    """Delete a move and its frame tags."""
-    success = db.delete_move(move_id)
+@app.delete("/api/assessments/{assessment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_assessment(assessment_id: int):
+    """Delete an assessment and its frame tags."""
+    success = db.delete_assessment(assessment_id)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Move {move_id} not found"
+            detail=f"Assessment {assessment_id} not found"
         )
     return None
 
@@ -555,24 +550,24 @@ async def delete_move(move_id: int):
 @app.post("/api/frame-tags", response_model=FrameTagResponse, status_code=status.HTTP_201_CREATED)
 async def create_frame_tag(tag_data: FrameTagCreate):
     """Create a new frame tag."""
-    # Validate move exists
-    move = db.get_move(tag_data.move_id)
-    if not move:
+    # Validate assessment exists
+    assessment = db.get_assessment(tag_data.assessment_id)
+    if not assessment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Move {tag_data.move_id} not found"
+            detail=f"Assessment {tag_data.assessment_id} not found"
         )
-    
+
     # Validate tag type
     if tag_data.tag_type not in TAG_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid tag type: {tag_data.tag_type}"
         )
-    
+
     # Create tag
     tag = FrameTag(
-        move_id=tag_data.move_id,
+        assessment_id=tag_data.assessment_id,
         frame_number=tag_data.frame_number,
         timestamp_ms=tag_data.timestamp_ms,
         tag_type=tag_data.tag_type,
@@ -581,24 +576,24 @@ async def create_frame_tag(tag_data: FrameTagCreate):
         note=tag_data.note,
         tagged_at=datetime.now()
     )
-    
+
     tag.id = db.create_frame_tag(tag)
-    
+
     return frame_tag_to_response(tag)
 
 
-@app.get("/api/moves/{move_id}/frame-tags", response_model=List[FrameTagResponse])
-async def list_frame_tags(move_id: int):
-    """Get all frame tags for a move."""
-    # Validate move exists
-    move = db.get_move(move_id)
-    if not move:
+@app.get("/api/assessments/{assessment_id}/frame-tags", response_model=List[FrameTagResponse])
+async def list_frame_tags(assessment_id: int):
+    """Get all frame tags for an assessment."""
+    # Validate assessment exists
+    assessment = db.get_assessment(assessment_id)
+    if not assessment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Move {move_id} not found"
+            detail=f"Assessment {assessment_id} not found"
         )
-    
-    tags = db.get_frame_tags_for_move(move_id)
+
+    tags = db.get_frame_tags_for_assessment(assessment_id)
     return [frame_tag_to_response(t) for t in tags]
 
 

@@ -5,7 +5,7 @@
  * Shows processing progress while backend extracts pose data.
  */
 import { useState } from 'react';
-import { uploadVideo, getMoves } from '../api/client';
+import { uploadVideo, getAssessments } from '../api/client';
 import useStore from '../store/useStore';
 
 function VideoUpload() {
@@ -38,7 +38,7 @@ function VideoUpload() {
       
       // Load video and its moves
       setCurrentVideo(video);
-      const moves = await getMoves(video.id);
+      const moves = await getAssessments(video.id);
       setMoves(moves);
       
     } catch (err) {
@@ -52,8 +52,8 @@ function VideoUpload() {
   return (
     <div className="video-upload">
       <div className="upload-container">
-        <h2>Upload Climbing Video</h2>
-        <p>Upload a video to begin labeling climbing movements</p>
+        <h2>Upload Deep Squat Assessment</h2>
+        <p>Upload a video to begin FMS assessment</p>
 
         {!uploading ? (
           <div className="upload-area">

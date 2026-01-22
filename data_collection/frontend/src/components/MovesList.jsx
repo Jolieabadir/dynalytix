@@ -5,7 +5,7 @@
  */
 import { useEffect } from 'react';
 import useStore from '../store/useStore';
-import { getMoves, deleteMove } from '../api/client';
+import { getAssessments, deleteAssessment } from '../api/client';
 
 function MovesList() {
   const { currentVideo, moves, setMoves, setCurrentMove, setMode } = useStore();
@@ -16,7 +16,7 @@ function MovesList() {
       if (!currentVideo) return;
       
       try {
-        const movesData = await getMoves(currentVideo.id);
+        const movesData = await getAssessments(currentVideo.id);
         setMoves(movesData);
       } catch (error) {
         console.error('Failed to load moves:', error);
@@ -32,14 +32,14 @@ function MovesList() {
   };
 
   const handleDelete = async (moveId) => {
-    if (!window.confirm('Delete this move? Frame tags will also be deleted.')) {
+    if (!window.confirm('Delete this assessment? Frame tags will also be deleted.')) {
       return;
     }
 
     try {
-      await deleteMove(moveId);
-      // Reload moves
-      const movesData = await getMoves(currentVideo.id);
+      await deleteAssessment(moveId);
+      // Reload assessments
+      const movesData = await getAssessments(currentVideo.id);
       setMoves(movesData);
     } catch (error) {
       console.error('Failed to delete move:', error);
@@ -51,11 +51,11 @@ function MovesList() {
 
   return (
     <div className="moves-list">
-      <h3>Completed Moves</h3>
+      <h3>Completed Assessments</h3>
       
       {moves.length === 0 ? (
         <p className="no-moves">
-          No moves created yet. Mark start/end frames to create a move.
+          No assessments created yet. Mark start/end frames to create an assessment.
         </p>
       ) : (
         <div className="moves-container">
@@ -87,17 +87,17 @@ function MoveCard({ move, onAddTags, onDelete }) {
     return durationSec.toFixed(2);
   };
 
-  const renderQuality = (quality) => {
+  const renderScore = (score) => {
+    const scoreLabels = {
+      0: 'Unable to perform',
+      1: 'Significant compensation',
+      2: 'Minor compensation',
+      3: 'Perfect form'
+    };
     return (
-      <div className="quality-stars">
-        {[1, 2, 3, 4, 5].map(level => (
-          <span
-            key={level}
-            className={`star ${level <= quality ? 'filled' : ''}`}
-          >
-            ●
-          </span>
-        ))}
+      <div className="fms-score">
+        <span className={`score-badge score-${score}`}>{score}</span>
+        <span className="score-label">{scoreLabels[score] || 'Unknown'}</span>
       </div>
     );
   };
@@ -105,7 +105,7 @@ function MoveCard({ move, onAddTags, onDelete }) {
   return (
     <div className="move-card">
       <div className="move-header">
-        <h4>{formatMoveType(move.move_type)}</h4>
+        <h4>{formatMoveType(move.test_type)}</h4>
         <div className="move-actions">
           <button
             onClick={() => onAddTags(move)}
@@ -134,13 +134,8 @@ function MoveCard({ move, onAddTags, onDelete }) {
         </div>
 
         <div className="detail-row">
-          <span className="label">Quality:</span>
-          {renderQuality(move.form_quality)}
-        </div>
-
-        <div className="detail-row">
-          <span className="label">Effort:</span>
-          <span className="effort-level">{move.effort_level}/10</span>
+          <span className="label">Score:</span>
+          {renderScore(move.score)}
         </div>
 
         {move.tags && move.tags.length > 0 && (
@@ -156,10 +151,10 @@ function MoveCard({ move, onAddTags, onDelete }) {
           </div>
         )}
 
-        {move.description && (
+        {move.notes && (
           <div className="move-description">
             <span className="label">Notes:</span>
-            <p>{move.description}</p>
+            <p>{move.notes}</p>
           </div>
         )}
 

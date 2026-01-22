@@ -41,7 +41,7 @@ function App() {
     <div className="app">
       <header className="app-header">
         <h1>Dynalytics</h1>
-        <p>Climbing Movement Data Collection</p>
+        <p>Movement Data Collection</p>
       </header>
 
       {mode === 'define' ? <DefineMode /> : <TaggingMode />}

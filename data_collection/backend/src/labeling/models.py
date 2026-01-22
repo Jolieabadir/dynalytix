@@ -1,5 +1,5 @@
 """
-Data models for labeling system.
+Data models for FMS (Functional Movement Screen) assessment system.
 
 These are pure Python dataclasses with no database dependencies.
 Database layer handles persistence separately.
@@ -38,83 +38,82 @@ class Video:
 
 
 @dataclass
-class Move:
+class Assessment:
     """
-    Represents a labeled climbing move.
-    
-    Contains move boundaries, type, and all contextual answers.
+    Represents an FMS (Functional Movement Screen) assessment.
+
+    Contains assessment boundaries, test type, and scoring data.
     """
-    
+
     id: Optional[int] = None
     video_id: int = 0
     frame_start: int = 0
     frame_end: int = 0
     timestamp_start_ms: float = 0.0
     timestamp_end_ms: float = 0.0
-    
-    # Core move data
-    move_type: str = ""  # 'dyno', 'lock_off', 'bump', 'coordination', etc.
-    form_quality: int = 3  # 1-5
-    effort_level: int = 5  # 0-10
-    
-    # Contextual answers (stored as dict - specific to move type)
-    # Example for dyno: {'catching_hand': 'right_hand', 'dyno_style': 'double_clutch', ...}
-    contextual_data: dict = field(default_factory=dict)
-    
-    # Technique modifiers (applicable to ALL moves)
-    # Example: ['drop_knee', 'heel_hook']
-    technique_modifiers: list[str] = field(default_factory=list)
-    
-    # Tags and description
+
+    # Core assessment data
+    test_type: str = ""  # 'deep_squat', etc.
+    score: int = 2  # FMS 0-3 scale (0=pain, 1=can't complete, 2=compensation, 3=perfect)
+
+    # Scoring criteria observations (stored as dict - specific to test type)
+    # Example: {'heels_elevated': True, 'knees_cave_inward': False, ...}
+    criteria_data: dict = field(default_factory=dict)
+
+    # Compensation patterns observed
+    # Example: ['heel_rise', 'forward_lean', 'knee_valgus']
+    compensations: list[str] = field(default_factory=list)
+
+    # Tags and notes
     tags: list[str] = field(default_factory=list)
-    description: str = ""
-    
+    notes: str = ""
+
     # Metadata
-    labeled_at: Optional[datetime] = None
-    
+    assessed_at: Optional[datetime] = None
+
     def duration_seconds(self) -> float:
-        """Calculate move duration in seconds."""
+        """Calculate assessment duration in seconds."""
         return (self.timestamp_end_ms - self.timestamp_start_ms) / 1000.0
-    
+
     def frame_count(self) -> int:
-        """Calculate number of frames in this move."""
+        """Calculate number of frames in this assessment."""
         return self.frame_end - self.frame_start + 1
-    
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         data = asdict(self)
-        if self.labeled_at:
-            data['labeled_at'] = self.labeled_at.isoformat()
+        if self.assessed_at:
+            data['assessed_at'] = self.assessed_at.isoformat()
         return data
-    
+
     @classmethod
-    def from_dict(cls, data: dict) -> 'Move':
+    def from_dict(cls, data: dict) -> 'Assessment':
         """Create from dictionary."""
-        if 'labeled_at' in data and isinstance(data['labeled_at'], str):
-            data['labeled_at'] = datetime.fromisoformat(data['labeled_at'])
+        if 'assessed_at' in data and isinstance(data['assessed_at'], str):
+            data['assessed_at'] = datetime.fromisoformat(data['assessed_at'])
         return cls(**data)
 
 
 @dataclass
 class FrameTag:
     """
-    Represents a tag on a specific frame within a move.
-    
-    Used for precise sensation tracking (pain, instability, weakness).
+    Represents a tag on a specific frame within an assessment.
+
+    Used for precise observation tracking (pain, compensation, form breakdown).
     """
-    
+
     id: Optional[int] = None
-    move_id: int = 0
+    assessment_id: int = 0
     frame_number: int = 0
     timestamp_ms: float = 0.0
     
-    # Tag type: 'pain', 'instability', 'weakness', 'technique', 'slip'
+    # Tag type: 'pain', 'tightness', 'weakness', 'asymmetry', 'compensation', 'loss_of_balance'
     tag_type: str = ""
-    
-    # For sensation tags (0-10 scale, None for non-sensation tags)
+
+    # Severity level (0-10 scale, None if not applicable)
     level: Optional[int] = None
-    
-    # Body part locations (for sensation tags)
+
+    # Body part locations
     # Example: ['left_knee', 'lower_back']
     locations: list[str] = field(default_factory=list)
     
@@ -124,9 +123,9 @@ class FrameTag:
     # Metadata
     tagged_at: Optional[datetime] = None
     
-    def is_sensation_tag(self) -> bool:
-        """Check if this is a sensation tag (pain/instability/weakness)."""
-        return self.tag_type in ['pain', 'instability', 'weakness']
+    def is_body_tag(self) -> bool:
+        """Check if this is a body-related tag (pain/tightness/weakness)."""
+        return self.tag_type in ['pain', 'tightness', 'weakness']
     
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -144,230 +143,119 @@ class FrameTag:
 
 
 # =============================================================================
-# MOVE TYPES - Primary move categories
-# Removed: static, campus, flag (flag is a technique modifier)
+# FMS TEST TYPES
 # =============================================================================
-MOVE_TYPES = [
-    'lock_off',
-    'dyno',
-    'deadpoint',
-    'bump',
-    'mantle',
-    'coordination',
-    'gaston',
-    'undercling',
+FMS_TESTS = [
+    'deep_squat',
 ]
 
 # =============================================================================
-# TECHNIQUE MODIFIERS - Can be applied to ANY move type
-# These describe HOW the move was executed, not WHAT the move is
+# FMS SCORING SCALE
+# Standard FMS 0-3 scoring system
 # =============================================================================
-TECHNIQUE_MODIFIERS = [
-    {
-        'id': 'drop_knee',
-        'label': 'Drop Knee',
-        'description': 'Hip turned in with knee dropped'
+FMS_SCORES = {
+    0: {
+        'label': 'Pain',
+        'description': 'Pain reported during any part of the movement'
     },
-    {
-        'id': 'heel_hook',
-        'label': 'Heel Hook',
-        'description': 'Heel placed on hold for leverage'
+    1: {
+        'label': "Can't Complete",
+        'description': 'Unable to complete the movement pattern'
     },
-    {
-        'id': 'toe_hook',
-        'label': 'Toe Hook',
-        'description': 'Top of foot hooked on hold'
+    2: {
+        'label': 'Compensation',
+        'description': 'Completes movement with compensation patterns'
     },
-    {
-        'id': 'smear',
-        'label': 'Smear',
-        'description': 'Foot pressed against wall without hold'
-    },
-    {
-        'id': 'flag',
-        'label': 'Flag',
-        'description': 'Leg extended for balance/counterweight'
-    },
-]
-
-# =============================================================================
-# CONTEXTUAL QUESTIONS - Specific to each move type
-# =============================================================================
-MOVE_TYPE_QUESTIONS = {
-    'dyno': {
-        'dyno_style': {
-            'question': 'Dyno style',
-            'options': ['double_clutch', 'paddle_dyno', 'single_arm_catch']
-        },
-        'catching_hand': {
-            'question': 'Which hand caught the target hold?',
-            'options': ['left_hand', 'right_hand', 'both_hands', 'missed']
-        },
-        'push_foot': {
-            'question': 'Which foot pushed off?',
-            'options': ['left_foot', 'right_foot', 'both_feet']
-        },
-        'contact_at_launch': {
-            'question': 'Contact points at launch',
-            'options': ['left_hand', 'right_hand', 'left_foot', 'right_foot'],
-            'multi_select': True
-        },
-        'body_position': {
-            'question': 'Body position at launch',
-            'options': ['square', 'side_on', 'turned_away']
-        }
-    },
-    
-    'lock_off': {
-        'lock_off_arm': {
-            'question': 'Which arm was the lock-off on?',
-            'options': ['left_arm', 'right_arm', 'both_arms']
-        },
-        'lock_angle': {
-            'question': 'Lock-off angle (elbow bend)',
-            'options': ['full_lock', 'ninety_degrees', 'slight_bend']
-        },
-        'reaching_hand': {
-            'question': 'Which hand reached?',
-            'options': ['left_hand', 'right_hand']
-        },
-        'contact_points': {
-            'question': 'Contact points during lock-off',
-            'options': ['left_hand', 'right_hand', 'left_foot', 'right_foot'],
-            'multi_select': True
-        },
-        'hold_duration': {
-            'question': 'How long held (estimate)',
-            'options': ['<1sec', '1-3sec', '3-5sec', '>5sec']
-        }
-    },
-    
-    'deadpoint': {
-        'reaching_hand': {
-            'question': 'Which hand reached?',
-            'options': ['left_hand', 'right_hand', 'both_hands']
-        },
-        'push_foot': {
-            'question': 'Push foot',
-            'options': ['left_foot', 'right_foot', 'both_feet']
-        },
-        'contact_at_peak': {
-            'question': 'Contact at peak (dead point moment)',
-            'options': ['left_hand', 'right_hand', 'left_foot', 'right_foot'],
-            'multi_select': True
-        },
-        'body_position': {
-            'question': 'Body position',
-            'options': ['square', 'side_on', 'twisted']
-        }
-    },
-    
-    'bump': {
-        'bumping_hand': {
-            'question': 'Which hand bumped?',
-            'options': ['left_hand', 'right_hand']
-        },
-        'bump_distance': {
-            'question': 'Bump distance',
-            'options': ['short', 'medium', 'long']
-        },
-        'supporting_hand': {
-            'question': 'Other hand position',
-            'options': ['on_hold', 'moving', 'not_in_contact']
-        }
-    },
-    
-    'mantle': {
-        'mantle_side': {
-            'question': 'Which side mantled first?',
-            'options': ['left_side', 'right_side', 'both_together']
-        },
-        'starting_position': {
-            'question': 'Starting position',
-            'options': ['below_hold', 'level_with_hold', 'above_hold']
-        },
-        'contact_at_top': {
-            'question': 'Contact points at top',
-            'options': ['left_hand', 'right_hand', 'left_knee', 'right_knee'],
-            'multi_select': True
-        },
-        'press_type': {
-            'question': 'Press type',
-            'options': ['palm_press', 'finger_press', 'elbow_press']
-        }
-    },
-    
-    'coordination': {
-        'coordination_style': {
-            'question': 'Coordination move style',
-            'options': ['skate_move', 'throw_hook', 'bicycle', 'other']
-        },
-        'primary_limb': {
-            'question': 'Primary moving limb',
-            'options': ['left_hand', 'right_hand', 'left_foot', 'right_foot']
-        },
-        'secondary_limb': {
-            'question': 'Secondary moving limb (if any)',
-            'options': ['left_hand', 'right_hand', 'left_foot', 'right_foot', 'none']
-        },
-        'timing': {
-            'question': 'Movement timing',
-            'options': ['simultaneous', 'sequential', 'alternating']
-        }
-    },
-    
-    'gaston': {
-        'gaston_hand': {
-            'question': 'Which hand is gastoning?',
-            'options': ['left_hand', 'right_hand', 'both_hands']
-        },
-        'elbow_position': {
-            'question': 'Elbow position',
-            'options': ['high', 'level', 'low']
-        },
-        'body_position': {
-            'question': 'Body position relative to hold',
-            'options': ['inside', 'outside', 'directly_below']
-        }
-    },
-    
-    'undercling': {
-        'undercling_hand': {
-            'question': 'Which hand is underclinging?',
-            'options': ['left_hand', 'right_hand', 'both_hands']
-        },
-        'hip_position': {
-            'question': 'Hip position',
-            'options': ['low', 'level', 'high']
-        },
-        'pulling_direction': {
-            'question': 'Pulling direction',
-            'options': ['straight_up', 'diagonal', 'outward']
-        }
+    3: {
+        'label': 'Perfect',
+        'description': 'Performs movement correctly without compensation'
     },
 }
 
-# Body part options for sensation tagging
+# =============================================================================
+# COMPENSATION PATTERNS - Observable movement dysfunctions
+# =============================================================================
+COMPENSATION_PATTERNS = [
+    {
+        'id': 'heel_rise',
+        'label': 'Heel Rise',
+        'description': 'Heels lift off the ground during descent'
+    },
+    {
+        'id': 'forward_lean',
+        'label': 'Excessive Forward Lean',
+        'description': 'Torso leans forward excessively'
+    },
+    {
+        'id': 'knee_valgus',
+        'label': 'Knee Valgus',
+        'description': 'Knees collapse inward'
+    },
+    {
+        'id': 'arms_fall_forward',
+        'label': 'Arms Fall Forward',
+        'description': 'Unable to keep arms overhead'
+    },
+    {
+        'id': 'lumbar_flexion',
+        'label': 'Lumbar Flexion',
+        'description': 'Rounding of the lower back'
+    },
+]
+
+# =============================================================================
+# FMS SCORING CRITERIA - Specific to each test type
+# =============================================================================
+FMS_SCORING_CRITERIA = {
+    'deep_squat': {
+        'dowel_position': {
+            'question': 'Dowel position at bottom of squat',
+            'options': ['overhead_aligned', 'forward_of_feet', 'lost_completely']
+        },
+        'torso_alignment': {
+            'question': 'Torso alignment',
+            'options': ['parallel_to_tibia', 'slight_forward_lean', 'excessive_forward_lean']
+        },
+        'knee_alignment': {
+            'question': 'Knee alignment over feet',
+            'options': ['aligned_over_toes', 'slight_valgus', 'significant_valgus']
+        },
+        'squat_depth': {
+            'question': 'Squat depth achieved',
+            'options': ['below_parallel', 'at_parallel', 'above_parallel']
+        },
+        'heel_contact': {
+            'question': 'Heel contact with floor',
+            'options': ['heels_down', 'slight_rise', 'heels_elevated']
+        },
+        'femur_position': {
+            'question': 'Femur position at bottom',
+            'options': ['below_horizontal', 'at_horizontal', 'above_horizontal']
+        },
+        'pain_reported': {
+            'question': 'Pain reported during movement',
+            'options': ['no_pain', 'discomfort', 'pain'],
+            'auto_score_0': 'pain'  # If pain selected, score is automatically 0
+        },
+    },
+}
+
+# Body part options for pain/observation tagging
 BODY_PARTS = [
     'left_shoulder', 'right_shoulder',
-    'left_elbow', 'right_elbow',
-    'left_wrist', 'right_wrist',
     'left_hip', 'right_hip',
     'left_knee', 'right_knee',
     'left_ankle', 'right_ankle',
     'lower_back', 'upper_back',
-    'core', 'forearms'
+    'thoracic_spine', 'lumbar_spine',
 ]
 
-# Tag types
+# Tag types for FMS observations
 TAG_TYPES = {
-    'sharp_pain': 'Sharp Pain',
-    'dull_pain': 'Dull Pain',
-    'pop': 'Pop',
-    'unstable': 'Unstable',
-    'stretch_awkward': 'Stretch/Awkward',
-    'strong_controlled': 'Strong/Controlled',
-    'weak': 'Weak',
-    'pumped': 'Pumped',
-    'fatigue': 'Fatigue',
+    'pain': 'Pain',
+    'tightness': 'Tightness',
+    'weakness': 'Weakness',
+    'asymmetry': 'Asymmetry',
+    'compensation': 'Compensation',
+    'loss_of_balance': 'Loss of Balance',
 }

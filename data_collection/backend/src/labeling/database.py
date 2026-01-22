@@ -1,5 +1,5 @@
 """
-Database layer for labeling system.
+Database layer for FMS assessment system.
 
 Handles all SQLite operations. Models know nothing about the database.
 """
@@ -10,36 +10,36 @@ from typing import Optional, List
 from datetime import datetime
 from contextlib import contextmanager
 
-from .models import Video, Move, FrameTag
+from .models import Video, Assessment, FrameTag
 
 
 class Database:
     """
     Database handler with clean separation of concerns.
-    
+
     Usage:
         db = Database('data/labels.db')
         db.init()
-        
+
         # Create
         video_id = db.create_video(video)
-        
+
         # Read
         video = db.get_video(video_id)
-        moves = db.get_moves_for_video(video_id)
-        
+        assessments = db.get_assessments_for_video(video_id)
+
         # Update
-        db.update_move(move)
-        
+        db.update_assessment(assessment)
+
         # Delete
         db.delete_frame_tag(tag_id)
     """
-    
+
     def __init__(self, db_path: str = 'data/labels.db'):
         """Initialize database connection."""
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     @contextmanager
     def get_connection(self):
         """Context manager for database connections."""
@@ -53,12 +53,12 @@ class Database:
             raise
         finally:
             conn.close()
-    
+
     def init(self):
         """Initialize database schema."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
+
             # Videos table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS videos (
@@ -72,33 +72,32 @@ class Database:
                     uploaded_at TEXT NOT NULL
                 )
             ''')
-            
-            # Moves table
+
+            # Assessments table
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS moves (
+                CREATE TABLE IF NOT EXISTS assessments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     video_id INTEGER NOT NULL,
                     frame_start INTEGER NOT NULL,
                     frame_end INTEGER NOT NULL,
                     timestamp_start_ms REAL NOT NULL,
                     timestamp_end_ms REAL NOT NULL,
-                    move_type TEXT NOT NULL,
-                    form_quality INTEGER NOT NULL,
-                    effort_level INTEGER NOT NULL,
-                    contextual_data TEXT NOT NULL,
-                    technique_modifiers TEXT NOT NULL DEFAULT '[]',
+                    test_type TEXT NOT NULL,
+                    score INTEGER NOT NULL,
+                    criteria_data TEXT NOT NULL,
+                    compensations TEXT NOT NULL DEFAULT '[]',
                     tags TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    labeled_at TEXT NOT NULL,
+                    notes TEXT NOT NULL,
+                    assessed_at TEXT NOT NULL,
                     FOREIGN KEY (video_id) REFERENCES videos(id)
                 )
             ''')
-            
+
             # Frame tags table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS frame_tags (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    move_id INTEGER NOT NULL,
+                    assessment_id INTEGER NOT NULL,
                     frame_number INTEGER NOT NULL,
                     timestamp_ms REAL NOT NULL,
                     tag_type TEXT NOT NULL,
@@ -106,31 +105,16 @@ class Database:
                     locations TEXT NOT NULL,
                     note TEXT NOT NULL,
                     tagged_at TEXT NOT NULL,
-                    FOREIGN KEY (move_id) REFERENCES moves(id)
+                    FOREIGN KEY (assessment_id) REFERENCES assessments(id)
                 )
             ''')
-            
+
             # Create indexes
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_moves_video ON moves(video_id)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_frame_tags_move ON frame_tags(move_id)')
-            
-            # Migration: Add technique_modifiers column if it doesn't exist
-            self._migrate_add_technique_modifiers(cursor)
-    
-    def _migrate_add_technique_modifiers(self, cursor):
-        """Add technique_modifiers column to existing moves table if missing."""
-        # Check if column exists
-        cursor.execute("PRAGMA table_info(moves)")
-        columns = [row['name'] for row in cursor.fetchall()]
-        
-        if 'technique_modifiers' not in columns:
-            cursor.execute('''
-                ALTER TABLE moves ADD COLUMN technique_modifiers TEXT NOT NULL DEFAULT '[]'
-            ''')
-            print("Migration: Added technique_modifiers column to moves table")
-    
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_assessments_video ON assessments(video_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_frame_tags_assessment ON frame_tags(assessment_id)')
+
     # ==================== VIDEO OPERATIONS ====================
-    
+
     def create_video(self, video: Video) -> int:
         """Create a new video record. Returns video_id."""
         with self.get_connection() as conn:
@@ -148,17 +132,17 @@ class Database:
                 (video.uploaded_at or datetime.now()).isoformat()
             ))
             return cursor.lastrowid
-    
+
     def get_video(self, video_id: int) -> Optional[Video]:
         """Get a video by ID."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM videos WHERE id = ?', (video_id,))
             row = cursor.fetchone()
-            
+
             if not row:
                 return None
-            
+
             return Video(
                 id=row['id'],
                 filename=row['filename'],
@@ -169,14 +153,14 @@ class Database:
                 duration_ms=row['duration_ms'],
                 uploaded_at=datetime.fromisoformat(row['uploaded_at'])
             )
-    
+
     def get_all_videos(self) -> List[Video]:
         """Get all videos."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM videos ORDER BY uploaded_at DESC')
             rows = cursor.fetchall()
-            
+
             return [
                 Video(
                     id=row['id'],
@@ -190,123 +174,120 @@ class Database:
                 )
                 for row in rows
             ]
-    
-    # ==================== MOVE OPERATIONS ====================
-    
-    def create_move(self, move: Move) -> int:
-        """Create a new move. Returns move_id."""
+
+    # ==================== ASSESSMENT OPERATIONS ====================
+
+    def create_assessment(self, assessment: Assessment) -> int:
+        """Create a new assessment. Returns assessment_id."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO moves (
+                INSERT INTO assessments (
                     video_id, frame_start, frame_end, timestamp_start_ms, timestamp_end_ms,
-                    move_type, form_quality, effort_level, contextual_data, technique_modifiers,
-                    tags, description, labeled_at
+                    test_type, score, criteria_data, compensations,
+                    tags, notes, assessed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                move.video_id,
-                move.frame_start,
-                move.frame_end,
-                move.timestamp_start_ms,
-                move.timestamp_end_ms,
-                move.move_type,
-                move.form_quality,
-                move.effort_level,
-                json.dumps(move.contextual_data),
-                json.dumps(move.technique_modifiers),
-                json.dumps(move.tags),
-                move.description,
-                (move.labeled_at or datetime.now()).isoformat()
+                assessment.video_id,
+                assessment.frame_start,
+                assessment.frame_end,
+                assessment.timestamp_start_ms,
+                assessment.timestamp_end_ms,
+                assessment.test_type,
+                assessment.score,
+                json.dumps(assessment.criteria_data),
+                json.dumps(assessment.compensations),
+                json.dumps(assessment.tags),
+                assessment.notes,
+                (assessment.assessed_at or datetime.now()).isoformat()
             ))
             return cursor.lastrowid
-    
-    def get_move(self, move_id: int) -> Optional[Move]:
-        """Get a move by ID."""
+
+    def get_assessment(self, assessment_id: int) -> Optional[Assessment]:
+        """Get an assessment by ID."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT * FROM moves WHERE id = ?', (move_id,))
+            cursor.execute('SELECT * FROM assessments WHERE id = ?', (assessment_id,))
             row = cursor.fetchone()
-            
+
             if not row:
                 return None
-            
-            return self._row_to_move(row)
-    
-    def get_moves_for_video(self, video_id: int) -> List[Move]:
-        """Get all moves for a video."""
+
+            return self._row_to_assessment(row)
+
+    def get_assessments_for_video(self, video_id: int) -> List[Assessment]:
+        """Get all assessments for a video."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                'SELECT * FROM moves WHERE video_id = ? ORDER BY frame_start',
+                'SELECT * FROM assessments WHERE video_id = ? ORDER BY frame_start',
                 (video_id,)
             )
             rows = cursor.fetchall()
-            return [self._row_to_move(row) for row in rows]
-    
-    def update_move(self, move: Move) -> bool:
-        """Update an existing move. Returns success."""
-        if not move.id:
+            return [self._row_to_assessment(row) for row in rows]
+
+    def update_assessment(self, assessment: Assessment) -> bool:
+        """Update an existing assessment. Returns success."""
+        if not assessment.id:
             return False
-        
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                UPDATE moves SET
+                UPDATE assessments SET
                     frame_start = ?,
                     frame_end = ?,
                     timestamp_start_ms = ?,
                     timestamp_end_ms = ?,
-                    move_type = ?,
-                    form_quality = ?,
-                    effort_level = ?,
-                    contextual_data = ?,
-                    technique_modifiers = ?,
+                    test_type = ?,
+                    score = ?,
+                    criteria_data = ?,
+                    compensations = ?,
                     tags = ?,
-                    description = ?
+                    notes = ?
                 WHERE id = ?
             ''', (
-                move.frame_start,
-                move.frame_end,
-                move.timestamp_start_ms,
-                move.timestamp_end_ms,
-                move.move_type,
-                move.form_quality,
-                move.effort_level,
-                json.dumps(move.contextual_data),
-                json.dumps(move.technique_modifiers),
-                json.dumps(move.tags),
-                move.description,
-                move.id
+                assessment.frame_start,
+                assessment.frame_end,
+                assessment.timestamp_start_ms,
+                assessment.timestamp_end_ms,
+                assessment.test_type,
+                assessment.score,
+                json.dumps(assessment.criteria_data),
+                json.dumps(assessment.compensations),
+                json.dumps(assessment.tags),
+                assessment.notes,
+                assessment.id
             ))
             return cursor.rowcount > 0
-    
-    def delete_move(self, move_id: int) -> bool:
-        """Delete a move and its frame tags. Returns success."""
+
+    def delete_assessment(self, assessment_id: int) -> bool:
+        """Delete an assessment and its frame tags. Returns success."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
+
             # Delete frame tags first (foreign key constraint)
-            cursor.execute('DELETE FROM frame_tags WHERE move_id = ?', (move_id,))
-            
-            # Delete move
-            cursor.execute('DELETE FROM moves WHERE id = ?', (move_id,))
-            
+            cursor.execute('DELETE FROM frame_tags WHERE assessment_id = ?', (assessment_id,))
+
+            # Delete assessment
+            cursor.execute('DELETE FROM assessments WHERE id = ?', (assessment_id,))
+
             return cursor.rowcount > 0
-    
+
     # ==================== FRAME TAG OPERATIONS ====================
-    
+
     def create_frame_tag(self, tag: FrameTag) -> int:
         """Create a new frame tag. Returns tag_id."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO frame_tags (
-                    move_id, frame_number, timestamp_ms, tag_type, level, locations, note, tagged_at
+                    assessment_id, frame_number, timestamp_ms, tag_type, level, locations, note, tagged_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                tag.move_id,
+                tag.assessment_id,
                 tag.frame_number,
                 tag.timestamp_ms,
                 tag.tag_type,
@@ -316,68 +297,62 @@ class Database:
                 (tag.tagged_at or datetime.now()).isoformat()
             ))
             return cursor.lastrowid
-    
+
     def get_frame_tag(self, tag_id: int) -> Optional[FrameTag]:
         """Get a frame tag by ID."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM frame_tags WHERE id = ?', (tag_id,))
             row = cursor.fetchone()
-            
+
             if not row:
                 return None
-            
+
             return self._row_to_frame_tag(row)
-    
-    def get_frame_tags_for_move(self, move_id: int) -> List[FrameTag]:
-        """Get all frame tags for a move."""
+
+    def get_frame_tags_for_assessment(self, assessment_id: int) -> List[FrameTag]:
+        """Get all frame tags for an assessment."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                'SELECT * FROM frame_tags WHERE move_id = ? ORDER BY frame_number',
-                (move_id,)
+                'SELECT * FROM frame_tags WHERE assessment_id = ? ORDER BY frame_number',
+                (assessment_id,)
             )
             rows = cursor.fetchall()
             return [self._row_to_frame_tag(row) for row in rows]
-    
+
     def delete_frame_tag(self, tag_id: int) -> bool:
         """Delete a frame tag. Returns success."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM frame_tags WHERE id = ?', (tag_id,))
             return cursor.rowcount > 0
-    
+
     # ==================== HELPER METHODS ====================
-    
-    def _row_to_move(self, row: sqlite3.Row) -> Move:
-        """Convert database row to Move object."""
-        # Handle technique_modifiers - may not exist in old rows
-        technique_modifiers = []
-        if 'technique_modifiers' in row.keys():
-            technique_modifiers = json.loads(row['technique_modifiers'])
-        
-        return Move(
+
+    def _row_to_assessment(self, row: sqlite3.Row) -> Assessment:
+        """Convert database row to Assessment object."""
+        return Assessment(
             id=row['id'],
             video_id=row['video_id'],
             frame_start=row['frame_start'],
             frame_end=row['frame_end'],
             timestamp_start_ms=row['timestamp_start_ms'],
             timestamp_end_ms=row['timestamp_end_ms'],
-            move_type=row['move_type'],
-            form_quality=row['form_quality'],
-            effort_level=row['effort_level'],
-            contextual_data=json.loads(row['contextual_data']),
-            technique_modifiers=technique_modifiers,
+            test_type=row['test_type'],
+            score=row['score'],
+            criteria_data=json.loads(row['criteria_data']),
+            compensations=json.loads(row['compensations']),
             tags=json.loads(row['tags']),
-            description=row['description'],
-            labeled_at=datetime.fromisoformat(row['labeled_at'])
+            notes=row['notes'],
+            assessed_at=datetime.fromisoformat(row['assessed_at'])
         )
-    
+
     def _row_to_frame_tag(self, row: sqlite3.Row) -> FrameTag:
         """Convert database row to FrameTag object."""
         return FrameTag(
             id=row['id'],
-            move_id=row['move_id'],
+            assessment_id=row['assessment_id'],
             frame_number=row['frame_number'],
             timestamp_ms=row['timestamp_ms'],
             tag_type=row['tag_type'],

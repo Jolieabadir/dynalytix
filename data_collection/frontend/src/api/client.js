@@ -1,6 +1,6 @@
 /**
  * API client for communicating with the backend.
- * 
+ *
  * All API calls go through this module for easy maintenance.
  */
 import axios from 'axios';
@@ -26,7 +26,7 @@ export const getConfig = async () => {
 export const uploadVideo = async (file) => {
   const formData = new FormData();
   formData.append('file', file);
-  
+
   const response = await api.post('/api/videos/upload', formData, {
     headers: {
       'Content-Type': 'multipart/form-data',
@@ -69,7 +69,7 @@ export const downloadExport = async (videoId) => {
   const response = await api.get(`/api/videos/${videoId}/export/download`, {
     responseType: 'blob',
   });
-  
+
   // Create download link
   const url = window.URL.createObjectURL(new Blob([response.data]));
   const link = document.createElement('a');
@@ -81,30 +81,30 @@ export const downloadExport = async (videoId) => {
   window.URL.revokeObjectURL(url);
 };
 
-// ==================== MOVES ====================
+// ==================== ASSESSMENTS ====================
 
-export const createMove = async (moveData) => {
-  const response = await api.post('/api/moves', moveData);
+export const createAssessment = async (assessmentData) => {
+  const response = await api.post('/api/assessments', assessmentData);
   return response.data;
 };
 
-export const getMoves = async (videoId) => {
-  const response = await api.get(`/api/videos/${videoId}/moves`);
+export const getAssessments = async (videoId) => {
+  const response = await api.get(`/api/videos/${videoId}/assessments`);
   return response.data;
 };
 
-export const getMove = async (moveId) => {
-  const response = await api.get(`/api/moves/${moveId}`);
+export const getAssessment = async (assessmentId) => {
+  const response = await api.get(`/api/assessments/${assessmentId}`);
   return response.data;
 };
 
-export const updateMove = async (moveId, moveData) => {
-  const response = await api.put(`/api/moves/${moveId}`, moveData);
+export const updateAssessment = async (assessmentId, assessmentData) => {
+  const response = await api.put(`/api/assessments/${assessmentId}`, assessmentData);
   return response.data;
 };
 
-export const deleteMove = async (moveId) => {
-  await api.delete(`/api/moves/${moveId}`);
+export const deleteAssessment = async (assessmentId) => {
+  await api.delete(`/api/assessments/${assessmentId}`);
 };
 
 // ==================== FRAME TAGS ====================
@@ -114,8 +114,8 @@ export const createFrameTag = async (tagData) => {
   return response.data;
 };
 
-export const getFrameTags = async (moveId) => {
-  const response = await api.get(`/api/moves/${moveId}/frame-tags`);
+export const getFrameTags = async (assessmentId) => {
+  const response = await api.get(`/api/assessments/${assessmentId}/frame-tags`);
   return response.data;
 };
 
