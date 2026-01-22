@@ -1,82 +1,47 @@
-# Dynalytics
+# Dynalytics - FMS Assessment Automation
 
-AI-powered movement analysis for climbing injury prevention and rehabilitation.
+AI-powered movement screening to automate Functional Movement Screen (FMS) assessments.
+
 ## Website
 https://www.dynalytics.org/
 
-Dynalytics uses computer vision to analyze climbing movement patterns from video, identifying injury risk through joint angle and velocity analysis. The goal is to catch dangerous movement patterns before they lead to pain or injury.
+## What This Does
 
-## Mission
+Dynalytics uses computer vision to analyze movement patterns from video, automatically scoring FMS assessments that currently require manual observation by trained professionals.
 
-Most climbing injuries result from accumulated stress and poor movement patterns that go undetected until pain emerges. Dynalytics aims to change that by providing early detection and personalized feedback based on biomechanical analysis.
+### Current Demo: Deep Squat Assessment
 
-## Who is this for?
+- Upload video of deep squat test
+- Automatic pose extraction (joint angles, body position)
+- Score 0-3 based on FMS criteria
+- Quick Mode for fast labeling, Detailed Mode for full criteria capture
 
-- **Athletes** looking to prevent injuries and improve movement quality
-- **Physical Therapists** working with climbers in rehabilitation
-- **Researchers** exploring biomechanics and injury prevention in sports
+## Model Training Approaches
 
-## How It Works
+### Rule-Based Engine (Recommended for FMS)
 
-**Two-Stage AI Model:**
+FMS scoring criteria are explicit and well-defined, making a rule-based approach viable:
 
-```
-Stage 1: Base Model
-├─ Trains on diverse climber dataset
-├─ Learns general "safe" vs "risky" movement patterns
-└─ Recognizes patterns from joint angles & velocity
+- "Torso parallel to tibia + femur below horizontal + knees over feet = Score 3"
+- Works immediately without training data
+- PTs validate edge cases rather than label everything
 
-Stage 2: Personalized Model
-├─ Fine-tunes on individual user's movement data
-├─ Adapts to their specific body type and style
-└─ Provides accurate, personalized feedback
-```
+### Data-Labeled ML (Used for complex movements)
 
-The base model provides immediate value, while personalization improves accuracy over time as it learns each user's unique biomechanics.
+For subjective assessments like climbing injury risk, we use ML trained on labeled data. This requires 500-2000+ labeled examples but catches subtle patterns rules might miss.
 
-## Current Status
+### Recommended Path for FMS
 
-### Phase 1: Pose Extraction & Analysis ✅
-- Real-time pose estimation using MediaPipe
-- 12 joint angle calculations per frame
-- Velocity and speed tracking (center of mass + all landmarks)
-- CSV export with 40 data points per frame
-- Live visualization with skeleton overlay
+1. Build rule engine from FMS scoring criteria
+2. Have PTs review sample of AI predictions
+3. Collect targeted training data only where rules fail
+4. Hybrid: rules + ML for edge cases
 
-### Phase 2: Data Collection UI ✅
-Focus: Building the foundation for quality training data
+## Tech Stack
 
-**Completed:**
-- [x] Web-based data collection interface (React + FastAPI)
-- [x] Video upload with automatic pose extraction
-- [x] Frame-by-frame video scrubbing with keyboard shortcuts
-- [x] Move selection (mark start/end frames with `[` and `]` keys)
-- [x] Move labeling form (type, quality, effort, contextual details)
-- [x] Frame tagging system (sensations: pain, instability, weakness, etc.)
-- [x] Body part selection for each tag
-- [x] Intensity levels (0-10) for tags
-- [x] Skeleton overlay on video
-- [x] Moves list with edit/delete functionality
-- [x] Export system (merges pose CSV + labels into ML-ready format)
-- [x] Auto video deletion after export (storage management)
-- [x] Thank you modal on completion
-- [x] SQLite database for videos, moves, and frame tags
-
-**Move Types Supported:**
-- Static, Deadpoint, Dyno, Lock-off, Gaston, Undercling
-- Drop Knee, Heel Hook, Toe Hook, Flag, Mantle, Campus
-
-**Sensation Tags:**
-- 🔴 Sharp Pain, 🟠 Dull Pain, 🟣 Pop
-- 🟡 Unstable, 🩷 Stretch/Awkward
-- 🟢 Strong/Controlled, ⚫ Weak
-- 🔵 Pumped, 🟤 Fatigue
-
-### Phase 3: Model Training (Next)
-- Base model for movement pattern recognition
-- Injury risk classification
-- Personalized model fine-tuning
-- Real-time feedback system
+- **Pose Estimation:** MediaPipe
+- **Data Collection UI:** React + FastAPI
+- **Tracking:** 12 joint angles per frame
 
 ## Tracked Measurements
 
@@ -95,84 +60,6 @@ Focus: Building the foundation for quality training data
 | Right ankle | knee → ankle → heel | Foot flex |
 | Upper back | left shoulder → shoulder midpoint → right shoulder | Shoulder hunch/openness |
 | Lower back | shoulder midpoint → hip midpoint → knee midpoint | Torso arch/round |
-
-### Speed & Velocity
-- Center of mass speed and velocity (x, y)
-- Individual landmark speeds (15 points)
-- Key landmark velocities: wrists and hips (x, y components)
-
-## Tech Stack
-
-**Phase 1 (Complete):**
-- Python 3.11
-- OpenCV
-- MediaPipe
-- NumPy
-
-**Phase 2 (Complete):**
-- Backend: FastAPI, SQLite
-- Frontend: React, Vite, Zustand
-- CV: MediaPipe (via Python CLI)
-
-**Phase 3 (Planned):**
-- ML: PyTorch
-- Database: PostgreSQL (migration from SQLite)
-- Infrastructure: Docker, AWS/GCP
-
-## Project Structure
-
-```
-dynalytics/
-├── src/
-│   ├── core/
-│   │   ├── landmark.py         # Landmark class (x, y, z, visibility)
-│   │   └── angle.py            # Angle calculation (3 points → degrees)
-│   ├── pose/
-│   │   └── estimator.py        # PoseEstimator (wraps MediaPipe)
-│   ├── analysis/
-│   │   ├── joint_analyzer.py   # JointAnalyzer (calculates 12 angles)
-│   │   └── frame_data.py       # FrameData (holds all frame data)
-│   ├── export/
-│   │   └── csv_exporter.py     # CSVExporter
-│   └── config/
-│       └── settings.py         # Settings & thresholds
-├── data_collection/
-│   ├── backend/                # FastAPI server
-│   │   ├── src/
-│   │   │   ├── labeling/
-│   │   │   │   ├── models.py       # Video, Move, FrameTag dataclasses
-│   │   │   │   ├── database.py     # SQLite operations
-│   │   │   │   └── exporter.py     # Label + pose CSV merger
-│   │   │   └── web/
-│   │   │       └── api.py          # REST endpoints
-│   │   ├── data/
-│   │   │   ├── labels.db           # SQLite database
-│   │   │   └── exports/            # ML-ready labeled CSVs
-│   │   └── videos/                 # Uploaded videos (temp, deleted after export)
-│   └── frontend/               # React app
-│       └── src/
-│           ├── components/
-│           │   ├── VideoUpload.jsx
-│           │   ├── VideoPlayer.jsx
-│           │   ├── SkeletonOverlay.jsx
-│           │   ├── MoveForm.jsx
-│           │   ├── MovesList.jsx
-│           │   ├── TaggingMode.jsx
-│           │   ├── DoneButton.jsx
-│           │   └── ThankYouModal.jsx
-│           ├── api/
-│           │   ├── client.js
-│           │   └── ExportService.js
-│           └── store/
-│               └── useStore.js     # Zustand state management
-├── tests/
-├── data/                       # Output CSVs (gitignored)
-├── videos/                     # Input videos (gitignored)
-├── main.py                     # Main analysis script
-├── visualizer_live.py          # Live video player with pose overlay
-├── requirements.txt
-└── README.md
-```
 
 ## Installation
 
@@ -194,46 +81,14 @@ pip install -r requirements.txt
 # Basic usage - outputs angles and speeds to CSV
 python main.py path/to/video.mov
 
-# Include raw landmark positions (required for visualization)
+# Include raw landmark positions
 python main.py path/to/video.mov --landmarks
 
 # Specify output path
 python main.py path/to/video.mov --output my_data.csv
 ```
 
-### CLI: Visualize Results
-
-After extracting pose data with landmarks, view it with live overlay:
-
-```bash
-# Play video with skeleton and angle overlay
-python visualizer_live.py path/to/video.mov data/video.csv
-```
-
-**Visualization Controls:**
-- **SPACE** - Pause/Resume
-- **Q** - Quit
-- **→** - Skip forward 10 frames
-- **←** - Rewind 10 frames
-
-**Visualization Features:**
-- 🟢 Green skeleton connecting body joints
-- 🟡 Yellow circles on joint points
-- 📊 Real-time angle display (6 key angles)
-- 🎨 Color-coded speed indicator (low/med/high)
-
-**Options:**
-```bash
-# Play at 2x speed
-python visualizer_live.py video.mov data.csv --speed 2.0
-
-# Hide specific elements
-python visualizer_live.py video.mov data.csv --no-skeleton
-python visualizer_live.py video.mov data.csv --no-angles
-python visualizer_live.py video.mov data.csv --no-speed
-```
-
-### Web UI: Data Collection
+### Web UI: FMS Assessment Labeling
 
 ```bash
 # Terminal 1 - Backend
@@ -250,60 +105,61 @@ npm run dev
 Open http://localhost:5173
 
 **Workflow:**
-1. Upload a climbing video
-2. Mark move boundaries with `[` and `]` keys
-3. Fill out move details (type, quality, effort)
-4. Enter tagging mode to tag specific frames with sensations
-5. Click "Done" to export labeled data and clean up
+1. Upload a deep squat assessment video
+2. Mark assessment boundaries with `[` and `]` keys
+3. Score using FMS 0-3 scale (Quick Mode or Detailed Mode)
+4. Optionally tag specific frames with observations
+5. Click "Done" to export labeled data
 
 **Keyboard Shortcuts:**
 | Key | Action |
 |-----|--------|
 | `←` / `→` | Previous/Next frame |
 | `Space` | Play/Pause |
-| `[` | Mark move start |
-| `]` | Mark move end |
+| `[` | Mark assessment start |
+| `]` | Mark assessment end |
 | `S` | Toggle skeleton overlay |
 
-## Data Output
+## FMS Scoring Scale
 
-### Raw Pose CSV
-Each processed video generates a CSV with 40+ columns per frame:
-- **Metadata:** frame_number, timestamp_ms
-- **Angles:** 12 joint angles in degrees
-- **Speeds:** 15 landmark speeds + center of mass
-- **Velocities:** x, y components for wrists, hips, center of mass
-- **Landmarks:** x, y, z, visibility for 15 body points (with --landmarks flag)
+| Score | Label | Description |
+|-------|-------|-------------|
+| 3 | Perfect | Performs movement correctly without compensation |
+| 2 | Compensation | Completes movement with compensation patterns |
+| 1 | Cannot Complete | Unable to complete the movement pattern |
+| 0 | Pain | Pain reported during any part of the movement |
 
-### Labeled Export CSV
-After labeling in the UI, exported CSVs include:
-- All pose data columns
-- `move_id`, `move_type`, `form_quality`, `effort_level`
-- `tag_type`, `tag_level`, `tag_locations`, `tag_note`
+## Project Structure
 
-Example row with labels:
-```csv
-frame_number,timestamp_ms,...,move_id,move_type,form_quality,effort_level,tag_type,tag_level,tag_locations,tag_note
-29,964.01,...,7,lock_off,3,5,weak,5,Left Elbow,
+```
+dynalytics/
+├── src/                        # Core pose analysis
+│   ├── core/                   # Landmark and angle classes
+│   ├── pose/                   # MediaPipe wrapper
+│   ├── analysis/               # Joint angle calculations
+│   └── export/                 # CSV export
+├── data_collection/
+│   ├── backend/                # FastAPI server
+│   │   ├── src/
+│   │   │   ├── labeling/       # Assessment models & database
+│   │   │   └── web/            # REST API
+│   │   └── data/               # SQLite DB & exports
+│   └── frontend/               # React app
+│       └── src/
+│           ├── components/     # UI components
+│           ├── api/            # API client
+│           └── store/          # Zustand state
+├── main.py                     # CLI pose extraction
+└── visualizer_live.py          # Video player with overlay
 ```
 
 ## Broader Applications
 
-While currently focused on climbing, the methodology applies to any context where repetitive movement patterns contribute to injury:
-- **Sports:** Gymnastics, weightlifting, running, tennis
-- **Manual Labor:** Construction, manufacturing, warehouse work
-- **Rehabilitation:** Physical therapy movement analysis
-
-## Project Timeline
-
-**Started:** 2023 (initial prototype)
-**Rebooted:** 2026 (with improved ML and software engineering)
-**Current:** Phase 2 Complete - Data Collection UI
-**Next:** Phase 3 - Model Training
-
-## Related Work
-
-- Original prototype: [computervision-climbing](https://github.com/jolie-aba/computervision-climbing) (2023)
+While currently demonstrating FMS assessment, the methodology applies to:
+- **Movement Screens:** FMS, Y-Balance, overhead squat assessment
+- **Sports Analysis:** Form analysis for any sport
+- **Rehabilitation:** Physical therapy movement tracking
+- **Injury Prevention:** Pattern recognition across any repetitive movement
 
 ## License
 
