@@ -1,13 +1,13 @@
-# Dynalytics - FMS Assessment Data Collection
+# Dynalytics - Movement Assessment Data Collection
 
-Web interface for labeling FMS (Functional Movement Screen) assessment data.
+Web interface for labeling functional movement assessment data.
 
 ## Overview
 
 This UI allows you to:
 1. **Upload** assessment videos (automatically processed for pose data)
 2. **Define assessments** by marking start/end frames
-3. **Score assessments** using FMS 0-3 scale
+3. **Score assessments** using a 0-3 scale
 4. **Tag frames** with observations (pain, compensation, weakness, etc.)
 5. **Export** labeled training data as ML-ready CSV
 
@@ -16,7 +16,7 @@ This UI allows you to:
 ### Assessment Modes
 
 **Quick Mode (Default)**
-- FMS Score buttons (0-3)
+- Score buttons (0-3)
 - Pain checkbox (auto-sets score to 0)
 - Notes field
 - Best for rapid labeling by experienced PTs
@@ -27,7 +27,7 @@ This UI allows you to:
 - Full clinical notes
 - Best for training data collection and edge case documentation
 
-### FMS Scoring Scale
+### Scoring Scale
 
 | Score | Label | Description |
 |-------|-------|-------------|
@@ -103,7 +103,7 @@ npm run dev
    └── Mark frame boundaries → SQLite database
 
 3. Score Assessment
-   └── FMS score, criteria, compensations → SQLite database
+   └── Score, criteria, compensations → SQLite database
 
 4. Tag Frames (optional)
    └── Observations, body parts, intensity → SQLite database
@@ -183,7 +183,7 @@ data_collection/
 
 ### Rule-Based Engine
 
-Best for **FMS assessments** because the scoring criteria are explicit and well-defined. The FMS manual provides specific, measurable criteria that can be directly translated into rules:
+Best for **standardized movement assessments** where the scoring criteria are explicit and well-defined. Specific, measurable criteria can be directly translated into rules:
 
 - Example: "torso parallel to tibia + femur below horizontal = score 3"
 - Example: "heels lift off floor during squat = score 2 maximum"
@@ -208,12 +208,12 @@ Required for **complex movement analysis** where patterns are subjective:
 - Diverse dataset covering different body types and conditions
 - Expert labelers who can identify subtle patterns
 
-## Recommended Approach for FMS
+## Recommended Approach
 
 ### Start Rule-Based, Validate with Data
 
-1. **Build rules from FMS criteria**
-   - Translate the official FMS scoring manual into pose-based rules
+1. **Build rules from scoring criteria**
+   - Translate scoring guidelines into pose-based rules
    - Use joint angles, body segment alignment, and timing from MediaPipe data
 
 2. **Have PTs review AI predictions**
