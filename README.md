@@ -1,4 +1,4 @@
-# Dynalytics - FMS Assessment Automation
+# Dynalytix - FMS Assessment Automation
 
 AI-powered movement screening to automate Functional Movement Screen (FMS) assessments.
 
@@ -7,7 +7,7 @@ https://www.dynalytics.org/
 
 ## What This Does
 
-Dynalytics uses computer vision to analyze movement patterns from video, automatically scoring FMS assessments that currently require manual observation by trained professionals.
+Dynalytix uses computer vision to analyze movement patterns from video, automatically scoring FMS assessments that currently require manual observation by trained professionals.
 
 ### Current Demo: Deep Squat Assessment
 

@@ -1,4 +1,4 @@
-# Dynalytics - Backend API
+# Dynalytix - Backend API
 
 FastAPI backend for the data collection UI.
 

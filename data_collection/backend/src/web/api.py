@@ -24,7 +24,7 @@ from ..labeling.exporter import Exporter
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Dynalytics FMS Assessment API",
+    title="Dynalytix FMS Assessment API",
     description="API for FMS movement assessment data",
     version="1.0.0"
 )
@@ -260,7 +260,7 @@ def frame_tag_to_response(tag: FrameTag) -> FrameTagResponse:
 @app.get("/")
 async def root():
     """Health check endpoint."""
-    return {"status": "ok", "message": "Dynalytics FMS API is running"}
+    return {"status": "ok", "message": "Dynalytix FMS API is running"}
 
 
 @app.get("/api/config", response_model=ConfigResponse)

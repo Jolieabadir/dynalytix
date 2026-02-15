@@ -1,1 +1,1 @@
-"""Dynalytics - Climbing movement analysis."""
+"""Dynalytix - Climbing movement analysis."""

@@ -32,7 +32,7 @@ function App() {
   if (!config) {
     return (
       <div className="loading">
-        <h2>Loading Dynalytics...</h2>
+        <h2>Loading Dynalytix...</h2>
       </div>
     );
   }
@@ -40,7 +40,7 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>Dynalytics</h1>
+        <h1>Dynalytix</h1>
         <p>Movement Data Collection</p>
       </header>
 

@@ -1,4 +1,4 @@
-# Dynalytics - Movement Assessment Data Collection
+# Dynalytix - Movement Assessment Data Collection
 
 Web interface for labeling functional movement assessment data.
 

@@ -1,5 +1,5 @@
 """
-Dynalytics - Climbing movement analysis.
+Dynalytix - Climbing movement analysis.
 
 Usage:
     python main.py <video_path> [--output <csv_path>] [--landmarks]
