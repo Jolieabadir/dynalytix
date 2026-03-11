@@ -24,9 +24,12 @@ from ..labeling.exporter import Exporter
 
 # FMS Integration - auto-score assessments on export
 import sys as _sys
-_fms_path = str(Path(__file__).resolve().parents[4])
-if _fms_path not in _sys.path:
-    _sys.path.insert(0, _fms_path)
+for _depth in range(len(Path(__file__).resolve().parents)):
+    _candidate = str(Path(__file__).resolve().parents[_depth])
+    if (Path(_candidate) / 'fms' / '__init__.py').exists():
+        if _candidate not in _sys.path:
+            _sys.path.insert(0, _candidate)
+        break
 try:
     from fms.integration import register_fms_routes, run_fms_on_export
     FMS_AVAILABLE = True
