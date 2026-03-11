@@ -70,6 +70,13 @@ GET  /api/moves/{id}/frame-tags     # Get frame tags for move
 DELETE /api/frame-tags/{id}         # Delete frame tag
 ```
 
+### FMS Reports
+```
+GET  /api/fms/report/{video_id}        # Patient-facing report (no billing codes)
+GET  /api/fms/findings/{video_id}      # Provider-facing report (full data + CPT codes)
+GET  /api/fms/findings/{video_id}/csv  # Download findings CSV
+```
+
 ## Export System
 
 The export endpoint merges pose data with labels:

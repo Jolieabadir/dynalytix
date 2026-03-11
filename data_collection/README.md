@@ -113,6 +113,24 @@ npm run dev
    └── Delete video file to save storage
 ```
 
+## FMS Integration
+
+When a video is exported, the FMS scoring engine automatically runs on the labeled CSV:
+
+1. **Auto-scoring**: Rule engine evaluates deep squat criteria (depth, alignment, knee tracking, heel position, lumbar control)
+2. **Findings saved**: Results written to `data/exports/fms_findings/` as CSV and JSON
+3. **Reports available**: Patient and provider reports accessible via API and UI
+
+### API Endpoints
+- `GET /api/fms/report/{video_id}` — Patient report (no billing codes)
+- `GET /api/fms/findings/{video_id}` — Provider report (full clinical data + CPT codes)
+- `GET /api/fms/findings/{video_id}/csv` — Download findings CSV
+
+### Post-Export UI
+After clicking "Done", users see two buttons:
+- **Patient Report**: Score, interpretation, criteria details, asymmetries, recommended focus areas
+- **Provider Report**: Full clinical data, bilateral differences, and suggested CPT codes
+
 ## Exported CSV Format
 
 The labeled CSV contains:

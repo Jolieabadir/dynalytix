@@ -123,4 +123,16 @@ export const deleteFrameTag = async (tagId) => {
   await api.delete(`/api/frame-tags/${tagId}`);
 };
 
+// ==================== FMS REPORTS ====================
+
+export const getFMSPatientReport = async (videoId) => {
+  const response = await api.get(`/api/fms/report/${videoId}`);
+  return response.data;
+};
+
+export const getFMSProviderReport = async (videoId) => {
+  const response = await api.get(`/api/fms/findings/${videoId}`);
+  return response.data;
+};
+
 export default api;

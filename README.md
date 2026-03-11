@@ -16,6 +16,36 @@ Dynalytix uses computer vision to analyze movement patterns from video, automati
 - Score 0-3 based on FMS criteria
 - Quick Mode for fast labeling, Detailed Mode for full criteria capture
 
+## Current Status
+
+### Phase 1: Pose Extraction (Complete)
+- [x] MediaPipe integration for pose landmark extraction
+- [x] 12 joint angles tracked per frame
+- [x] CLI tool for batch processing
+- [x] CSV export with timestamps
+
+### Phase 2: Data Collection UI (Complete)
+- [x] Video upload with automatic pose extraction
+- [x] Assessment boundary marking
+- [x] FMS scoring (Quick Mode + Detailed Mode)
+- [x] Frame tagging for observations
+- [x] Labeled data export
+
+### Phase 3: FMS Scoring Engine (In Progress)
+- [x] Rule-based Deep Squat scoring engine (0-3)
+- [x] Scoring criteria: squat depth, torso-tibia alignment, knee-over-foot alignment, heel position, lumbar flexion control
+- [x] Bilateral asymmetry detection
+- [x] Auto-scoring on export (hooks into data collection pipeline)
+- [x] Findings saved as CSV and JSON
+- [x] CPT billing code suggestions (rule-based)
+- [x] Patient-facing report API (no billing codes)
+- [x] Provider-facing report API (full clinical data + CPT codes)
+- [x] Post-export UI with Patient Report and Provider Report views
+- [x] LLM clinical report generation (stub, requires API key)
+- [ ] Threshold calibration against PT-scored videos
+- [ ] Additional FMS tests (hurdle step, inline lunge, etc.)
+- [ ] Real-time feedback system
+
 ## Model Training Approaches
 
 ### Rule-Based Engine (Recommended for FMS)
@@ -39,9 +69,15 @@ For subjective assessments like climbing injury risk, we use ML trained on label
 
 ## Tech Stack
 
+**Phase 1-2 (Complete):**
 - **Pose Estimation:** MediaPipe
 - **Data Collection UI:** React + FastAPI
 - **Tracking:** 12 joint angles per frame
+
+**Phase 3 (In Progress):**
+- **FMS Scoring:** Rule-based engine with research-backed thresholds
+- **Reporting:** Anthropic Claude API (optional, for clinical narratives)
+- **Billing:** Rule-based CPT code mapping
 
 ## Tracked Measurements
 
@@ -138,6 +174,17 @@ dynalytics/
 │   ├── pose/                   # MediaPipe wrapper
 │   ├── analysis/               # Joint angle calculations
 │   └── export/                 # CSV export
+├── fms/                        # FMS scoring engine
+│   ├── scoring/
+│   │   ├── deep_squat.py       # Rule engine (CSV → score 0-3)
+│   │   └── thresholds.py       # Angle thresholds (tunable)
+│   ├── reporting/
+│   │   ├── report_generator.py # LLM-powered clinical reports
+│   │   └── templates.py        # Prompt templates
+│   ├── billing/
+│   │   └── cpt_codes.py        # CPT code suggestions
+│   ├── integration.py          # FastAPI hooks + auto-run on export
+│   └── pipeline.py             # CLI: CSV → score + report + codes
 ├── data_collection/
 │   ├── backend/                # FastAPI server
 │   │   ├── src/
@@ -151,6 +198,28 @@ dynalytics/
 │           └── store/          # Zustand state
 ├── main.py                     # CLI pose extraction
 └── visualizer_live.py          # Video player with overlay
+```
+
+## Data Pipeline
+
+```
+Raw Video
+    ↓
+Dynalytics (pose extraction)
+    ↓
+Raw Angles CSV
+    ↓
++ Labels (via Data Collection UI)
+    ↓
+Labeled Data CSV
+    ↓
+FMS Scoring Engine (auto-runs on export)
+    ↓
+├── Findings CSV + JSON
+├── Patient Report (no billing codes)
+├── Provider Report (full clinical + CPT codes)
+    ↓
+ML Training (future)
 ```
 
 ## Broader Applications

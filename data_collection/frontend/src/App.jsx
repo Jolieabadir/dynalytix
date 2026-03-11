@@ -86,7 +86,7 @@ function DefineMode() {
         <MovesList />
       </div>
       <MoveForm />
-      <ThankYouModal show={showThankYou} onClose={() => setShowThankYou(false)} />
+      <ThankYouModal show={showThankYou} onClose={() => setShowThankYou(false)} videoId={currentVideo?.id} />
     </div>
   );
 }

@@ -471,7 +471,7 @@ function TaggingMode() {
         </div>
       </div>
 
-      <ThankYouModal show={showThankYou} onClose={() => setShowThankYou(false)} />
+      <ThankYouModal show={showThankYou} onClose={() => setShowThankYou(false)} videoId={currentVideo?.id} />
     </div>
   );
 }

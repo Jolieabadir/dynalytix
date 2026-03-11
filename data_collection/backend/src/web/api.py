@@ -22,6 +22,18 @@ from ..labeling.models import (
 )
 from ..labeling.exporter import Exporter
 
+# FMS Integration - auto-score assessments on export
+import sys as _sys
+_fms_path = str(Path(__file__).resolve().parents[4])
+if _fms_path not in _sys.path:
+    _sys.path.insert(0, _fms_path)
+try:
+    from fms.integration import register_fms_routes, run_fms_on_export
+    FMS_AVAILABLE = True
+except ImportError:
+    FMS_AVAILABLE = False
+    print("Warning: FMS module not found. FMS auto-scoring disabled.")
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Dynalytix FMS Assessment API",
@@ -44,6 +56,10 @@ db.init()
 
 # Initialize exporter
 exporter = Exporter(db)
+
+# Register FMS API routes if available
+if FMS_AVAILABLE:
+    register_fms_routes(app)
 
 # Ensure directories exist
 Path('videos').mkdir(exist_ok=True)
@@ -389,6 +405,15 @@ async def export_video_endpoint(video_id: int, delete_video: bool = False):
     """
     try:
         export_path = exporter.export_video(video_id, delete_video=delete_video)
+
+        # Auto-run FMS assessment on the exported CSV
+        if FMS_AVAILABLE:
+            try:
+                fms_result = run_fms_on_export(export_path)
+                print(f"FMS auto-score: {fms_result.get('score', 'N/A')}/3")
+            except Exception as fms_err:
+                print(f"FMS scoring failed (non-blocking): {fms_err}")
+
         return ExportResponse(path=export_path, video_deleted=delete_video)
     except ValueError as e:
         raise HTTPException(
