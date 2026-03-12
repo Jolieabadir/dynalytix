@@ -29,11 +29,11 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS middleware for local development
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Vite dev server
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -184,8 +184,9 @@ def process_video(video_path: Path) -> dict:
     
     # Run pose extraction
     csv_path = Path('data') / f"{video_path.stem}.csv"
+    main_py_path = Path('/app/main.py') if Path('/app/main.py').exists() else Path('../../main.py')
     result = subprocess.run(
-        [sys.executable, '../../main.py', str(video_path), '--output', str(csv_path), '--landmarks'],
+        [sys.executable, str(main_py_path), str(video_path), '--output', str(csv_path), '--landmarks'],
         capture_output=True,
         text=True
     )

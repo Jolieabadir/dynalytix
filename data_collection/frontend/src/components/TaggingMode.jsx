@@ -10,6 +10,8 @@ import { exportVideo } from '../api/ExportService';
 import ThankYouModal from './ThankYouModal';
 import DoneButton from './DoneButton';
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
 // Tag type definitions with colors
 const TAG_TYPES = [
   { id: 'sharp_pain', label: 'Sharp Pain', color: '#ef4444', emoji: '🔴' },
@@ -275,7 +277,7 @@ function TaggingMode() {
           <div className="video-container">
             <video
               ref={videoRef}
-              src={`http://localhost:8000/videos/${currentVideo.filename}`}
+              src={`${API_BASE_URL}/videos/${currentVideo.filename}`}
               loop
             />
           </div>
