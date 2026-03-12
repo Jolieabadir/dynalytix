@@ -392,6 +392,14 @@ async def export_video_endpoint(video_id: int, delete_video: bool = False):
     """
     try:
         export_path = exporter.export_video(video_id, delete_video=delete_video)
+
+        # Auto-sync to GitHub
+        try:
+            from ..labeling.data_sync import push_csv_to_github
+            push_csv_to_github(export_path)
+        except Exception as e:
+            print(f"GitHub sync failed (non-blocking): {e}")
+
         return ExportResponse(path=export_path, video_deleted=delete_video)
     except ValueError as e:
         raise HTTPException(
