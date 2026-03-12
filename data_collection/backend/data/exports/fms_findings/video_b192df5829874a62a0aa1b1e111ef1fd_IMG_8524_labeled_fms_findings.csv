@@ -1,0 +1,16 @@
+assessment_date,fms_test,overall_score,criterion,passed,measured_value,threshold,detail
+2026-03-11T18:15:39.527690,deep_squat,1,Squat Depth (femur below horizontal),False,125.56763682616871,100.0,Insufficient squat depth
+2026-03-11T18:15:39.527690,deep_squat,1,Torso-Tibia Alignment,True,-1.2117504792521807,15.0,"Trunk more upright than tibia (trunk: 1.4°, tibia: 2.7° from vertical)"
+2026-03-11T18:15:39.527690,deep_squat,1,Knee-Over-Foot Alignment,False,17.59314873352828,15.0,Left knee tracks inward (valgus)
+2026-03-11T18:15:39.527690,deep_squat,1,Heel Position (ankle dorsiflexion),False,138.76923668696287,140.0,Possible heel rise detected (limited ankle dorsiflexion)
+2026-03-11T18:15:39.527690,deep_squat,1,Lumbar Flexion Control,True,-1.3326216023095239,35.0,Minimal trunk angle change (-1.3° from standing). Good lumbar control.
+2026-03-11T18:15:39.527690,deep_squat,1,Bilateral Difference: Knee,False,-22.7,±10.0,Asymmetry detected
+2026-03-11T18:15:39.527690,deep_squat,1,Bilateral Difference: Hip,False,-22.0,±10.0,Asymmetry detected
+2026-03-11T18:15:39.527690,deep_squat,1,Bilateral Difference: Ankle,False,+27.3,±10.0,Asymmetry detected
+2026-03-11T18:15:39.527690,deep_squat,1,Bilateral Difference: Shoulder,False,+11.1,±10.0,Asymmetry detected
+2026-03-11T18:15:39.527690,deep_squat,1,Bilateral Difference: Elbow,True,-1.9,±10.0,Within normal range
+2026-03-11T18:15:39.527690,deep_squat,1,CPT Suggestion: 97750,,1,,Physical Performance Test or Measurement — FMS Deep Squat assessment with computer vision-assisted movement analysis and written report
+2026-03-11T18:15:39.527690,deep_squat,1,CPT Suggestion: 97110,,2,,Therapeutic Exercise — Hip flexion mobility and lower extremity strengthening to improve squat depth
+2026-03-11T18:15:39.527690,deep_squat,1,CPT Suggestion: 97530,,1,,Therapeutic Activities — Functional squat progression activities to improve movement pattern
+2026-03-11T18:15:39.527690,deep_squat,1,CPT Suggestion: 97112,,1,,Neuromuscular Re-education — Hip and knee neuromuscular control training to address knee valgus/varus during squat
+2026-03-11T18:15:39.527690,deep_squat,1,CPT Suggestion: 97140,,1,,Manual Therapy — Joint mobilization for ankle dorsiflexion deficit identified during FMS deep squat

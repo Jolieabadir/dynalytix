@@ -1,14 +1,15 @@
-# Dynalytics
+# Dynalytix
 
 AI-powered movement analysis for climbing injury prevention and rehabilitation.
-## Website
-https://www.dynalytics.org/
 
-Dynalytics uses computer vision to analyze climbing movement patterns from video, identifying injury risk through joint angle and velocity analysis. The goal is to catch dangerous movement patterns before they lead to pain or injury.
+## Website
+https://www.dynalytix.org/
+
+Dynalytix uses computer vision to analyze climbing movement patterns from video, identifying injury risk through joint angle and velocity analysis. The goal is to catch dangerous movement patterns before they lead to pain or injury.
 
 ## Mission
 
-Most climbing injuries result from accumulated stress and poor movement patterns that go undetected until pain emerges. Dynalytics aims to change that by providing early detection and personalized feedback based on biomechanical analysis.
+Most climbing injuries result from accumulated stress and poor movement patterns that go undetected until pain emerges. Dynalytix aims to change that by providing early detection and personalized feedback based on biomechanical analysis.
 
 ## Who is this for?
 
@@ -72,11 +73,31 @@ Focus: Building the foundation for quality training data
 - 🟢 Strong/Controlled, ⚫ Weak
 - 🔵 Pumped, 🟤 Fatigue
 
+### Phase 2.5: Cloud Deployment ✅
+- [x] Railway hosting for climbing data collection app
+- [x] Auto GitHub sync of labeled CSVs to dynalytix-data repo
+- [x] FMS assessment tool deployed on separate branch
+- [x] Docker containerization with MediaPipe support
+
 ### Phase 3: Model Training (Next)
 - Base model for movement pattern recognition
 - Injury risk classification
 - Personalized model fine-tuning
 - Real-time feedback system
+
+## Deployment
+
+### Production Services
+
+| Service | Branch | URL |
+|---------|--------|-----|
+| Climbing Data Collection | `main` | Deployed on Railway |
+| FMS Assessment Tool | `fms-demo` | Deployed on Railway |
+
+### Data Pipeline
+- Labeled CSVs auto-sync to GitHub (`dynalytix-data` repo)
+- Requires `GITHUB_TOKEN` and `DATA_REPO` environment variables
+- Data stored in `collected_data/climbing/` folder
 
 ## Tracked Measurements
 
@@ -114,10 +135,14 @@ Focus: Building the foundation for quality training data
 - Frontend: React, Vite, Zustand
 - CV: MediaPipe (via Python CLI)
 
+**Phase 2.5 (Complete):**
+- Deployment: Railway, Docker
+- Data Sync: GitHub API
+
 **Phase 3 (Planned):**
 - ML: PyTorch
 - Database: PostgreSQL (migration from SQLite)
-- Infrastructure: Docker, AWS/GCP
+- Infrastructure: AWS/GCP
 
 ## Project Structure
 
@@ -142,7 +167,8 @@ dynalytics/
 │   │   │   ├── labeling/
 │   │   │   │   ├── models.py       # Video, Move, FrameTag dataclasses
 │   │   │   │   ├── database.py     # SQLite operations
-│   │   │   │   └── exporter.py     # Label + pose CSV merger
+│   │   │   │   ├── exporter.py     # Label + pose CSV merger
+│   │   │   │   └── data_sync.py    # GitHub auto-sync
 │   │   │   └── web/
 │   │   │       └── api.py          # REST endpoints
 │   │   ├── data/
@@ -298,7 +324,7 @@ While currently focused on climbing, the methodology applies to any context wher
 
 **Started:** 2023 (initial prototype)
 **Rebooted:** 2026 (with improved ML and software engineering)
-**Current:** Phase 2 Complete - Data Collection UI
+**Current:** Phase 2.5 Complete - Cloud Deployment
 **Next:** Phase 3 - Model Training
 
 ## Related Work

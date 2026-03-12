@@ -1,5 +1,5 @@
 """
-Configuration settings for Dynalytics.
+Configuration settings for Dynalytix.
 """
 from dataclasses import dataclass, field
 

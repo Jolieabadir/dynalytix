@@ -1,4 +1,4 @@
-# Dynalytics - Data Collection UI
+# Dynalytix - Data Collection UI
 
 Web interface for labeling climbing movement data to train injury prevention ML models.
 

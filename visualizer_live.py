@@ -125,7 +125,7 @@ class LiveVisualizer:
         print()
         
         # Create window
-        window_name = "Dynalytics Live Visualizer"
+        window_name = "Dynalytix Live Visualizer"
         cv.namedWindow(window_name, cv.WINDOW_NORMAL)
         
         # Calculate frame delay for proper playback speed
