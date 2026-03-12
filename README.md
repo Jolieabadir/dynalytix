@@ -3,7 +3,7 @@
 AI-powered movement screening to automate Functional Movement Screen (FMS) assessments.
 
 ## Website
-https://www.dynalytics.org/
+https://www.dynalytix.org/
 
 ## What This Does
 
@@ -205,7 +205,7 @@ dynalytics/
 ```
 Raw Video
     ↓
-Dynalytics (pose extraction)
+Dynalytix (pose extraction)
     ↓
 Raw Angles CSV
     ↓

@@ -122,7 +122,7 @@ def main():
     )
     parser.add_argument(
         "csv_path",
-        help="Path to the exported pose CSV from Dynalytics",
+        help="Path to the exported pose CSV from Dynalytix",
     )
     parser.add_argument(
         "--full-report",

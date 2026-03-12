@@ -16,7 +16,7 @@ Based on research data:
   Score 1: criteria not met
   Score 0: pain during movement (user-reported)
 
-NOTE: These thresholds use the angle conventions from Dynalytics' MediaPipe pipeline.
+NOTE: These thresholds use the angle conventions from Dynalytix' MediaPipe pipeline.
 Your angles are calculated as the interior angle at the joint vertex:
   - knee angle: hip → knee → ankle (straight leg ≈ 180°, deep bend < 90°)
   - hip angle: shoulder → hip → knee (standing ≈ 180°, deep squat < 90°)
@@ -31,7 +31,7 @@ These will need calibration against real video. Start here, then tune.
 
 DEEP_SQUAT = {
     # Knee flexion angle (interior angle at knee joint)
-    # In Dynalytics convention: straight leg ≈ 170-180°, deep bend ≈ 60-90°
+    # In Dynalytix convention: straight leg ≈ 170-180°, deep bend ≈ 60-90°
     # "Femur below horizontal" roughly corresponds to knee angle < 100°
     "knee_flexion": {
         "score_3_max": 100.0,   # Must be below this (deep squat achieved)

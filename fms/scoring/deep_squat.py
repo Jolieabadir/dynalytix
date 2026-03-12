@@ -552,7 +552,7 @@ def score_deep_squat(
     Score a deep squat assessment from a pose CSV file.
 
     Args:
-        csv_path: Path to the exported pose CSV from Dynalytics.
+        csv_path: Path to the exported pose CSV from Dynalytix.
         pain_reported: Whether the patient reported pain during the movement.
 
     Returns:
