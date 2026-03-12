@@ -5,7 +5,6 @@ Clean REST API with proper error handling and validation.
 """
 from fastapi import FastAPI, UploadFile, File, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -49,8 +48,31 @@ exporter = Exporter(db)
 Path('videos').mkdir(exist_ok=True)
 Path('data').mkdir(exist_ok=True)
 
-# Mount static files
-app.mount("/videos", StaticFiles(directory="videos"), name="videos")
+# Video file serving endpoint
+@app.get("/videos/{filename}")
+async def serve_video(filename: str):
+    """Serve video files with correct content-type."""
+    video_path = Path("videos") / filename
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Determine media type
+    suffix = video_path.suffix.lower()
+    media_types = {
+        '.mov': 'video/quicktime',
+        '.mp4': 'video/mp4',
+        '.avi': 'video/x-msvideo',
+    }
+    media_type = media_types.get(suffix, 'application/octet-stream')
+
+    return FileResponse(
+        video_path,
+        media_type=media_type,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Access-Control-Allow-Origin": "*",
+        }
+    )
 
 
 # ==================== PYDANTIC SCHEMAS ====================
