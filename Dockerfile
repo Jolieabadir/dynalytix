@@ -16,7 +16,8 @@ WORKDIR /app
 
 # Copy and install backend requirements
 COPY data_collection/backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir mediapipe==0.10.14
 
 # Copy everything we need
 COPY main.py ./main.py
