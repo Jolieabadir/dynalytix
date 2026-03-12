@@ -1,1 +1,1 @@
-"""FMS Scoring Engine - Rule-based movement assessment."""
+"""Movement Scoring Engine - Rule-based movement assessment."""

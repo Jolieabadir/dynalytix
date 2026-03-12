@@ -1,7 +1,7 @@
 """
 Deep Squat Rule Engine.
 
-Scores the FMS overhead deep squat (0-3) from pose CSV data.
+Scores the overhead deep squat (0-3) from pose CSV data.
 Uses angle thresholds derived from biomechanical research.
 """
 import csv
@@ -293,7 +293,7 @@ def check_torso_tibia_alignment(
     - Trunk inclination: angle of shoulder_mid → hip_mid from vertical
     - Tibia inclination: angle of knee_mid → ankle_mid from vertical
 
-    FMS score 3 requires trunk parallel to tibia (or more upright).
+    Score 3 requires trunk parallel to tibia (or more upright).
     If trunk tilts forward significantly more than tibia, it's a fail.
 
     Based on Barrack et al. (2021): trunk-tibia angle predicts hip/knee
@@ -324,7 +324,7 @@ def check_torso_tibia_alignment(
     # Trunk-tibia difference: positive means trunk leans more than tibia
     trunk_tibia_diff = trunk_angle - tibia_angle
 
-    # FMS criteria: torso parallel with tibia or toward vertical
+    # Criteria: torso parallel with tibia or toward vertical
     # "Parallel" means similar inclination (small difference)
     # "Toward vertical" means trunk is MORE upright than tibia (negative diff)
     # Fail if trunk leans significantly MORE than tibia

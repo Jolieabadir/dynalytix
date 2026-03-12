@@ -1,19 +1,19 @@
-# Dynalytix - FMS Assessment Automation
+# Dynalytix - Movement Assessment Automation
 
-AI-powered movement screening to automate Functional Movement Screen (FMS) assessments.
+AI-powered movement screening to automate functional movement assessments.
 
 ## Website
 https://www.dynalytix.org/
 
 ## What This Does
 
-Dynalytix uses computer vision to analyze movement patterns from video, automatically scoring FMS assessments that currently require manual observation by trained professionals.
+Dynalytix uses computer vision to analyze movement patterns from video, automatically scoring movement assessments that currently require manual observation by trained professionals.
 
 ### Current Demo: Deep Squat Assessment
 
 - Upload video of deep squat test
 - Automatic pose extraction (joint angles, body position)
-- Score 0-3 based on FMS criteria
+- Score 0-3 based on movement assessment criteria
 - Quick Mode for fast labeling, Detailed Mode for full criteria capture
 
 ## Current Status
@@ -27,11 +27,11 @@ Dynalytix uses computer vision to analyze movement patterns from video, automati
 ### Phase 2: Data Collection UI (Complete)
 - [x] Video upload with automatic pose extraction
 - [x] Assessment boundary marking
-- [x] FMS scoring (Quick Mode + Detailed Mode)
+- [x] Movement scoring (Quick Mode + Detailed Mode)
 - [x] Frame tagging for observations
 - [x] Labeled data export
 
-### Phase 3: FMS Scoring Engine (In Progress)
+### Phase 3: Movement Scoring Engine (In Progress)
 - [x] Rule-based Deep Squat scoring engine (0-3)
 - [x] Scoring criteria: squat depth, torso-tibia alignment, knee-over-foot alignment, heel position, lumbar flexion control
 - [x] Bilateral asymmetry detection
@@ -43,14 +43,14 @@ Dynalytix uses computer vision to analyze movement patterns from video, automati
 - [x] Post-export UI with Patient Report and Provider Report views
 - [x] LLM clinical report generation (stub, requires API key)
 - [ ] Threshold calibration against PT-scored videos
-- [ ] Additional FMS tests (hurdle step, inline lunge, etc.)
+- [ ] Additional movement assessments (hurdle step, inline lunge, etc.)
 - [ ] Real-time feedback system
 
 ## Model Training Approaches
 
-### Rule-Based Engine (Recommended for FMS)
+### Rule-Based Engine (Recommended for Movement Assessments)
 
-FMS scoring criteria are explicit and well-defined, making a rule-based approach viable:
+Movement scoring criteria are explicit and well-defined, making a rule-based approach viable:
 
 - "Torso parallel to tibia + femur below horizontal + knees over feet = Score 3"
 - Works immediately without training data
@@ -60,9 +60,9 @@ FMS scoring criteria are explicit and well-defined, making a rule-based approach
 
 For subjective assessments like climbing injury risk, we use ML trained on labeled data. This requires 500-2000+ labeled examples but catches subtle patterns rules might miss.
 
-### Recommended Path for FMS
+### Recommended Path for Movement Assessments
 
-1. Build rule engine from FMS scoring criteria
+1. Build rule engine from movement scoring criteria
 2. Have PTs review sample of AI predictions
 3. Collect targeted training data only where rules fail
 4. Hybrid: rules + ML for edge cases
@@ -75,7 +75,7 @@ For subjective assessments like climbing injury risk, we use ML trained on label
 - **Tracking:** 12 joint angles per frame
 
 **Phase 3 (In Progress):**
-- **FMS Scoring:** Rule-based engine with research-backed thresholds
+- **Movement Scoring:** Rule-based engine with research-backed thresholds
 - **Reporting:** Anthropic Claude API (optional, for clinical narratives)
 - **Billing:** Rule-based CPT code mapping
 
@@ -124,7 +124,7 @@ python main.py path/to/video.mov --landmarks
 python main.py path/to/video.mov --output my_data.csv
 ```
 
-### Web UI: FMS Assessment Labeling
+### Web UI: Movement Assessment Labeling
 
 ```bash
 # Terminal 1 - Backend
@@ -143,7 +143,7 @@ Open http://localhost:5173
 **Workflow:**
 1. Upload a deep squat assessment video
 2. Mark assessment boundaries with `[` and `]` keys
-3. Score using FMS 0-3 scale (Quick Mode or Detailed Mode)
+3. Score using 0-3 movement assessment scale (Quick Mode or Detailed Mode)
 4. Optionally tag specific frames with observations
 5. Click "Done" to export labeled data
 
@@ -156,7 +156,7 @@ Open http://localhost:5173
 | `]` | Mark assessment end |
 | `S` | Toggle skeleton overlay |
 
-## FMS Scoring Scale
+## Movement Scoring Scale
 
 | Score | Label | Description |
 |-------|-------|-------------|
@@ -174,7 +174,7 @@ dynalytics/
 │   ├── pose/                   # MediaPipe wrapper
 │   ├── analysis/               # Joint angle calculations
 │   └── export/                 # CSV export
-├── fms/                        # FMS scoring engine
+├── fms/                        # Movement scoring engine
 │   ├── scoring/
 │   │   ├── deep_squat.py       # Rule engine (CSV → score 0-3)
 │   │   └── thresholds.py       # Angle thresholds (tunable)
@@ -213,7 +213,7 @@ Raw Angles CSV
     ↓
 Labeled Data CSV
     ↓
-FMS Scoring Engine (auto-runs on export)
+Movement Scoring Engine (auto-runs on export)
     ↓
 ├── Findings CSV + JSON
 ├── Patient Report (no billing codes)
@@ -224,8 +224,8 @@ ML Training (future)
 
 ## Broader Applications
 
-While currently demonstrating FMS assessment, the methodology applies to:
-- **Movement Screens:** FMS, Y-Balance, overhead squat assessment
+While currently demonstrating the deep squat assessment, the methodology applies to:
+- **Movement Screens:** Deep squat, Y-Balance, overhead squat assessment
 - **Sports Analysis:** Form analysis for any sport
 - **Rehabilitation:** Physical therapy movement tracking
 - **Injury Prevention:** Pattern recognition across any repetitive movement

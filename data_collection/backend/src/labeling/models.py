@@ -1,5 +1,5 @@
 """
-Data models for FMS (Functional Movement Screen) assessment system.
+Data models for movement assessment system.
 
 These are pure Python dataclasses with no database dependencies.
 Database layer handles persistence separately.
@@ -40,7 +40,7 @@ class Video:
 @dataclass
 class Assessment:
     """
-    Represents an FMS (Functional Movement Screen) assessment.
+    Represents a movement assessment.
 
     Contains assessment boundaries, test type, and scoring data.
     """
@@ -54,7 +54,7 @@ class Assessment:
 
     # Core assessment data
     test_type: str = ""  # 'deep_squat', etc.
-    score: int = 2  # FMS 0-3 scale (0=pain, 1=can't complete, 2=compensation, 3=perfect)
+    score: int = 2  # 0-3 scale (0=pain, 1=can't complete, 2=compensation, 3=perfect)
 
     # Scoring criteria observations (stored as dict - specific to test type)
     # Example: {'heels_elevated': True, 'knees_cave_inward': False, ...}
@@ -143,15 +143,15 @@ class FrameTag:
 
 
 # =============================================================================
-# FMS TEST TYPES
+# MOVEMENT TEST TYPES
 # =============================================================================
 FMS_TESTS = [
     'deep_squat',
 ]
 
 # =============================================================================
-# FMS SCORING SCALE
-# Standard FMS 0-3 scoring system
+# MOVEMENT SCORING SCALE
+# Standard 0-3 movement scoring system
 # =============================================================================
 FMS_SCORES = {
     0: {
@@ -204,7 +204,7 @@ COMPENSATION_PATTERNS = [
 ]
 
 # =============================================================================
-# FMS SCORING CRITERIA - Specific to each test type
+# MOVEMENT SCORING CRITERIA - Specific to each test type
 # =============================================================================
 FMS_SCORING_CRITERIA = {
     'deep_squat': {
@@ -250,7 +250,7 @@ BODY_PARTS = [
     'thoracic_spine', 'lumbar_spine',
 ]
 
-# Tag types for FMS observations
+# Tag types for movement observations
 TAG_TYPES = {
     'pain': 'Pain',
     'tightness': 'Tightness',

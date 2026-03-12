@@ -1,1 +1,1 @@
-"""FMS Report Generation - LLM-powered clinical reports."""
+"""Movement Assessment Report Generation - LLM-powered clinical reports."""

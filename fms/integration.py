@@ -1,8 +1,8 @@
 """
-FMS Integration - Connects the FMS pipeline to the data collection backend.
+Movement Assessment Integration - Connects the scoring pipeline to the data collection backend.
 
 This module:
-1. Auto-runs the FMS scoring pipeline when a labeled CSV is exported
+1. Auto-runs the movement scoring pipeline when a labeled CSV is exported
 2. Saves findings to a structured CSV alongside the labeled export
 3. Provides API endpoints for retrieving assessment results and user-facing reports
 
@@ -35,7 +35,7 @@ def run_fms_on_export(
     pain_reported: bool = False,
 ) -> dict:
     """
-    Automatically run FMS scoring on an exported labeled CSV.
+    Automatically run movement scoring on an exported labeled CSV.
 
     Called after the exporter creates the labeled CSV.
     Saves findings to a companion CSV and JSON file.
@@ -83,7 +83,7 @@ def run_fms_on_export(
     result["findings_csv_path"] = str(csv_output)
     result["report_json_path"] = str(json_output)
 
-    print(f"FMS Assessment complete: Score {result['score']}/3")
+    print(f"Movement Assessment complete: Score {result['score']}/3")
     print(f"  Findings CSV: {csv_output}")
     print(f"  Report JSON:  {json_output}")
 
@@ -92,7 +92,7 @@ def run_fms_on_export(
 
 def _save_findings_csv(result: dict, output_path: Path):
     """
-    Save FMS findings as a structured CSV.
+    Save assessment findings as a structured CSV.
 
     One row per criterion, easy to read in a spreadsheet.
     """
@@ -247,7 +247,7 @@ def generate_user_report(result: dict) -> dict:
 
 def register_fms_routes(app):
     """
-    Register FMS-related API routes on the FastAPI app.
+    Register assessment-related API routes on the FastAPI app.
 
     Call this in your api.py after creating the app:
         from fms.integration import register_fms_routes
@@ -259,7 +259,7 @@ def register_fms_routes(app):
     @app.get("/api/fms/report/{video_id}")
     async def get_fms_report(video_id: int):
         """
-        Get the user-facing FMS report for a video.
+        Get the user-facing assessment report for a video.
 
         Returns the assessment results WITHOUT billing codes.
         Suitable for displaying to patients/athletes on the website.
@@ -268,7 +268,7 @@ def register_fms_routes(app):
         findings_dir = Path("data/exports/fms_findings")
 
         if not findings_dir.exists():
-            raise HTTPException(status_code=404, detail="No FMS findings available")
+            raise HTTPException(status_code=404, detail="No assessment findings available")
 
         # Search for a report matching this video ID
         # Filenames include video_id in the path
@@ -284,7 +284,7 @@ def register_fms_routes(app):
         if not matches:
             raise HTTPException(
                 status_code=404,
-                detail=f"No FMS report found for video {video_id}. "
+                detail=f"No assessment report found for video {video_id}. "
                        "Export the video first to generate a report."
             )
 
@@ -301,14 +301,14 @@ def register_fms_routes(app):
     @app.get("/api/fms/findings/{video_id}")
     async def get_fms_findings(video_id: int):
         """
-        Get the full FMS findings for a video (PT-facing, includes CPT codes).
+        Get the full assessment findings for a video (PT-facing, includes CPT codes).
 
         This is the complete assessment data for clinical use.
         """
         findings_dir = Path("data/exports/fms_findings")
 
         if not findings_dir.exists():
-            raise HTTPException(status_code=404, detail="No FMS findings available")
+            raise HTTPException(status_code=404, detail="No assessment findings available")
 
         matches = list(findings_dir.glob(f"*_fms_report.json"))
         matches = [m for m in matches if f"video_{video_id}" in m.stem
@@ -317,7 +317,7 @@ def register_fms_routes(app):
         if not matches:
             raise HTTPException(
                 status_code=404,
-                detail=f"No FMS findings found for video {video_id}"
+                detail=f"No assessment findings found for video {video_id}"
             )
 
         report_path = sorted(matches)[-1]
@@ -328,11 +328,11 @@ def register_fms_routes(app):
 
     @app.get("/api/fms/findings/{video_id}/csv")
     async def download_fms_csv(video_id: int):
-        """Download the FMS findings CSV for a video."""
+        """Download the assessment findings CSV for a video."""
         findings_dir = Path("data/exports/fms_findings")
 
         if not findings_dir.exists():
-            raise HTTPException(status_code=404, detail="No FMS findings available")
+            raise HTTPException(status_code=404, detail="No assessment findings available")
 
         matches = list(findings_dir.glob(f"*_fms_findings.csv"))
         matches = [m for m in matches if f"video_{video_id}" in m.stem
@@ -341,7 +341,7 @@ def register_fms_routes(app):
         if not matches:
             raise HTTPException(
                 status_code=404,
-                detail=f"No FMS CSV found for video {video_id}"
+                detail=f"No assessment CSV found for video {video_id}"
             )
 
         csv_path = sorted(matches)[-1]
@@ -351,4 +351,4 @@ def register_fms_routes(app):
             filename=csv_path.name,
         )
 
-    print("✓ FMS routes registered: /api/fms/report/{id}, /api/fms/findings/{id}, /api/fms/findings/{id}/csv")
+    print("✓ Assessment routes registered: /api/fms/report/{id}, /api/fms/findings/{id}, /api/fms/findings/{id}/csv")

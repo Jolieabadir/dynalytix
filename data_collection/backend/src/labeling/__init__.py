@@ -1,4 +1,4 @@
-"""Labeling module for FMS assessment data collection."""
+"""Labeling module for movement assessment data collection."""
 from .models import Video, Assessment, FrameTag, FMS_TESTS, FMS_SCORING_CRITERIA
 from .database import Database
 

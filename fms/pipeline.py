@@ -1,5 +1,5 @@
 """
-FMS Assessment Pipeline.
+Movement Assessment Pipeline.
 
 Ties together scoring, reporting, and billing into a single workflow:
   CSV → Score → Report → CPT Codes
@@ -118,7 +118,7 @@ def run_full(csv_path: str, pain: bool = False) -> dict:
 def main():
     """CLI entry point."""
     parser = argparse.ArgumentParser(
-        description="FMS Deep Squat Assessment Pipeline"
+        description="Deep Squat Assessment Pipeline"
     )
     parser.add_argument(
         "csv_path",

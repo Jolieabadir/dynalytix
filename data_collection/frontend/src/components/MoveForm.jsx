@@ -1,8 +1,8 @@
 /**
  * AssessmentForm component.
  *
- * Form for creating FMS (Functional Movement Screen) assessments.
- * Simplified single-step form for deep squat assessment with FMS 0-3 scoring.
+ * Form for creating movement assessments.
+ * Simplified single-step form for deep squat assessment with 0-3 scoring.
  *
  * Supports Quick Mode (default) for rapid scoring with just score + pain + notes,
  * or Full Mode for detailed criteria and compensation pattern documentation.
@@ -167,7 +167,7 @@ function MoveForm() {
     <div className="move-form-overlay">
       <div className="move-form-modal">
         <div className="move-form-header">
-          <h2>FMS Deep Squat Assessment</h2>
+          <h2>Deep Squat Assessment</h2>
           <button onClick={handleClose} className="close-btn">✕</button>
         </div>
 
@@ -199,9 +199,9 @@ function MoveForm() {
             <p>Frames: {moveStart} - {moveEnd} ({frameCount} frames, {duration}s)</p>
           </div>
 
-          {/* FMS Score Selection */}
+          {/* Movement Score Selection */}
           <div className="form-field">
-            <label className="form-label">FMS Score</label>
+            <label className="form-label">Movement Score</label>
             <div className="fms-score-buttons">
               {FMS_SCORE_OPTIONS.map(option => (
                 <button

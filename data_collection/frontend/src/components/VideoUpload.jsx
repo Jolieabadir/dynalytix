@@ -53,7 +53,7 @@ function VideoUpload() {
     <div className="video-upload">
       <div className="upload-container">
         <h2>Upload Deep Squat Assessment</h2>
-        <p>Upload a video to begin FMS assessment</p>
+        <p>Upload a video to begin movement assessment</p>
 
         {!uploading ? (
           <div className="upload-area">

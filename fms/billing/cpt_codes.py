@@ -50,7 +50,7 @@ CPT_CODES = {
         "timed": True,
         "unit_minutes": 15,
         "notes": "Functional testing with written report required. "
-                 "FMS assessment falls under this code.",
+                 "Movement assessment falls under this code.",
     },
 
     # Treatment codes
@@ -107,10 +107,10 @@ class CPTSuggestion:
 
 def suggest_assessment_codes(score: int, test_duration_minutes: int = 15) -> list[CPTSuggestion]:
     """
-    Suggest assessment CPT codes for the FMS screen itself.
+    Suggest assessment CPT codes for the movement screen itself.
 
     Args:
-        score: FMS score (0-3)
+        score: Movement score (0-3)
         test_duration_minutes: Time spent on assessment
     """
     suggestions = []
@@ -121,7 +121,7 @@ def suggest_assessment_codes(score: int, test_duration_minutes: int = 15) -> lis
         CPTSuggestion(
             code="97750",
             description="Physical Performance Test or Measurement",
-            justification="FMS Deep Squat assessment with computer vision-assisted "
+            justification="Deep Squat movement assessment with computer vision-assisted "
                           "movement analysis and written report",
             units=units,
         )
@@ -134,7 +134,7 @@ def suggest_treatment_codes(criteria_results: list[dict]) -> list[CPTSuggestion]
     """
     Suggest treatment CPT codes based on identified deficits.
 
-    Maps specific FMS criterion failures to appropriate treatment codes.
+    Maps specific movement criterion failures to appropriate treatment codes.
     """
     suggestions = []
     seen_codes = set()
@@ -153,7 +153,7 @@ def suggest_treatment_codes(criteria_results: list[dict]) -> list[CPTSuggestion]
                         code="97140",
                         description="Manual Therapy",
                         justification="Joint mobilization for ankle dorsiflexion "
-                                      "deficit identified during FMS deep squat",
+                                      "deficit identified during deep squat assessment",
                         units=1,
                     )
                 )
@@ -245,13 +245,13 @@ def suggest_all_codes(
     test_duration_minutes: int = 15,
 ) -> list[CPTSuggestion]:
     """
-    Generate complete CPT code suggestions for an FMS assessment.
+    Generate complete CPT code suggestions for a movement assessment.
 
     Combines assessment codes (for the screen itself) with treatment
     codes (for the corrective work indicated by findings).
 
     Args:
-        score: FMS score (0-3)
+        score: Movement score (0-3)
         criteria_results: List of criterion result dicts from the scoring engine
         test_duration_minutes: Time spent on the assessment
 

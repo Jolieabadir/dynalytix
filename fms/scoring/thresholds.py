@@ -1,8 +1,8 @@
 """
-Angle thresholds for FMS scoring.
+Angle thresholds for movement scoring.
 
 Based on research data:
-- Butler et al. (2010): Biomechanical analysis of FMS deep squat classifications
+- Butler et al. (2010): Biomechanical analysis of deep squat classifications
   Group 1 (score 1): knee flexion ~84.7°, hip flexion ~88.1°, dorsiflexion ~24.5°
   Group 2 (score 2): knee flexion ~110.0°, hip flexion ~117.5°, dorsiflexion ~27.9°
   Group 3 (score 3): greater than group 2 in all measures
@@ -10,7 +10,7 @@ Based on research data:
 - Heredia et al. (2021): Score 3 had significantly greater peak hip flexion,
   knee flexion, and ankle dorsiflexion vs scores 1 and 2.
 
-- FMS Official Criteria (Cook et al.):
+- Movement Assessment Criteria:
   Score 3: torso parallel to tibia, femur below horizontal, knees over feet
   Score 2: same as 3 but heels elevated
   Score 1: criteria not met

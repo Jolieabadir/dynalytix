@@ -70,11 +70,11 @@ GET  /api/moves/{id}/frame-tags     # Get frame tags for move
 DELETE /api/frame-tags/{id}         # Delete frame tag
 ```
 
-### FMS Reports
+### Assessment Reports
 ```
-GET  /api/fms/report/{video_id}        # Patient-facing report (no billing codes)
-GET  /api/fms/findings/{video_id}      # Provider-facing report (full data + CPT codes)
-GET  /api/fms/findings/{video_id}/csv  # Download findings CSV
+GET  /api/assessment/report/{video_id}        # Patient-facing report (no billing codes)
+GET  /api/assessment/findings/{video_id}      # Provider-facing report (full data + CPT codes)
+GET  /api/assessment/findings/{video_id}/csv  # Download findings CSV
 ```
 
 ## Export System

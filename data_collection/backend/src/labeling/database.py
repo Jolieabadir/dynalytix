@@ -1,5 +1,5 @@
 """
-Database layer for FMS assessment system.
+Database layer for movement assessment system.
 
 Handles all SQLite operations. Models know nothing about the database.
 """

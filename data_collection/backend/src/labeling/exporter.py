@@ -69,7 +69,7 @@ class Exporter:
         with open(raw_csv_path, 'r') as infile, open(export_path, 'w', newline='') as outfile:
             reader = csv.DictReader(infile)
             
-            # New fieldnames for FMS assessment data
+            # New fieldnames for movement assessment data
             fieldnames = list(reader.fieldnames) + [
                 'assessment_id', 'test_type', 'score', 'compensations',
                 'tag_type', 'tag_level', 'tag_locations', 'tag_note'

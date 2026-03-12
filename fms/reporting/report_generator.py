@@ -2,7 +2,7 @@
 LLM-powered report generator.
 
 Calls the Anthropic API to generate clinical reports and CPT code suggestions
-from FMS scoring data.
+from movement scoring data.
 """
 import json
 import os
@@ -36,7 +36,7 @@ class CPTSuggestion:
 
 @dataclass
 class FMSReport:
-    """Complete FMS report with clinical narrative and billing suggestions."""
+    """Complete movement assessment report with clinical narrative and billing suggestions."""
     clinical_report: str
     cpt_suggestions: list[CPTSuggestion]
     score: int
@@ -52,7 +52,7 @@ class FMSReport:
     def print_report(self):
         """Print the full formatted report."""
         print("=" * 70)
-        print("FMS DEEP SQUAT ASSESSMENT REPORT")
+        print("DEEP SQUAT ASSESSMENT REPORT")
         print("=" * 70)
         print()
         print(self.clinical_report)

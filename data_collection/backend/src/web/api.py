@@ -1,5 +1,5 @@
 """
-FastAPI application for FMS assessment data collection.
+FastAPI application for movement assessment data collection.
 
 Clean REST API with proper error handling and validation.
 """
@@ -22,7 +22,7 @@ from ..labeling.models import (
 )
 from ..labeling.exporter import Exporter
 
-# FMS Integration - auto-score assessments on export
+# Movement Assessment Integration - auto-score assessments on export
 import sys as _sys
 for _depth in range(len(Path(__file__).resolve().parents)):
     _candidate = str(Path(__file__).resolve().parents[_depth])
@@ -35,12 +35,12 @@ try:
     FMS_AVAILABLE = True
 except ImportError:
     FMS_AVAILABLE = False
-    print("Warning: FMS module not found. FMS auto-scoring disabled.")
+    print("Warning: Assessment module not found. Auto-scoring disabled.")
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Dynalytix FMS Assessment API",
-    description="API for FMS movement assessment data",
+    title="Dynalytix Movement Assessment API",
+    description="API for movement assessment data",
     version="1.0.0"
 )
 
@@ -60,7 +60,7 @@ db.init()
 # Initialize exporter
 exporter = Exporter(db)
 
-# Register FMS API routes if available
+# Register assessment API routes if available
 if FMS_AVAILABLE:
     register_fms_routes(app)
 
@@ -281,12 +281,12 @@ def frame_tag_to_response(tag: FrameTag) -> FrameTagResponse:
 @app.get("/")
 async def root():
     """Health check endpoint."""
-    return {"status": "ok", "message": "Dynalytix FMS API is running"}
+    return {"status": "ok", "message": "Dynalytix API is running"}
 
 
 @app.get("/api/config", response_model=ConfigResponse)
 async def get_config():
-    """Get configuration data (FMS tests, scoring criteria, body parts, etc.)."""
+    """Get configuration data (movement tests, scoring criteria, body parts, etc.)."""
     return ConfigResponse(
         fms_tests=FMS_TESTS,
         fms_scoring_criteria=FMS_SCORING_CRITERIA,
@@ -411,13 +411,13 @@ async def export_video_endpoint(video_id: int, delete_video: bool = False):
     try:
         export_path = exporter.export_video(video_id, delete_video=delete_video)
 
-        # Auto-run FMS assessment on the exported CSV
+        # Auto-run movement assessment on the exported CSV
         if FMS_AVAILABLE:
             try:
                 fms_result = run_fms_on_export(export_path)
-                print(f"FMS auto-score: {fms_result.get('score', 'N/A')}/3")
+                print(f"Movement auto-score: {fms_result.get('score', 'N/A')}/3")
             except Exception as fms_err:
-                print(f"FMS scoring failed (non-blocking): {fms_err}")
+                print(f"Movement scoring failed (non-blocking): {fms_err}")
 
         return ExportResponse(path=export_path, video_deleted=delete_video)
     except ValueError as e:

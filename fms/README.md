@@ -1,6 +1,6 @@
-# FMS Assessment Engine
+# Movement Assessment Engine
 
-Automated scoring, clinical reporting, and CPT billing for FMS assessments.
+Automated scoring, clinical reporting, and CPT billing for movement assessments.
 
 ## Architecture
 
@@ -46,7 +46,7 @@ Adds LLM-generated clinical narrative report + smarter CPT suggestions.
 The angle thresholds in `scoring/thresholds.py` are starting values based on
 published biomechanical research (Butler et al. 2010, Heredia et al. 2021).
 
-**You will need to calibrate these** against real FMS videos scored by a PT.
+**You will need to calibrate these** against real assessment videos scored by a PT.
 The process:
 1. Record 10-20 deep squat videos
 2. Have a certified PT score each one (1, 2, or 3)

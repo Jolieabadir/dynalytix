@@ -1,12 +1,12 @@
 """
-Prompt templates for LLM-powered FMS report generation.
+Prompt templates for LLM-powered movement assessment report generation.
 
 These templates structure the data from the rule engine into prompts
 that produce clinical-quality reports suitable for PT documentation.
 """
 
 SYSTEM_PROMPT = """You are a clinical documentation assistant for physical therapists.
-You generate professional movement assessment reports based on Functional Movement Screen (FMS) data.
+You generate professional movement assessment reports based on functional movement assessment data.
 
 Your reports should be:
 - Written in clinical language appropriate for medical records
@@ -21,11 +21,11 @@ You are NOT diagnosing conditions. You are documenting movement assessment findi
 The physical therapist will review and sign off on all reports."""
 
 
-DEEP_SQUAT_REPORT_TEMPLATE = """Generate a clinical FMS assessment report for the following Deep Squat evaluation.
+DEEP_SQUAT_REPORT_TEMPLATE = """Generate a clinical movement assessment report for the following Deep Squat evaluation.
 
 ## Patient Assessment Data
 
-**FMS Deep Squat Score: {score}/3**
+**Deep Squat Assessment Score: {score}/3**
 **Pain Reported: {pain_reported}**
 **Assessment Frame: {max_depth_frame}**
 
@@ -58,7 +58,7 @@ Generate a professional clinical report with these sections:
 Keep the report under 400 words. Use clinical terminology but remain accessible."""
 
 
-DEEP_SQUAT_CPT_TEMPLATE = """Based on this FMS Deep Squat assessment, suggest appropriate CPT billing codes.
+DEEP_SQUAT_CPT_TEMPLATE = """Based on this Deep Squat movement assessment, suggest appropriate CPT billing codes.
 
 **Score: {score}/3**
 **Key Findings:**
