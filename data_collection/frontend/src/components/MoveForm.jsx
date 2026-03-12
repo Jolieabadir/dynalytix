@@ -285,10 +285,8 @@ function Step2Details({
   const commonTags = [
     'tweaky_feeling',
     'flash_pump',
-    'mental_block',
     'good_technique',
-    'controlled',
-    'scary'
+    'controlled'
   ];
 
   return (
