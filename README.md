@@ -76,7 +76,7 @@ Focus: Building the foundation for quality training data
 ### Phase 2.5: Cloud Deployment ✅
 - [x] Railway hosting for climbing data collection app
 - [x] Auto GitHub sync of labeled CSVs to dynalytix-data repo
-- [x] FMS assessment tool deployed on separate branch
+- [x] Movement Assessment tool deployed on separate branch
 - [x] Docker containerization with MediaPipe support
 
 ### Phase 3: Model Training (Next)
@@ -92,7 +92,7 @@ Focus: Building the foundation for quality training data
 | Service | Branch | URL |
 |---------|--------|-----|
 | Climbing Data Collection | `main` | Deployed on Railway |
-| FMS Assessment Tool | `fms-demo` | Deployed on Railway |
+| Movement Assessment Tool | `fms-demo` | Deployed on Railway |
 
 ### Data Pipeline
 - Labeled CSVs auto-sync to GitHub (`dynalytix-data` repo)
