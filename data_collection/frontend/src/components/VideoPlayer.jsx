@@ -7,6 +7,8 @@ import { useRef, useEffect, useState } from 'react';
 import useStore from '../store/useStore';
 import SkeletonOverlay from './SkeletonOverlay';
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
 function VideoPlayer() {
   const videoRef = useRef(null);
   const [duration, setDuration] = useState(0);
@@ -35,7 +37,7 @@ function VideoPlayer() {
 
     const loadCSV = async () => {
       try {
-        const response = await fetch(`http://localhost:8000/api/videos/${currentVideo.id}/csv`);
+        const response = await fetch(`${API_BASE_URL}/api/videos/${currentVideo.id}/csv`);
         const csvText = await response.text();
         
         // Parse CSV
@@ -154,7 +156,7 @@ function VideoPlayer() {
         <div className="video-wrapper">
           <video
             ref={videoRef}
-            src={`http://localhost:8000/videos/${currentVideo.filename}`}
+            src={`${API_BASE_URL}/videos/${currentVideo.filename}`}
             onLoadedMetadata={handleLoadedMetadata}
           />
           
