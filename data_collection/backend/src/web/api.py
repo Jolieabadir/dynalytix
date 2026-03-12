@@ -201,8 +201,10 @@ def process_video(video_path: Path) -> dict:
 
     # Run pose extraction
     csv_path = Path('data') / f"{video_path.stem}.csv"
+    # Find main.py - works both locally (../../main.py) and in Docker (/app/main.py)
+    main_py_path = Path('/app/main.py') if Path('/app/main.py').exists() else Path('../../main.py')
     result = subprocess.run(
-        [sys.executable, '../../main.py', str(video_path), '--output', str(csv_path), '--landmarks'],
+        [sys.executable, str(main_py_path), str(video_path), '--output', str(csv_path), '--landmarks'],
         capture_output=True,
         text=True
     )

@@ -1,6 +1,5 @@
 FROM python:3.11-slim
 
-# Install system dependencies for OpenCV/MediaPipe
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
@@ -15,12 +14,18 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-COPY requirements.txt .
+# Copy and install backend requirements
+COPY data_collection/backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Copy everything we need
+COPY main.py ./main.py
+COPY src/ ./src/
+COPY fms/ ./fms/
+COPY data_collection/backend/ ./backend/
 
-# Create necessary directories
+WORKDIR /app/backend
+
 RUN mkdir -p videos data data/exports data/exports/fms_findings
 
 CMD python -m uvicorn src.web.api:app --host 0.0.0.0 --port 8080
