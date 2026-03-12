@@ -1,0 +1,7 @@
+data_collection/backend/data/
+data_collection/backend/videos/
+**/__pycache__/
+**/*.pyc
+.git/
+node_modules/
+data_collection/frontend/node_modules/
