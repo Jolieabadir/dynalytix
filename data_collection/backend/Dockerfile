@@ -23,4 +23,4 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p videos data data/exports data/exports/fms_findings
 
-CMD ["python", "-m", "uvicorn", "src.web.api:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD python -m uvicorn src.web.api:app --host 0.0.0.0 --port ${PORT:-8080}
