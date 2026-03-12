@@ -39,6 +39,7 @@ function TaggingMode() {
     currentMove,
     currentFrame,
     frameTags,
+    videoBlobUrl,
     setCurrentFrame,
     setFrameTags,
     addFrameTag,
@@ -277,7 +278,7 @@ function TaggingMode() {
           <div className="video-container">
             <video
               ref={videoRef}
-              src={`${API_BASE_URL}/videos/${currentVideo.filename}`}
+              src={videoBlobUrl || `${API_BASE_URL}/videos/${currentVideo.filename}`}
               loop
             />
           </div>

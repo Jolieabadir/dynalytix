@@ -3,7 +3,7 @@ FastAPI application for movement assessment data collection.
 
 Clean REST API with proper error handling and validation.
 """
-from fastapi import FastAPI, UploadFile, File, HTTPException, status
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -350,6 +350,47 @@ async def upload_video(file: UploadFile = File(...)):
         fps=metadata['fps'],
         total_frames=metadata['total_frames'],
         duration_ms=metadata['duration_ms'],
+        uploaded_at=datetime.now()
+    )
+
+    video.id = db.create_video(video)
+
+    return video_to_response(video)
+
+
+@app.post("/api/videos/register", response_model=VideoResponse, status_code=status.HTTP_201_CREATED)
+async def register_video(
+    filename: str = Form(...),
+    fps: float = Form(...),
+    total_frames: int = Form(...),
+    duration_ms: float = Form(...),
+    csv_data: str = Form(...),
+):
+    """
+    Register a video with client-side extracted pose data.
+
+    This endpoint is used when pose extraction happens in the browser.
+    The video file itself never leaves the client - only the CSV data is sent.
+    """
+    import uuid
+
+    # Generate unique filename for the CSV
+    unique_id = uuid.uuid4().hex
+    safe_basename = f"video_{unique_id}_{Path(filename).stem}"
+
+    # Save CSV data
+    csv_path = Path('data') / f"{safe_basename}.csv"
+    csv_path.parent.mkdir(exist_ok=True)
+    csv_path.write_text(csv_data)
+
+    # Create database record (no video file path since it stays in browser)
+    video = Video(
+        filename=filename,
+        path="",  # Empty - video stays in browser
+        csv_path=str(csv_path),
+        fps=fps,
+        total_frames=total_frames,
+        duration_ms=duration_ms,
         uploaded_at=datetime.now()
     )
 

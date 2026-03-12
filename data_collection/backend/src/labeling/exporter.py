@@ -103,10 +103,10 @@ class Exporter:
                 
                 writer.writerow(row)
         
-        # Delete video file if requested
-        if delete_video:
+        # Delete video file if requested (only if path exists - client-side extraction has empty path)
+        if delete_video and video.path:
             video_path = Path(video.path)
-            if video_path.exists():
+            if video_path.exists() and video_path.is_file():
                 video_path.unlink()
                 print(f"Deleted video file: {video_path}")
         
