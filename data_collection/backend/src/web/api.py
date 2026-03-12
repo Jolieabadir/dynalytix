@@ -47,10 +47,7 @@ app = FastAPI(
 # CORS middleware for local development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Vite dev server
-        "https://pure-illumination-production.up.railway.app",  # Railway frontend
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
