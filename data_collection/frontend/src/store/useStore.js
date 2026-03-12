@@ -14,9 +14,15 @@ const useStore = create((set, get) => ({
   // ==================== VIDEO STATE ====================
   currentVideo: null,
   videos: [],
-  
+  videoBlobUrl: null,  // Local blob URL for client-side video
+  csvData: null,       // Parsed CSV data from client-side extraction
+  csvString: null,     // Raw CSV string to send to server
+
   setCurrentVideo: (video) => set({ currentVideo: video }),
   setVideos: (videos) => set({ videos }),
+  setVideoBlobUrl: (url) => set({ videoBlobUrl: url }),
+  setCsvData: (data) => set({ csvData: data }),
+  setCsvString: (str) => set({ csvString: str }),
   
   // ==================== MOVES STATE ====================
   moves: [],

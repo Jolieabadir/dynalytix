@@ -3,7 +3,7 @@ FastAPI application for data collection UI.
 
 Clean REST API with proper error handling and validation.
 """
-from fastapi import FastAPI, UploadFile, File, HTTPException, status
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -336,7 +336,44 @@ async def upload_video(file: UploadFile = File(...)):
     )
     
     video.id = db.create_video(video)
-    
+
+    return video_to_response(video)
+
+
+@app.post("/api/videos/register", response_model=VideoResponse, status_code=status.HTTP_201_CREATED)
+async def register_video(
+    filename: str = Form(...),
+    fps: float = Form(...),
+    total_frames: int = Form(...),
+    duration_ms: float = Form(...),
+    csv_data: str = Form(...),
+):
+    """
+    Register a video that was processed client-side.
+    Receives the CSV data directly instead of a video file.
+    The video stays in the browser - only pose data is sent.
+    """
+    import uuid
+    unique_id = uuid.uuid4().hex
+    safe_filename = f"video_{unique_id}_{filename}"
+
+    # Save CSV data
+    csv_path = Path('data') / f"{Path(safe_filename).stem}.csv"
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    csv_path.write_text(csv_data)
+
+    # Create database record (no video file path needed)
+    video = Video(
+        filename=safe_filename,
+        path="",  # No server-side video
+        csv_path=str(csv_path),
+        fps=fps,
+        total_frames=total_frames,
+        duration_ms=duration_ms,
+        uploaded_at=datetime.now()
+    )
+
+    video.id = db.create_video(video)
     return video_to_response(video)
 
 

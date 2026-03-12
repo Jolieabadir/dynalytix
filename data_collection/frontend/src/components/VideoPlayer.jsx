@@ -21,6 +21,8 @@ function VideoPlayer() {
     isPlaying,
     moveStart,
     moveEnd,
+    videoBlobUrl,
+    csvData: storeCsvData,
     setCurrentFrame,
     setIsPlaying,
     setMoveStart,
@@ -32,18 +34,27 @@ function VideoPlayer() {
   const fps = currentVideo?.fps || 30;
 
   // Load CSV data when video changes
+  // Use store data if available (client-side extraction), otherwise fetch from server
   useEffect(() => {
     if (!currentVideo) return;
 
+    // If we have CSV data in the store from client-side extraction, use it
+    if (storeCsvData && storeCsvData.length > 0) {
+      setCsvData(storeCsvData);
+      console.log(`Using ${storeCsvData.length} frames of pose data from client-side extraction`);
+      return;
+    }
+
+    // Fallback: fetch from server (for videos uploaded via old server-side flow)
     const loadCSV = async () => {
       try {
         const response = await fetch(`${API_BASE_URL}/api/videos/${currentVideo.id}/csv`);
         const csvText = await response.text();
-        
+
         // Parse CSV
         const lines = csvText.split('\n');
         const headers = lines[0].split(',');
-        
+
         const data = lines.slice(1).map(line => {
           const values = line.split(',');
           const row = {};
@@ -52,16 +63,16 @@ function VideoPlayer() {
           });
           return row;
         }).filter(row => row.frame_number); // Remove empty rows
-        
+
         setCsvData(data);
-        console.log(`Loaded ${data.length} frames of pose data`);
+        console.log(`Loaded ${data.length} frames of pose data from server`);
       } catch (error) {
         console.error('Failed to load CSV:', error);
       }
     };
 
     loadCSV();
-  }, [currentVideo]);
+  }, [currentVideo, storeCsvData]);
 
   // Update current frame as video plays
   useEffect(() => {
@@ -156,7 +167,7 @@ function VideoPlayer() {
         <div className="video-wrapper">
           <video
             ref={videoRef}
-            src={`${API_BASE_URL}/videos/${currentVideo.filename}`}
+            src={videoBlobUrl || `${API_BASE_URL}/videos/${currentVideo.filename}`}
             onLoadedMetadata={handleLoadedMetadata}
           />
           
