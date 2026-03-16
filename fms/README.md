@@ -8,6 +8,7 @@ Automated scoring, clinical reporting, and billing for movement assessments.
 fms/
 ├── scoring/
 │   ├── deep_squat.py       # Rule engine: CSV → score (0-3) + criteria details
+│   ├── dual_angle.py       # Dual-angle scoring (front + side views merged)
 │   └── thresholds.py       # Angle thresholds (tunable, research-backed)
 ├── reporting/
 │   ├── report_generator.py # LLM API calls → clinical narrative + billing descriptions
@@ -51,6 +52,56 @@ Adds LLM-generated clinical narrative + smarter billing suggestions.
 --output FILE   Save results to a file
 --full-report   Enable LLM-powered clinical report generation
 --cpt           Include CPT codes in output (Pro tier, requires AMA license)
+--front-csv     Path to front view CSV (dual-angle mode)
+--side-csv      Path to side view CSV (dual-angle mode)
+```
+
+## Dual-Angle Processing
+
+The patient performs the squat **twice** — once filmed from the front, once from
+the side. These are two separate performances, not simultaneous recordings.
+
+Each recording is scored independently, then merged at the criterion level:
+
+| Criterion | Preferred View | Reason |
+|-----------|---------------|--------|
+| Squat Depth | Side | Sagittal plane knee flexion more accurate |
+| Torso-Tibia Alignment | Side | Sagittal trunk/tibia inclination |
+| Knee-Over-Foot Alignment | Front | Frontal plane valgus/varus |
+| Heel Position | Side | Ankle dorsiflexion visibility |
+| Lumbar Flexion Control | Side | Sagittal trunk angle change |
+| Bilateral Differences | Front | Frontal plane asymmetry |
+
+### CLI Usage
+```bash
+# Dual-angle (both views)
+python -m fms.pipeline --front-csv front_video.csv --side-csv side_video.csv
+
+# Single view only (falls back to that view for all criteria)
+python -m fms.pipeline --side-csv side_video.csv
+
+# With options
+python -m fms.pipeline --front-csv front.csv --side-csv side.csv --pain --json
+```
+
+### API Usage
+```
+POST /api/fms/score-dual?front_video_id=123&side_video_id=456
+```
+
+### Python Usage
+```python
+from fms.pipeline import run_quick_dual
+
+# Both views
+result = run_quick_dual(
+    front_csv_path="front.csv",
+    side_csv_path="side.csv",
+)
+# result["view_sources"] shows which view was used for each criterion
+
+# Single view (falls back)
+result = run_quick_dual(side_csv_path="side.csv")
 ```
 
 ## Billing Model
@@ -133,6 +184,7 @@ GET  /api/fms/report/{video_id}              # Patient-facing report (no billing
 GET  /api/fms/findings/{video_id}            # Provider report (includes approval status)
 GET  /api/fms/findings/{video_id}?cpt=true   # Provider report with CPT codes (Pro tier)
 GET  /api/fms/findings/{video_id}/csv        # Download findings as CSV
+POST /api/fms/score-dual                     # Score dual-angle (front + side videos)
 ```
 
 ### Provider Approval
@@ -171,18 +223,27 @@ Calibrate against PT-scored videos:
 ## Integration
 
 ```python
-from fms.pipeline import run_quick
+from fms.pipeline import run_quick, run_quick_dual
 
-# Basic usage (no auto-mapping)
+# Single-angle (basic usage)
 result = run_quick("path/to/exported.csv")
 
-# With auto-mapping for a specific clinic
+# Single-angle with auto-mapping for a clinic
 result = run_quick("path/to/exported.csv", clinic_id="clinic_abc123")
 # Returns: score, criteria, billing_descriptions (with practice_code filled in)
 
-# Build EHR payload:
+# Dual-angle scoring (front + side views)
+result = run_quick_dual(
+    front_csv_path="front_video.csv",
+    side_csv_path="side_video.csv",
+    clinic_id="clinic_abc123",
+)
+# Returns: merged score, view_sources dict, front_score, side_score
+
+# Build EHR payload (works with both single and dual-angle):
 from fms.ehr.payload import AssessmentPayload
 payload = AssessmentPayload.from_pipeline_result(result)
+# payload.dual_angle, payload.view_sources, payload.front_score, payload.side_score
 
 # Check/update approval status:
 from fms.ehr.approval import get_approval, approve

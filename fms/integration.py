@@ -23,7 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .pipeline import run_quick
+from .pipeline import run_quick, run_quick_dual
 from .disclaimer import CLINICAL_DISCLAIMER, BILLING_DISCLAIMER
 
 
@@ -104,6 +104,110 @@ def run_fms_on_export(
     result["report_json_path"] = str(json_output)
 
     print(f"Movement Assessment complete: Score {result['score']}/3")
+    print(f"  Findings CSV: {csv_output}")
+    print(f"  Report JSON:  {json_output}")
+    if clinic_id:
+        print(f"  Clinic ID:    {clinic_id} (auto-mapping applied)")
+    print(f"  Approval:     {result.get('approval_status', 'unknown')}")
+
+    return result
+
+
+def run_fms_dual_on_export(
+    front_csv_path: str = "",
+    side_csv_path: str = "",
+    pain_reported: bool = False,
+    clinic_id: str = "",
+) -> dict:
+    """
+    Run dual-angle movement scoring on two exported labeled CSVs.
+
+    Each view is scored independently, then merged at the criterion level.
+    Either view can be omitted (falls back to single-angle).
+
+    Args:
+        front_csv_path: Path to the front view labeled CSV.
+        side_csv_path: Path to the side view labeled CSV.
+        pain_reported: Whether pain was reported during the assessment.
+        clinic_id: If provided, auto-maps billing codes using the clinic's cached mappings.
+
+    Returns:
+        Dictionary with merged score, view sources, billing descriptions, and output paths.
+    """
+    # Validate at least one path
+    front_exists = front_csv_path and Path(front_csv_path).exists()
+    side_exists = side_csv_path and Path(side_csv_path).exists()
+
+    if not front_exists and not side_exists:
+        return {"error": "At least one CSV path must be provided and exist"}
+
+    # Run the dual-angle scoring pipeline
+    result = run_quick_dual(
+        front_csv_path=front_csv_path if front_exists else "",
+        side_csv_path=side_csv_path if side_exists else "",
+        pain=pain_reported,
+        clinic_id=clinic_id,
+    )
+
+    if "error" in result:
+        return result
+
+    # Determine output paths (use side view path if available, else front)
+    primary_path = Path(side_csv_path) if side_exists else Path(front_csv_path)
+    stem = primary_path.stem + "_dual"
+    findings_dir = primary_path.parent / "fms_findings"
+    findings_dir.mkdir(exist_ok=True)
+
+    csv_output = findings_dir / f"{stem}_fms_findings.csv"
+    json_output = findings_dir / f"{stem}_fms_report.json"
+
+    # Save findings CSV
+    _save_findings_csv(result, csv_output)
+
+    # Save full JSON report
+    report_data = {
+        "assessment_date": datetime.now().isoformat(),
+        "dual_angle": True,
+        "has_front": result.get("has_front", False),
+        "has_side": result.get("has_side", False),
+        "view_sources": result.get("view_sources", {}),
+        "front_csv": result.get("front_csv", ""),
+        "side_csv": result.get("side_csv", ""),
+        "score": result["score"],
+        "front_score": result.get("front_score"),
+        "side_score": result.get("side_score"),
+        "criteria": result["criteria"],
+        "angles_at_depth": result.get("angles_at_depth", {}),
+        "bilateral_differences": result.get("bilateral_differences", {}),
+        "billing_descriptions": result.get("billing_descriptions", []),
+        "clinic_id": clinic_id if clinic_id else None,
+        "disclaimer": CLINICAL_DISCLAIMER,
+        "billing_disclaimer": BILLING_DISCLAIMER,
+    }
+    with open(json_output, "w") as f:
+        json.dump(report_data, f, indent=2)
+
+    # Create approval record
+    try:
+        from .ehr.approval import create_approval
+        approval = create_approval(stem)
+        result["approval_status"] = approval.status.value
+        report_data["approval_status"] = approval.status.value
+        with open(json_output, "w") as f:
+            json.dump(report_data, f, indent=2)
+    except Exception as approval_err:
+        print(f"  Approval tracking failed (non-blocking): {approval_err}")
+        result["approval_status"] = "unknown"
+
+    # Add output paths to result
+    result["findings_csv_path"] = str(csv_output)
+    result["report_json_path"] = str(json_output)
+
+    print(f"Dual-Angle Assessment complete: Score {result['score']}/3")
+    if result.get("front_score") is not None:
+        print(f"  Front view score: {result['front_score']}/3")
+    if result.get("side_score") is not None:
+        print(f"  Side view score:  {result['side_score']}/3")
     print(f"  Findings CSV: {csv_output}")
     print(f"  Report JSON:  {json_output}")
     if clinic_id:
@@ -399,6 +503,87 @@ def register_fms_routes(app):
             media_type="text/csv",
             filename=csv_path.name,
         )
+
+    # =========================================================================
+    # DUAL-ANGLE SCORING
+    # =========================================================================
+
+    @app.post("/api/fms/score-dual")
+    async def score_dual_angle(
+        front_video_id: int = None,
+        side_video_id: int = None,
+        pain: bool = False,
+        clinic_id: str = "",
+    ):
+        """
+        Score a dual-angle assessment from two video recordings.
+
+        Each view is scored independently, then merged at the criterion level.
+        Either view can be omitted (falls back to single-angle).
+        """
+        if not front_video_id and not side_video_id:
+            raise HTTPException(
+                status_code=400,
+                detail="At least one of front_video_id or side_video_id is required"
+            )
+
+        exports_dir = Path("data/exports")
+        if not exports_dir.exists():
+            raise HTTPException(status_code=404, detail="No exports available")
+
+        # Find CSVs for each video
+        front_csv = ""
+        side_csv = ""
+
+        if front_video_id:
+            front_matches = list(exports_dir.glob(f"*video_{front_video_id}*_labeled.csv"))
+            if not front_matches:
+                front_matches = [m for m in exports_dir.glob("*_labeled.csv")
+                                 if f"video_{front_video_id}" in m.stem or str(front_video_id) in m.stem]
+            if front_matches:
+                front_csv = str(sorted(front_matches)[-1])
+
+        if side_video_id:
+            side_matches = list(exports_dir.glob(f"*video_{side_video_id}*_labeled.csv"))
+            if not side_matches:
+                side_matches = [m for m in exports_dir.glob("*_labeled.csv")
+                                if f"video_{side_video_id}" in m.stem or str(side_video_id) in m.stem]
+            if side_matches:
+                side_csv = str(sorted(side_matches)[-1])
+
+        if not front_csv and not side_csv:
+            raise HTTPException(
+                status_code=404,
+                detail="No exported CSVs found for the specified video IDs"
+            )
+
+        # Run dual-angle scoring
+        result = run_fms_dual_on_export(
+            front_csv_path=front_csv,
+            side_csv_path=side_csv,
+            pain_reported=pain,
+            clinic_id=clinic_id,
+        )
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+
+        return JSONResponse(content={
+            "dual_angle": True,
+            "front_video_id": front_video_id,
+            "side_video_id": side_video_id,
+            "front_csv": front_csv,
+            "side_csv": side_csv,
+            "score": result["score"],
+            "front_score": result.get("front_score"),
+            "side_score": result.get("side_score"),
+            "view_sources": result.get("view_sources", {}),
+            "criteria": result.get("criteria", []),
+            "billing_descriptions": result.get("billing_descriptions", []),
+            "findings_csv_path": result.get("findings_csv_path"),
+            "report_json_path": result.get("report_json_path"),
+            "approval_status": result.get("approval_status", "unknown"),
+        })
 
     # =========================================================================
     # EHR INTEGRATION STUBS (MedStatix Gateway)
@@ -805,6 +990,7 @@ def register_fms_routes(app):
         })
 
     print("✓ Assessment routes: /api/fms/report/{id}, /api/fms/findings/{id}, /api/fms/findings/{id}/csv")
+    print("✓ Dual-angle: /api/fms/score-dual")
     print("✓ Approval routes: /api/fms/findings/{id}/approval, /api/fms/findings/{id}/approve, /api/fms/findings/{id}/reject")
     print("✓ Clinic codes: /api/ehr/clinic/{id}/sync-codes, /api/ehr/clinic/{id}/codes, /api/ehr/clinics")
     print("✓ EHR stubs: /api/ehr/push/{id}, /api/ehr/map-codes/{id}, /api/ehr/webhook, /api/ehr/status/{id}")

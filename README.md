@@ -46,6 +46,7 @@ Dynalytix uses computer vision to analyze movement patterns from video, automati
 - [x] EHR integration stubs (MedStatix gateway, payload schema, webhooks)
 - [x] Clinic code sync and auto-mapping (codes pre-filled before provider review)
 - [x] Provider approval workflow (draft → approved → pushed, FDA CDS compliant)
+- [x] Dual-angle processing (front + side views scored independently, merged at criterion level)
 - [ ] Threshold calibration against PT-scored videos
 - [ ] MedStatix EHR integration go-live
 - [ ] Additional movement assessments (hurdle step, inline lunge, etc.)
@@ -183,6 +184,7 @@ dynalytics/
 ├── fms/                        # Movement scoring engine
 │   ├── scoring/
 │   │   ├── deep_squat.py       # Rule engine (CSV → score 0-3)
+│   │   ├── dual_angle.py       # Dual-angle scoring (front + side views)
 │   │   └── thresholds.py       # Angle thresholds (tunable)
 │   ├── reporting/
 │   │   ├── report_generator.py # LLM-powered clinical reports

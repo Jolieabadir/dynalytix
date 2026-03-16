@@ -107,6 +107,12 @@ class AssessmentPayload:
     # Disclaimers
     disclaimer: str = ""
 
+    # Dual-angle scoring
+    dual_angle: bool = False
+    view_sources: dict[str, str] = field(default_factory=dict)
+    front_score: int | None = None
+    side_score: int | None = None
+
     # Metadata
     dynalytix_assessment_id: str = ""
     source_video_hash: str = ""
@@ -170,6 +176,10 @@ class AssessmentPayload:
             clinical_narrative=result.get("clinical_report"),
             billing_items=billing_items,
             disclaimer=result.get("disclaimer", ""),
+            dual_angle=result.get("dual_angle", False),
+            view_sources=result.get("view_sources", {}),
+            front_score=result.get("front_score"),
+            side_score=result.get("side_score"),
             dynalytix_assessment_id=assessment_id,
             processing_mode=result.get("mode", "quick"),
         )
