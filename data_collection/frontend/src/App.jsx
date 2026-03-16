@@ -1,21 +1,25 @@
 /**
- * Main App component.
+ * Main App — Movement Assessment Tool
+ *
+ * Three-state flow:
+ * 1. Upload (front + side videos)
+ * 2. Review (both videos with skeleton overlays while scoring runs)
+ * 3. Results (score, criteria, billing, disclaimer)
  */
 import { useEffect, useState } from 'react';
 import useStore from './store/useStore';
-import { getConfig, scoreDualAngle } from './api/client';
-import { exportVideo } from './api/ExportService';
+import { getConfig, scoreDualAngle, exportVideo, getFMSProviderReport } from './api/client';
 import VideoUpload from './components/VideoUpload';
-import VideoPlayer from './components/VideoPlayer';
-import MovesList from './components/MovesList';
-import MoveForm from './components/MoveForm';
-import TaggingMode from './components/TaggingMode';
-import ThankYouModal from './components/ThankYouModal';
-import DoneButton from './components/DoneButton';
+import DualVideoReview from './components/DualVideoReview';
+import AssessmentResults from './components/AssessmentResults';
 import './App.css';
 
 function App() {
-  const { mode, config, setConfig } = useStore();
+  const { config, setConfig, assessmentPhase, frontVideoId, sideVideoId, resetDualAngle } = useStore();
+  const [appState, setAppState] = useState('upload'); // 'upload' | 'review' | 'results'
+  const [scoringResults, setScoringResults] = useState(null);
+  const [scoringError, setScoringError] = useState(null);
+  const [isScoring, setIsScoring] = useState(false);
 
   useEffect(() => {
     const loadConfig = async () => {
@@ -29,6 +33,62 @@ function App() {
     loadConfig();
   }, [setConfig]);
 
+  // When assessmentPhase becomes 'complete', transition to review + auto-score
+  useEffect(() => {
+    if (assessmentPhase === 'complete' && appState === 'upload') {
+      setAppState('review');
+      runAutoScore();
+    }
+  }, [assessmentPhase]);
+
+  const runAutoScore = async () => {
+    setIsScoring(true);
+    setScoringError(null);
+    try {
+      // Export both videos (triggers pose CSV creation + single-angle auto-score)
+      const exportPromises = [];
+      const currentFrontVideoId = useStore.getState().frontVideoId;
+      const currentSideVideoId = useStore.getState().sideVideoId;
+
+      if (currentFrontVideoId) exportPromises.push(exportVideo(currentFrontVideoId));
+      if (currentSideVideoId && currentSideVideoId !== currentFrontVideoId) {
+        exportPromises.push(exportVideo(currentSideVideoId));
+      }
+      await Promise.all(exportPromises);
+
+      // Run dual-angle scoring if both views available
+      let results = null;
+      if (currentFrontVideoId && currentSideVideoId) {
+        results = await scoreDualAngle(currentFrontVideoId, currentSideVideoId);
+      } else {
+        // Single-angle — fetch the report from the single video
+        const videoId = currentFrontVideoId || currentSideVideoId;
+        try {
+          results = await getFMSProviderReport(videoId);
+        } catch (e) {
+          console.error('Single-angle report fetch failed:', e);
+        }
+      }
+
+      setScoringResults(results);
+      setAppState('results');
+    } catch (err) {
+      console.error('Auto-scoring failed:', err);
+      setScoringError(err.message || 'Scoring failed');
+      // Still move to results to show what we have
+      setAppState('results');
+    } finally {
+      setIsScoring(false);
+    }
+  };
+
+  const handleStartNew = () => {
+    resetDualAngle();
+    setScoringResults(null);
+    setScoringError(null);
+    setAppState('upload');
+  };
+
   if (!config) {
     return (
       <div className="loading">
@@ -41,86 +101,27 @@ function App() {
     <div className="app">
       <header className="app-header">
         <h1>Dynalytix</h1>
-        <p>Movement Data Collection</p>
+        <p>Movement Assessment</p>
       </header>
 
-      {mode === 'define' ? <DefineMode /> : <TaggingMode />}
-    </div>
-  );
-}
+      {appState === 'upload' && <VideoUpload />}
 
-/**
- * Define Mode - Main view for creating moves
- */
-function DefineMode() {
-  const {
-    currentVideo,
-    frontVideoId,
-    sideVideoId,
-    assessmentPhase,
-  } = useStore();
-  const [showThankYou, setShowThankYou] = useState(false);
-  const [exporting, setExporting] = useState(false);
-  const [dualAngleResults, setDualAngleResults] = useState(null);
+      {appState === 'review' && (
+        <DualVideoReview
+          isScoring={isScoring}
+          scoringError={scoringError}
+        />
+      )}
 
-  // Show VideoUpload if still in front or side phase
-  if (!currentVideo || assessmentPhase !== 'complete') {
-    return <VideoUpload />;
-  }
-
-  const handleDone = async () => {
-    setExporting(true);
-    try {
-      // Export all videos that were uploaded
-      const exportPromises = [];
-      if (frontVideoId) {
-        exportPromises.push(exportVideo(frontVideoId));
-      }
-      if (sideVideoId && sideVideoId !== frontVideoId) {
-        exportPromises.push(exportVideo(sideVideoId));
-      }
-      await Promise.all(exportPromises);
-
-      // If we have dual-angle, call the scoring endpoint
-      if (frontVideoId && sideVideoId) {
-        try {
-          const dualResults = await scoreDualAngle(frontVideoId, sideVideoId);
-          setDualAngleResults(dualResults);
-        } catch (err) {
-          console.error('Dual-angle scoring failed:', err);
-          // Continue - single video scoring will still work
-        }
-      }
-
-      setShowThankYou(true);
-    } catch (err) {
-      console.error('Export failed:', err);
-      // Still show thank you - data is saved in db
-      setShowThankYou(true);
-    } finally {
-      setExporting(false);
-    }
-  };
-
-  return (
-    <div className="define-mode">
-      <div className="define-header">
-        <DoneButton onClick={handleDone} disabled={exporting} />
-        {exporting && <span className="exporting-text">Exporting...</span>}
-      </div>
-      <div className="main-area">
-        <VideoPlayer />
-        <MovesList />
-      </div>
-      <MoveForm />
-      <ThankYouModal
-        show={showThankYou}
-        onClose={() => setShowThankYou(false)}
-        videoId={currentVideo?.id}
-        frontVideoId={frontVideoId}
-        sideVideoId={sideVideoId}
-        dualAngleResults={dualAngleResults}
-      />
+      {appState === 'results' && (
+        <AssessmentResults
+          results={scoringResults}
+          error={scoringError}
+          frontVideoId={frontVideoId}
+          sideVideoId={sideVideoId}
+          onStartNew={handleStartNew}
+        />
+      )}
     </div>
   );
 }

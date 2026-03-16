@@ -110,6 +110,12 @@ const useStore = create((set, get) => ({
     sideVideoId: null,
     frontVideoBlobUrl: null,
     sideVideoBlobUrl: null,
+    // Also reset general video state for clean slate
+    currentVideo: null,
+    moves: [],
+    videoBlobUrl: null,
+    csvData: null,
+    csvString: null,
   }),
 }));
 
