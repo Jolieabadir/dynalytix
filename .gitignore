@@ -4,3 +4,4 @@ venv/
 *.MP4
 __pycache__/
 *.pyc
+.env
