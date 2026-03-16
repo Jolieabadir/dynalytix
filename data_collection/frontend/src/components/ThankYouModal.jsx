@@ -3,7 +3,7 @@
  *
  * Shows after export completes. Offers two report views:
  * - Patient Report (no billing codes, plain language)
- * - Provider Report (full clinical data with CPT codes)
+ * - Provider Report (full clinical data with billing categories)
  */
 import { useState } from 'react';
 import useStore from '../store/useStore';
@@ -64,7 +64,7 @@ function ThankYouModal({ show, onClose, videoId }) {
             </button>
             <button onClick={() => handleViewReport('provider')} className="report-btn provider-btn" disabled={loading}>
               {loading ? 'Loading...' : '🏥 Provider Report'}
-              <span className="report-btn-desc">Full clinical data & CPT codes</span>
+              <span className="report-btn-desc">Full clinical data & billing categories</span>
             </button>
           </div>
           {error && <p className="report-error">{error}</p>}
@@ -170,17 +170,18 @@ function ThankYouModal({ show, onClose, videoId }) {
                 ))}
               </div>
             )}
-            {reportData.cpt_suggestions?.length > 0 && (
+            {reportData.billing_descriptions?.length > 0 && (
               <div className="cpt-section">
-                <h4>Suggested CPT Codes</h4>
-                <p className="cpt-disclaimer">⚠ Suggestions only — review and approve before billing.</p>
-                {reportData.cpt_suggestions.map((cpt, i) => (
+                <h4>Billing Categories</h4>
+                <p className="cpt-disclaimer">⚠ Review and approve before billing. Consult your practice's billing guidelines for specific codes.</p>
+                {reportData.billing_descriptions.map((b, i) => (
                   <div key={i} className="cpt-item">
-                    <div className="cpt-code">{cpt.code}</div>
+                    <div className="cpt-code">{b.practice_code || 'unmapped'}</div>
                     <div>
-                      <strong>{cpt.description}</strong>
-                      {cpt.units && <span className="cpt-units"> ({cpt.units} units)</span>}
-                      <p>{cpt.justification}</p>
+                      <strong>{b.category}</strong>
+                      <span className="cpt-units"> [{b.service_type}]</span>
+                      {b.units && <span className="cpt-units"> ({b.units} units)</span>}
+                      <p>{b.justification}</p>
                     </div>
                   </div>
                 ))}
