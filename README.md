@@ -44,6 +44,8 @@ Dynalytix uses computer vision to analyze movement patterns from video, automati
 - [x] LLM clinical report generation (stub, requires API key)
 - [x] Clinical + billing disclaimers on all reports
 - [x] EHR integration stubs (MedStatix gateway, payload schema, webhooks)
+- [x] Clinic code sync and auto-mapping (codes pre-filled before provider review)
+- [x] Provider approval workflow (draft → approved → pushed, FDA CDS compliant)
 - [ ] Threshold calibration against PT-scored videos
 - [ ] MedStatix EHR integration go-live
 - [ ] Additional movement assessments (hurdle step, inline lunge, etc.)
@@ -187,11 +189,13 @@ dynalytics/
 │   │   └── templates.py        # Prompt templates
 │   ├── billing/
 │   │   └── cpt_codes.py        # Billing categories + CPT code suggestions
-│   ├── ehr/                    # EHR integration stubs (MedStatix gateway)
+│   ├── ehr/                    # EHR integration (MedStatix gateway)
 │   │   ├── payload.py          # Assessment payload schema (→ MedStatix)
 │   │   ├── adapter.py          # Abstract gateway interface
 │   │   ├── medstatix.py        # MedStatix gateway (stub)
-│   │   └── events.py           # Webhook event types
+│   │   ├── events.py           # Webhook event types
+│   │   ├── clinic_codes.py     # Local cache of clinic billing code mappings
+│   │   └── approval.py         # Provider approval workflow
 │   ├── disclaimer.py           # Clinical + billing disclaimers
 │   ├── integration.py          # FastAPI hooks + auto-run on export
 │   └── pipeline.py             # CLI: CSV → score + report + billing

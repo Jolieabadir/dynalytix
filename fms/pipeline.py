@@ -23,7 +23,7 @@ from .scoring.deep_squat import score_deep_squat
 from .billing.cpt_codes import suggest_all_codes
 
 
-def run_quick(csv_path: str, pain: bool = False, include_cpt_codes: bool = False) -> dict:
+def run_quick(csv_path: str, pain: bool = False, include_cpt_codes: bool = False, clinic_id: str = "") -> dict:
     """
     Run the quick pipeline: scoring + rule-based billing categories.
 
@@ -33,6 +33,7 @@ def run_quick(csv_path: str, pain: bool = False, include_cpt_codes: bool = False
         csv_path: Path to the pose CSV file.
         pain: Whether pain was reported.
         include_cpt_codes: If True, include CPT codes (Pro tier / EHR integration).
+        clinic_id: If provided, auto-map billing codes using the clinic's cached mappings.
 
     Returns:
         Dictionary with score, criteria, and billing descriptions (+ CPT if requested).
@@ -54,6 +55,25 @@ def run_quick(csv_path: str, pain: bool = False, include_cpt_codes: bool = False
         criteria_results=result_dict["criteria"],
     )
 
+    # Serialize billing descriptions to dicts
+    billing_desc_dicts = [
+        {
+            "category": b.category,
+            "service_type": b.service_type,
+            "justification": b.justification,
+            "units": b.units,
+            "practice_code": b.practice_code,        # None until EHR integration
+            "practice_modifier": b.practice_modifier,  # None until EHR integration
+            "mapping_status": b.mapping_status,        # "unmapped" until EHR integration
+        }
+        for b in billing_descriptions
+    ]
+
+    # Auto-map billing codes if a clinic is specified
+    if clinic_id:
+        from .ehr.clinic_codes import apply_clinic_codes
+        billing_desc_dicts = apply_clinic_codes(billing_desc_dicts, clinic_id)
+
     output = {
         "mode": "quick",
         "score": result.score,
@@ -61,18 +81,7 @@ def run_quick(csv_path: str, pain: bool = False, include_cpt_codes: bool = False
         "criteria": result_dict["criteria"],
         "angles_at_depth": result_dict["angles_at_depth"],
         "bilateral_differences": result_dict["left_right_differences"],
-        "billing_descriptions": [
-            {
-                "category": b.category,
-                "service_type": b.service_type,
-                "justification": b.justification,
-                "units": b.units,
-                "practice_code": b.practice_code,        # None until EHR integration
-                "practice_modifier": b.practice_modifier,  # None until EHR integration
-                "mapping_status": b.mapping_status,        # "unmapped" until EHR integration
-            }
-            for b in billing_descriptions
-        ],
+        "billing_descriptions": billing_desc_dicts,
     }
 
     # CPT codes only included when explicitly requested (Pro tier / EHR integration)
@@ -90,7 +99,7 @@ def run_quick(csv_path: str, pain: bool = False, include_cpt_codes: bool = False
     return output
 
 
-def run_full(csv_path: str, pain: bool = False, include_cpt_codes: bool = False) -> dict:
+def run_full(csv_path: str, pain: bool = False, include_cpt_codes: bool = False, clinic_id: str = "") -> dict:
     """
     Run the full pipeline: scoring + LLM report + billing categories.
 
@@ -100,6 +109,7 @@ def run_full(csv_path: str, pain: bool = False, include_cpt_codes: bool = False)
         csv_path: Path to the pose CSV file.
         pain: Whether pain was reported.
         include_cpt_codes: If True, include CPT codes (Pro tier / EHR integration).
+        clinic_id: If provided, auto-map billing codes using the clinic's cached mappings.
 
     Returns:
         Dictionary with score, clinical report, billing descriptions (+ CPT if requested).
@@ -120,23 +130,31 @@ def run_full(csv_path: str, pain: bool = False, include_cpt_codes: bool = False)
         criteria_results=result_dict["criteria"],
     )
 
+    # Serialize billing descriptions to dicts
+    billing_desc_dicts = [
+        {
+            "category": b.category,
+            "service_type": b.service_type,
+            "justification": b.justification,
+            "units": b.units,
+            "practice_code": b.practice_code,        # None until EHR integration
+            "practice_modifier": b.practice_modifier,  # None until EHR integration
+            "mapping_status": b.mapping_status,        # "unmapped" until EHR integration
+        }
+        for b in billing_descriptions
+    ]
+
+    # Auto-map billing codes if a clinic is specified
+    if clinic_id:
+        from .ehr.clinic_codes import apply_clinic_codes
+        billing_desc_dicts = apply_clinic_codes(billing_desc_dicts, clinic_id)
+
     output = {
         "mode": "full",
         "score": result.score,
         "summary": result.summary(),
         "clinical_report": report.clinical_report,
-        "billing_descriptions": [
-            {
-                "category": b.category,
-                "service_type": b.service_type,
-                "justification": b.justification,
-                "units": b.units,
-                "practice_code": b.practice_code,        # None until EHR integration
-                "practice_modifier": b.practice_modifier,  # None until EHR integration
-                "mapping_status": b.mapping_status,        # "unmapped" until EHR integration
-            }
-            for b in billing_descriptions
-        ],
+        "billing_descriptions": billing_desc_dicts,
         "criteria": result_dict["criteria"],
         "angles_at_depth": result_dict["angles_at_depth"],
         "bilateral_differences": result_dict["left_right_differences"],

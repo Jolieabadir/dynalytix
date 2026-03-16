@@ -16,11 +16,13 @@ fms/
 │   └── cpt_codes.py        # Billing categories + rule-based suggestions
 │                            #   BillingDescription (base tier, no CPT codes)
 │                            #   CPTSuggestion (Pro tier, behind include_cpt_codes flag)
-├── ehr/                     # EHR integration layer (stubs)
+├── ehr/                     # EHR integration layer
 │   ├── payload.py           # Standardized payload schema (Dynalytix → MedStatix contract)
 │   ├── adapter.py           # Abstract gateway interface
 │   ├── medstatix.py         # MedStatix gateway (stub, awaiting API docs)
-│   └── events.py            # Webhook event types from MedStatix
+│   ├── events.py            # Webhook event types from MedStatix
+│   ├── clinic_codes.py      # Local cache of clinic billing code mappings (auto-mapping)
+│   └── approval.py          # Provider approval workflow (draft → approved → pushed)
 ├── disclaimer.py            # Clinical + billing disclaimers (required on all reports)
 ├── pipeline.py              # Ties it all together: CSV → score + report + billing
 ├── integration.py           # FastAPI routes + auto-run on export
@@ -81,14 +83,72 @@ Dynalytix never talks to EHR systems directly. We push a standardized
 push confirmations, patient scheduling, and code mapping updates.
 See `fms/ehr/events.py` for event types.
 
+## Clinic Code Sync & Auto-Mapping
+
+When a clinic connects via MedStatix, their billing code mappings are synced
+to Dynalytix and cached locally (`data/clinic_codes/{clinic_id}.json`).
+
+Every assessment auto-maps billing categories to the clinic's own codes
+**before** the provider sees the results. The provider doesn't manually select
+codes — they just click "approve."
+
+**Flow:**
+1. Clinic connects via MedStatix, code mappings are synced
+2. Patient films assessment at home
+3. Scoring pipeline runs, billing categories auto-mapped
+4. Provider opens dashboard, sees pre-filled codes
+5. Provider clicks approve → ready for EHR push
+
+**Sync triggers:**
+- MedStatix webhook: `clinic.code_mapping_updated`
+- Manual: `POST /api/ehr/clinic/{clinic_id}/sync-codes`
+
+## Provider Approval Workflow
+
+Every assessment follows this lifecycle:
+
+```
+draft → provider_review → approved (or rejected) → pushed
+```
+
+The provider **must** review and approve before results can be pushed to the
+patient's chart. This is required for FDA CDS exemption (Criterion 4: the HCP
+independently reviews the basis for the recommendation).
+
+**Statuses:**
+- `draft` — Scoring complete, not yet reviewed by provider
+- `provider_review` — Provider has opened/viewed the assessment
+- `approved` — Provider approved, ready for EHR push
+- `rejected` — Provider rejected, needs re-assessment or manual override
+- `pushed` — Successfully pushed to patient's EHR chart
+
+**Storage:** JSON sidecar files in `data/exports/fms_findings/{stem}_approval.json`
+(Future: migrate to PostgreSQL when chart DB is built)
+
 ## API Endpoints
 
 ### Assessment Reports
 ```
 GET  /api/fms/report/{video_id}              # Patient-facing report (no billing codes)
-GET  /api/fms/findings/{video_id}            # Provider report (billing categories + practice_code slots)
+GET  /api/fms/findings/{video_id}            # Provider report (includes approval status)
 GET  /api/fms/findings/{video_id}?cpt=true   # Provider report with CPT codes (Pro tier)
 GET  /api/fms/findings/{video_id}/csv        # Download findings as CSV
+```
+
+### Provider Approval
+```
+GET  /api/fms/findings/{video_id}/approval   # Get approval status
+POST /api/fms/findings/{video_id}/approve    # Provider approves (requires provider_id)
+POST /api/fms/findings/{video_id}/reject     # Provider rejects (requires provider_id)
+POST /api/fms/findings/{video_id}/mark-reviewed  # Mark as viewed by provider
+```
+
+### Clinic Code Sync
+```
+POST /api/ehr/clinic/{clinic_id}/sync-codes  # Sync code mappings for a clinic
+GET  /api/ehr/clinic/{clinic_id}/codes       # Get cached code mappings
+GET  /api/ehr/clinics                        # List all clinics with cached mappings
+DELETE /api/ehr/clinic/{clinic_id}/codes     # Delete cached code mappings
 ```
 
 ### EHR Integration (stubs — return 501 until MedStatix is live)
@@ -113,10 +173,20 @@ Calibrate against PT-scored videos:
 ```python
 from fms.pipeline import run_quick
 
+# Basic usage (no auto-mapping)
 result = run_quick("path/to/exported.csv")
-# Returns: score, criteria, billing_descriptions (with practice_code slots)
+
+# With auto-mapping for a specific clinic
+result = run_quick("path/to/exported.csv", clinic_id="clinic_abc123")
+# Returns: score, criteria, billing_descriptions (with practice_code filled in)
 
 # Build EHR payload:
 from fms.ehr.payload import AssessmentPayload
 payload = AssessmentPayload.from_pipeline_result(result)
+
+# Check/update approval status:
+from fms.ehr.approval import get_approval, approve
+approval = get_approval("video_abc123_labeled")
+if approval.status.value == "draft":
+    approve("video_abc123_labeled", provider_id="dr_smith", provider_name="Dr. Smith")
 ```

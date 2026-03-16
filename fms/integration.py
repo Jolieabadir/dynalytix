@@ -34,6 +34,7 @@ from .disclaimer import CLINICAL_DISCLAIMER, BILLING_DISCLAIMER
 def run_fms_on_export(
     labeled_csv_path: str,
     pain_reported: bool = False,
+    clinic_id: str = "",
 ) -> dict:
     """
     Automatically run movement scoring on an exported labeled CSV.
@@ -44,17 +45,18 @@ def run_fms_on_export(
     Args:
         labeled_csv_path: Path to the labeled CSV that was just exported.
         pain_reported: Whether pain was reported during the assessment.
+        clinic_id: If provided, auto-maps billing codes using the clinic's cached mappings.
 
     Returns:
-        Dictionary with score, criteria, CPT suggestions, and output paths.
+        Dictionary with score, criteria, billing descriptions, output paths, and approval status.
     """
     labeled_path = Path(labeled_csv_path)
 
     if not labeled_path.exists():
         return {"error": f"Labeled CSV not found: {labeled_csv_path}"}
 
-    # Run the scoring pipeline
-    result = run_quick(str(labeled_path), pain=pain_reported)
+    # Run the scoring pipeline (with auto-mapping if clinic_id provided)
+    result = run_quick(str(labeled_path), pain=pain_reported, clinic_id=clinic_id)
 
     # Determine output paths
     stem = labeled_path.stem  # e.g. "video_abc123_IMG_8524_labeled"
@@ -76,11 +78,26 @@ def run_fms_on_export(
         "angles_at_depth": result.get("angles_at_depth", {}),
         "bilateral_differences": result.get("bilateral_differences", {}),
         "billing_descriptions": result.get("billing_descriptions", []),
+        "clinic_id": clinic_id if clinic_id else None,
         "disclaimer": CLINICAL_DISCLAIMER,
         "billing_disclaimer": BILLING_DISCLAIMER,
     }
     with open(json_output, "w") as f:
         json.dump(report_data, f, indent=2)
+
+    # Create approval record (starts as draft — provider must review)
+    assessment_stem = stem  # Use the same stem as the findings files
+    try:
+        from .ehr.approval import create_approval
+        approval = create_approval(assessment_stem)
+        result["approval_status"] = approval.status.value
+        report_data["approval_status"] = approval.status.value
+        # Re-save with approval status
+        with open(json_output, "w") as f:
+            json.dump(report_data, f, indent=2)
+    except Exception as approval_err:
+        print(f"  Approval tracking failed (non-blocking): {approval_err}")
+        result["approval_status"] = "unknown"
 
     # Add output paths to result
     result["findings_csv_path"] = str(csv_output)
@@ -89,6 +106,9 @@ def run_fms_on_export(
     print(f"Movement Assessment complete: Score {result['score']}/3")
     print(f"  Findings CSV: {csv_output}")
     print(f"  Report JSON:  {json_output}")
+    if clinic_id:
+        print(f"  Clinic ID:    {clinic_id} (auto-mapping applied)")
+    print(f"  Approval:     {result.get('approval_status', 'unknown')}")
 
     return result
 
@@ -310,6 +330,8 @@ def register_fms_routes(app):
         By default returns billing categories (descriptive language).
         Pass ?cpt=true to include CPT codes (Pro tier, requires AMA license).
         """
+        from .ehr.approval import get_approval
+
         findings_dir = Path("data/exports/fms_findings")
 
         if not findings_dir.exists():
@@ -336,6 +358,20 @@ def register_fms_routes(app):
         # Ensure disclaimers are present
         full_report["disclaimer"] = CLINICAL_DISCLAIMER
         full_report["billing_disclaimer"] = BILLING_DISCLAIMER
+
+        # Include current approval status
+        assessment_id = report_path.stem.replace("_fms_report", "")
+        approval = get_approval(assessment_id)
+        if approval:
+            full_report["approval"] = {
+                "status": approval.status.value,
+                "reviewed_by": approval.reviewed_by_name or None,
+                "reviewed_at": approval.reviewed_at or None,
+                "provider_notes": approval.provider_notes or None,
+                "pushed_at": approval.pushed_at or None,
+            }
+        else:
+            full_report["approval"] = {"status": "unknown"}
 
         return JSONResponse(content=full_report)
 
@@ -414,9 +450,78 @@ def register_fms_routes(app):
 
     @app.post("/api/ehr/webhook")
     async def ehr_webhook(request_body: dict = {}):
-        """Webhook receiver for MedStatix events. STUB — logs and returns 200."""
+        """
+        Webhook receiver for MedStatix events.
+
+        Handles:
+        - clinic.code_mapping_updated: Refresh clinic code cache
+        - assessment.push_confirmed: Mark assessment as pushed
+        - Other events: Log and acknowledge
+        """
+        from .ehr.approval import mark_pushed, get_approval
+        from .ehr.clinic_codes import ClinicCodeMap, CodeEntry, save_clinic_codes
+
         event_type = request_body.get("event_type", "unknown")
-        print(f"EHR webhook received (stub): {event_type} — {request_body}")
+        payload = request_body.get("payload", {})
+
+        print(f"EHR webhook received: {event_type}")
+
+        # Handle clinic code mapping updates
+        if event_type == "clinic.code_mapping_updated":
+            clinic_id = payload.get("clinic_id", "")
+            if clinic_id:
+                entries = []
+                for e in payload.get("entries", []):
+                    entries.append(CodeEntry(
+                        billing_category=e.get("billing_category", ""),
+                        practice_code=e.get("practice_code", ""),
+                        practice_description=e.get("practice_description", ""),
+                        modifier=e.get("modifier", ""),
+                        unit_rate=e.get("unit_rate", 0.0),
+                    ))
+
+                code_map = ClinicCodeMap(
+                    clinic_id=clinic_id,
+                    clinic_name=payload.get("clinic_name", ""),
+                    ehr_system=payload.get("ehr_system", ""),
+                    entries=entries,
+                    synced_at=datetime.now().isoformat(),
+                    source="medstatix_webhook",
+                )
+                save_clinic_codes(code_map)
+                print(f"  → Synced {len(entries)} code mappings for clinic {clinic_id}")
+
+                return JSONResponse(content={
+                    "received": True,
+                    "event_type": event_type,
+                    "processed": True,
+                    "clinic_id": clinic_id,
+                    "entries_synced": len(entries),
+                })
+
+        # Handle assessment push confirmations
+        if event_type == "assessment.push_confirmed":
+            assessment_id = payload.get("assessment_id", "")
+            ehr_record_id = payload.get("ehr_record_id", "")
+            gateway_request_id = payload.get("gateway_request_id", "")
+
+            if assessment_id:
+                approval = get_approval(assessment_id)
+                if approval and approval.status.value == "approved":
+                    try:
+                        mark_pushed(assessment_id, ehr_record_id, gateway_request_id)
+                        print(f"  → Marked assessment {assessment_id} as pushed")
+                        return JSONResponse(content={
+                            "received": True,
+                            "event_type": event_type,
+                            "processed": True,
+                            "assessment_id": assessment_id,
+                        })
+                    except ValueError as e:
+                        print(f"  → Failed to mark pushed: {e}")
+
+        # Default: acknowledge but don't process
+        print(f"  → Event not processed (no handler or missing data)")
         return JSONResponse(content={"received": True, "event_type": event_type, "processed": False})
 
     @app.get("/api/ehr/status/{gateway_request_id}")
@@ -426,5 +531,280 @@ def register_fms_routes(app):
             "status": "not_implemented", "gateway_request_id": gateway_request_id,
         })
 
+    # =========================================================================
+    # PROVIDER APPROVAL WORKFLOW
+    # =========================================================================
+
+    @app.get("/api/fms/findings/{video_id}/approval")
+    async def get_approval_status(video_id: int):
+        """Get the approval status for an assessment."""
+        from .ehr.approval import get_approval
+
+        findings_dir = Path("data/exports/fms_findings")
+        if not findings_dir.exists():
+            raise HTTPException(status_code=404, detail="No assessment findings available")
+
+        matches = [m for m in findings_dir.glob("*_fms_report.json")
+                   if f"video_{video_id}" in m.stem or str(video_id) in m.stem]
+        if not matches:
+            raise HTTPException(status_code=404, detail=f"No findings for video {video_id}")
+
+        report_path = sorted(matches)[-1]
+        assessment_id = report_path.stem.replace("_fms_report", "")
+
+        approval = get_approval(assessment_id)
+        if not approval:
+            return JSONResponse(content={
+                "assessment_id": assessment_id,
+                "status": "unknown",
+                "message": "No approval record found for this assessment.",
+            })
+
+        return JSONResponse(content=approval.to_dict())
+
+    @app.post("/api/fms/findings/{video_id}/approve")
+    async def approve_assessment(
+        video_id: int,
+        provider_id: str = "",
+        provider_name: str = "",
+        notes: str = "",
+        modified_score: bool = False,
+        modified_billing: bool = False,
+    ):
+        """Provider approves the assessment. Ready for EHR push."""
+        from .ehr.approval import approve, get_approval
+
+        if not provider_id:
+            raise HTTPException(status_code=400, detail="provider_id is required")
+
+        findings_dir = Path("data/exports/fms_findings")
+        if not findings_dir.exists():
+            raise HTTPException(status_code=404, detail="No assessment findings available")
+
+        matches = [m for m in findings_dir.glob("*_fms_report.json")
+                   if f"video_{video_id}" in m.stem or str(video_id) in m.stem]
+        if not matches:
+            raise HTTPException(status_code=404, detail=f"No findings for video {video_id}")
+
+        report_path = sorted(matches)[-1]
+        assessment_id = report_path.stem.replace("_fms_report", "")
+
+        record = approve(
+            assessment_id=assessment_id,
+            provider_id=provider_id,
+            provider_name=provider_name,
+            notes=notes,
+            modified_score=modified_score,
+            modified_billing=modified_billing,
+        )
+
+        return JSONResponse(content={
+            "assessment_id": assessment_id,
+            "status": record.status.value,
+            "reviewed_by": record.reviewed_by_name,
+            "reviewed_at": record.reviewed_at,
+            "message": "Assessment approved. Ready for EHR push.",
+        })
+
+    @app.post("/api/fms/findings/{video_id}/reject")
+    async def reject_assessment(
+        video_id: int,
+        provider_id: str = "",
+        provider_name: str = "",
+        notes: str = "",
+    ):
+        """Provider rejects the assessment."""
+        from .ehr.approval import reject
+
+        if not provider_id:
+            raise HTTPException(status_code=400, detail="provider_id is required")
+
+        findings_dir = Path("data/exports/fms_findings")
+        if not findings_dir.exists():
+            raise HTTPException(status_code=404, detail="No assessment findings available")
+
+        matches = [m for m in findings_dir.glob("*_fms_report.json")
+                   if f"video_{video_id}" in m.stem or str(video_id) in m.stem]
+        if not matches:
+            raise HTTPException(status_code=404, detail=f"No findings for video {video_id}")
+
+        report_path = sorted(matches)[-1]
+        assessment_id = report_path.stem.replace("_fms_report", "")
+
+        record = reject(
+            assessment_id=assessment_id,
+            provider_id=provider_id,
+            provider_name=provider_name,
+            notes=notes,
+        )
+
+        return JSONResponse(content={
+            "assessment_id": assessment_id,
+            "status": record.status.value,
+            "reviewed_by": record.reviewed_by_name,
+            "reviewed_at": record.reviewed_at,
+            "message": "Assessment rejected. Requires re-assessment or manual override.",
+        })
+
+    @app.post("/api/fms/findings/{video_id}/mark-reviewed")
+    async def mark_provider_review_endpoint(video_id: int):
+        """Mark that a provider has opened/viewed the assessment."""
+        from .ehr.approval import mark_provider_review
+
+        findings_dir = Path("data/exports/fms_findings")
+        if not findings_dir.exists():
+            raise HTTPException(status_code=404, detail="No assessment findings available")
+
+        matches = [m for m in findings_dir.glob("*_fms_report.json")
+                   if f"video_{video_id}" in m.stem or str(video_id) in m.stem]
+        if not matches:
+            raise HTTPException(status_code=404, detail=f"No findings for video {video_id}")
+
+        report_path = sorted(matches)[-1]
+        assessment_id = report_path.stem.replace("_fms_report", "")
+
+        record = mark_provider_review(assessment_id)
+
+        return JSONResponse(content={
+            "assessment_id": assessment_id,
+            "status": record.status.value,
+            "message": "Assessment marked as under provider review.",
+        })
+
+    # =========================================================================
+    # CLINIC CODE SYNC
+    # =========================================================================
+
+    @app.post("/api/ehr/clinic/{clinic_id}/sync-codes")
+    async def sync_clinic_codes(clinic_id: str, code_mappings: dict = {}):
+        """
+        Sync billing code mappings for a clinic.
+
+        This would typically be called by MedStatix when a clinic's code
+        mappings are updated. For now, accepts a manual mapping payload.
+
+        Expected format:
+        {
+            "clinic_name": "Example PT Clinic",
+            "ehr_system": "webpt",
+            "entries": [
+                {
+                    "billing_category": "Physical Performance Testing",
+                    "practice_code": "97750",
+                    "practice_description": "Physical performance test",
+                    "modifier": "GP",
+                    "unit_rate": 45.00
+                },
+                ...
+            ]
+        }
+        """
+        from .ehr.clinic_codes import ClinicCodeMap, CodeEntry, save_clinic_codes
+
+        entries = []
+        for e in code_mappings.get("entries", []):
+            entries.append(CodeEntry(
+                billing_category=e.get("billing_category", ""),
+                practice_code=e.get("practice_code", ""),
+                practice_description=e.get("practice_description", ""),
+                modifier=e.get("modifier", ""),
+                unit_rate=e.get("unit_rate", 0.0),
+            ))
+
+        code_map = ClinicCodeMap(
+            clinic_id=clinic_id,
+            clinic_name=code_mappings.get("clinic_name", ""),
+            ehr_system=code_mappings.get("ehr_system", ""),
+            entries=entries,
+            synced_at=datetime.now().isoformat(),
+            source="api",
+        )
+
+        path = save_clinic_codes(code_map)
+
+        return JSONResponse(content={
+            "clinic_id": clinic_id,
+            "entries_synced": len(entries),
+            "synced_at": code_map.synced_at,
+            "cache_path": str(path),
+            "message": f"Code mappings synced for clinic {clinic_id}.",
+        })
+
+    @app.get("/api/ehr/clinic/{clinic_id}/codes")
+    async def get_clinic_codes(clinic_id: str):
+        """Get cached billing code mappings for a clinic."""
+        from .ehr.clinic_codes import load_clinic_codes
+
+        code_map = load_clinic_codes(clinic_id)
+        if not code_map:
+            return JSONResponse(status_code=404, content={
+                "clinic_id": clinic_id,
+                "cached": False,
+                "message": "No code mappings cached for this clinic. Sync codes first.",
+            })
+
+        return JSONResponse(content={
+            "clinic_id": clinic_id,
+            "cached": True,
+            "clinic_name": code_map.clinic_name,
+            "ehr_system": code_map.ehr_system,
+            "synced_at": code_map.synced_at,
+            "source": code_map.source,
+            "entries": [
+                {
+                    "billing_category": e.billing_category,
+                    "practice_code": e.practice_code,
+                    "practice_description": e.practice_description,
+                    "modifier": e.modifier,
+                    "unit_rate": e.unit_rate,
+                }
+                for e in code_map.entries
+            ],
+        })
+
+    @app.get("/api/ehr/clinics")
+    async def list_clinics():
+        """List all clinics with cached code mappings."""
+        from .ehr.clinic_codes import list_cached_clinics, load_clinic_codes
+
+        clinic_ids = list_cached_clinics()
+        clinics = []
+        for cid in clinic_ids:
+            code_map = load_clinic_codes(cid)
+            if code_map:
+                clinics.append({
+                    "clinic_id": cid,
+                    "clinic_name": code_map.clinic_name,
+                    "ehr_system": code_map.ehr_system,
+                    "synced_at": code_map.synced_at,
+                    "entry_count": len(code_map.entries),
+                })
+
+        return JSONResponse(content={
+            "clinics": clinics,
+            "total": len(clinics),
+        })
+
+    @app.delete("/api/ehr/clinic/{clinic_id}/codes")
+    async def delete_clinic_codes(clinic_id: str):
+        """Delete cached code mappings for a clinic."""
+        from .ehr.clinic_codes import delete_clinic_codes as do_delete
+
+        deleted = do_delete(clinic_id)
+        if not deleted:
+            return JSONResponse(status_code=404, content={
+                "clinic_id": clinic_id,
+                "deleted": False,
+                "message": "No code mappings found for this clinic.",
+            })
+
+        return JSONResponse(content={
+            "clinic_id": clinic_id,
+            "deleted": True,
+            "message": f"Code mappings deleted for clinic {clinic_id}.",
+        })
+
     print("✓ Assessment routes: /api/fms/report/{id}, /api/fms/findings/{id}, /api/fms/findings/{id}/csv")
-    print("✓ EHR stubs: /api/ehr/push/{id}, /api/ehr/map-codes/{id}, /api/ehr/clinic/{id}/config, /api/ehr/webhook, /api/ehr/status/{id}")
+    print("✓ Approval routes: /api/fms/findings/{id}/approval, /api/fms/findings/{id}/approve, /api/fms/findings/{id}/reject")
+    print("✓ Clinic codes: /api/ehr/clinic/{id}/sync-codes, /api/ehr/clinic/{id}/codes, /api/ehr/clinics")
+    print("✓ EHR stubs: /api/ehr/push/{id}, /api/ehr/map-codes/{id}, /api/ehr/webhook, /api/ehr/status/{id}")
