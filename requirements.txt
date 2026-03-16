@@ -1,3 +1,7 @@
 opencv-python>=4.8.0
 mediapipe==0.10.14
 numpy>=1.24.0
+
+# Supabase auth + database
+supabase>=2.0.0
+python-jose[cryptography]>=3.3.0

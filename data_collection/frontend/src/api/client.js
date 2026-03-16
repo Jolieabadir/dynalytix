@@ -14,6 +14,20 @@ const api = axios.create({
   },
 });
 
+// Attach auth token to every request (if auth is configured)
+api.interceptors.request.use(async (config) => {
+    try {
+        const { getAccessToken } = await import('../lib/supabase.js');
+        const token = await getAccessToken();
+        if (token) {
+            config.headers.Authorization = `Bearer ${token}`;
+        }
+    } catch (e) {
+        // Auth not configured — continue without token (dev mode)
+    }
+    return config;
+});
+
 // ==================== CONFIGURATION ====================
 
 export const getConfig = async () => {

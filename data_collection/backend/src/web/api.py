@@ -37,6 +37,14 @@ except ImportError:
     FMS_AVAILABLE = False
     print("Warning: Assessment module not found. Auto-scoring disabled.")
 
+# Auth routes
+try:
+    from ..auth.routes import router as auth_router
+    HAS_AUTH = True
+except ImportError:
+    HAS_AUTH = False
+    print("Warning: Auth module not found. Auth routes disabled.")
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Dynalytix Movement Assessment API",
@@ -63,6 +71,13 @@ exporter = Exporter(db)
 # Register assessment API routes if available
 if FMS_AVAILABLE:
     register_fms_routes(app)
+
+# Register auth routes if available
+if HAS_AUTH:
+    app.include_router(auth_router)
+    print("✓ Auth routes registered: /api/auth/*")
+else:
+    print("⚠ Auth routes not available (missing dependencies)")
 
 # Ensure directories exist
 Path('videos').mkdir(exist_ok=True)
