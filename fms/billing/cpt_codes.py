@@ -93,6 +93,54 @@ CPT_CODES = {
 
 
 # =============================================================================
+# BILLING DESCRIPTIONS (Base tier — no CPT codes)
+# =============================================================================
+
+BILLING_DESCRIPTIONS = {
+    "97750": {
+        "category": "Physical Performance Testing",
+        "service_type": "assessment",
+    },
+    "97161": {
+        "category": "Physical Therapy Evaluation — Low Complexity",
+        "service_type": "evaluation",
+    },
+    "97162": {
+        "category": "Physical Therapy Evaluation — Moderate Complexity",
+        "service_type": "evaluation",
+    },
+    "97163": {
+        "category": "Physical Therapy Evaluation — High Complexity",
+        "service_type": "evaluation",
+    },
+    "97164": {
+        "category": "Physical Therapy Re-evaluation",
+        "service_type": "evaluation",
+    },
+    "97110": {
+        "category": "Therapeutic Exercise",
+        "service_type": "treatment",
+    },
+    "97112": {
+        "category": "Neuromuscular Re-education",
+        "service_type": "treatment",
+    },
+    "97116": {
+        "category": "Gait Training",
+        "service_type": "treatment",
+    },
+    "97140": {
+        "category": "Manual Therapy",
+        "service_type": "treatment",
+    },
+    "97530": {
+        "category": "Therapeutic Activities",
+        "service_type": "treatment",
+    },
+}
+
+
+# =============================================================================
 # RULE-BASED CPT SUGGESTIONS
 # =============================================================================
 
@@ -102,6 +150,15 @@ class CPTSuggestion:
     code: str
     description: str
     justification: str
+    units: int | None = None
+
+
+@dataclass
+class BillingDescription:
+    """A descriptive billing category (no CPT codes — used in base tier)."""
+    category: str          # e.g. "Physical Performance Testing"
+    service_type: str      # e.g. "assessment" or "treatment"
+    justification: str     # same justification text as CPTSuggestion
     units: int | None = None
 
 
@@ -262,3 +319,31 @@ def suggest_all_codes(
     treatment = suggest_treatment_codes(criteria_results)
 
     return assessment + treatment
+
+
+def suggest_all_billing_descriptions(
+    score: int,
+    criteria_results: list[dict],
+    test_duration_minutes: int = 15,
+) -> list[BillingDescription]:
+    """
+    Generate descriptive billing categories (no CPT codes) for a movement assessment.
+
+    This is the base tier output. CPT codes are only included in the Pro tier
+    (requires AMA license).
+    """
+    cpt_suggestions = suggest_all_codes(score, criteria_results, test_duration_minutes)
+
+    descriptions = []
+    for s in cpt_suggestions:
+        mapping = BILLING_DESCRIPTIONS.get(s.code, {})
+        descriptions.append(
+            BillingDescription(
+                category=mapping.get("category", s.description),
+                service_type=mapping.get("service_type", "other"),
+                justification=s.justification,
+                units=s.units,
+            )
+        )
+
+    return descriptions

@@ -18,7 +18,10 @@ Your reports should be:
 - Suitable for inclusion in patient charts and insurance documentation
 
 You are NOT diagnosing conditions. You are documenting movement assessment findings.
-The physical therapist will review and sign off on all reports."""
+The physical therapist will review and sign off on all reports.
+
+IMPORTANT: Every report you generate must end with the following disclaimer on its own line:
+"Generated with AI assistance. Movement data extracted via computer vision is subject to limitations including camera angle, lighting, and clothing. Clinical findings should be verified by the treating provider before inclusion in patient records. This tool is a clinical aid and does not replace professional clinical judgment.\""""
 
 
 DEEP_SQUAT_REPORT_TEMPLATE = """Generate a clinical movement assessment report for the following Deep Squat evaluation.
@@ -58,7 +61,30 @@ Generate a professional clinical report with these sections:
 Keep the report under 400 words. Use clinical terminology but remain accessible."""
 
 
-DEEP_SQUAT_CPT_TEMPLATE = """Based on this Deep Squat movement assessment, suggest appropriate CPT billing codes.
+DEEP_SQUAT_BILLING_TEMPLATE = """Based on this Deep Squat movement assessment, suggest appropriate billing categories and service types.
+
+**Score: {score}/3**
+**Key Findings:**
+{findings_text}
+
+**Corrective Areas Identified:**
+{corrective_areas}
+
+Respond with ONLY a JSON array of objects, each with:
+- "category": the billing category (e.g. "Physical Performance Testing", "Therapeutic Exercise", "Neuromuscular Re-education", "Manual Therapy", "Therapeutic Activities")
+- "service_type": either "assessment" or "treatment"
+- "justification": why this category applies to the findings
+- "units": suggested units (for timed services, each unit is 15 minutes)
+
+Do NOT include CPT codes. Include:
+1. The assessment category (Physical Performance Testing if applicable)
+2. Any treatment categories appropriate for the corrective work indicated by the findings
+
+Respond with raw JSON only, no markdown backticks or preamble."""
+
+
+# Pro tier only — requires AMA CPT license
+DEEP_SQUAT_CPT_TEMPLATE_PRO = """Based on this Deep Squat movement assessment, suggest appropriate CPT billing codes.
 
 **Score: {score}/3**
 **Key Findings:**
@@ -171,10 +197,45 @@ def build_cpt_prompt(result_dict: dict) -> tuple[str, str]:
     findings_text = "\n".join(findings)
     corrective_text = "\n".join(f"- {area}" for area in set(corrective_areas))
 
-    user_prompt = DEEP_SQUAT_CPT_TEMPLATE.format(
+    user_prompt = DEEP_SQUAT_CPT_TEMPLATE_PRO.format(
         score=result_dict["score"],
         findings_text=findings_text,
         corrective_areas=corrective_text,
     )
 
+    return SYSTEM_PROMPT, user_prompt
+
+
+def build_billing_prompt(result_dict: dict) -> tuple[str, str]:
+    """Build the prompt for billing category suggestions (no CPT codes)."""
+    # Same logic as build_cpt_prompt but uses DEEP_SQUAT_BILLING_TEMPLATE
+    findings = []
+    corrective_areas = []
+    for c in result_dict["criteria"]:
+        if not c["passed"]:
+            findings.append(f"- {c['name']}: {c['detail']}")
+            name = c["name"].lower()
+            if "heel" in name or "ankle" in name:
+                corrective_areas.append("Ankle dorsiflexion mobility")
+            if "torso" in name or "alignment" in name:
+                corrective_areas.append("Thoracic spine mobility and core stability")
+            if "knee" in name:
+                corrective_areas.append("Hip and knee neuromuscular control")
+            if "lumbar" in name:
+                corrective_areas.append("Lumbopelvic stability and motor control")
+            if "depth" in name:
+                corrective_areas.append("Hip flexion mobility and lower extremity strength")
+    if not findings:
+        findings.append("- All criteria passed (score 3)")
+    if not corrective_areas:
+        corrective_areas.append("Maintenance and injury prevention programming")
+
+    findings_text = "\n".join(findings)
+    corrective_text = "\n".join(f"- {area}" for area in set(corrective_areas))
+
+    user_prompt = DEEP_SQUAT_BILLING_TEMPLATE.format(
+        score=result_dict["score"],
+        findings_text=findings_text,
+        corrective_areas=corrective_text,
+    )
     return SYSTEM_PROMPT, user_prompt

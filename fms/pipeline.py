@@ -23,37 +23,58 @@ from .scoring.deep_squat import score_deep_squat
 from .billing.cpt_codes import suggest_all_codes
 
 
-def run_quick(csv_path: str, pain: bool = False) -> dict:
+def run_quick(csv_path: str, pain: bool = False, include_cpt_codes: bool = False) -> dict:
     """
-    Run the quick pipeline: scoring + rule-based CPT codes.
+    Run the quick pipeline: scoring + rule-based billing categories.
 
     No LLM call required. Instant results.
 
     Args:
         csv_path: Path to the pose CSV file.
         pain: Whether pain was reported.
+        include_cpt_codes: If True, include CPT codes (Pro tier / EHR integration).
 
     Returns:
-        Dictionary with score, criteria, and CPT suggestions.
+        Dictionary with score, criteria, and billing descriptions (+ CPT if requested).
     """
     # Score
     result = score_deep_squat(csv_path, pain_reported=pain)
     result_dict = result.to_dict()
 
-    # CPT suggestions (rule-based)
+    # CPT suggestions (rule-based) - used for both billing descriptions and CPT output
     cpt_suggestions = suggest_all_codes(
         score=result.score,
         criteria_results=result_dict["criteria"],
     )
 
-    return {
+    # Billing descriptions (always included — base tier)
+    from .billing.cpt_codes import suggest_all_billing_descriptions
+    billing_descriptions = suggest_all_billing_descriptions(
+        score=result.score,
+        criteria_results=result_dict["criteria"],
+    )
+
+    output = {
         "mode": "quick",
         "score": result.score,
         "summary": result.summary(),
         "criteria": result_dict["criteria"],
         "angles_at_depth": result_dict["angles_at_depth"],
         "bilateral_differences": result_dict["left_right_differences"],
-        "cpt_suggestions": [
+        "billing_descriptions": [
+            {
+                "category": b.category,
+                "service_type": b.service_type,
+                "justification": b.justification,
+                "units": b.units,
+            }
+            for b in billing_descriptions
+        ],
+    }
+
+    # CPT codes only included when explicitly requested (Pro tier / EHR integration)
+    if include_cpt_codes:
+        output["cpt_suggestions"] = [
             {
                 "code": s.code,
                 "description": s.description,
@@ -61,46 +82,69 @@ def run_quick(csv_path: str, pain: bool = False) -> dict:
                 "units": s.units,
             }
             for s in cpt_suggestions
-        ],
-    }
+        ]
+
+    return output
 
 
-def run_full(csv_path: str, pain: bool = False) -> dict:
+def run_full(csv_path: str, pain: bool = False, include_cpt_codes: bool = False) -> dict:
     """
-    Run the full pipeline: scoring + LLM report + LLM CPT suggestions.
+    Run the full pipeline: scoring + LLM report + billing categories.
 
     Requires ANTHROPIC_API_KEY environment variable.
 
     Args:
         csv_path: Path to the pose CSV file.
         pain: Whether pain was reported.
+        include_cpt_codes: If True, include CPT codes (Pro tier / EHR integration).
 
     Returns:
-        Dictionary with score, clinical report, and CPT suggestions.
+        Dictionary with score, clinical report, billing descriptions (+ CPT if requested).
     """
     from .reporting.report_generator import generate_full_report
+    from .billing.cpt_codes import suggest_all_billing_descriptions, suggest_all_codes
 
     # Score
     result = score_deep_squat(csv_path, pain_reported=pain)
     result_dict = result.to_dict()
 
-    # Generate full LLM report + CPT codes
-    report = generate_full_report(result_dict)
+    # Generate full LLM report (may include CPT codes internally)
+    report = generate_full_report(result_dict, include_cpt_codes=include_cpt_codes)
 
-    # Also get rule-based CPT as a comparison/fallback
-    from .billing.cpt_codes import suggest_all_codes
-    rule_based_cpt = suggest_all_codes(
+    # Billing descriptions (always included — base tier)
+    billing_descriptions = suggest_all_billing_descriptions(
         score=result.score,
         criteria_results=result_dict["criteria"],
     )
 
-    return {
+    output = {
         "mode": "full",
         "score": result.score,
         "summary": result.summary(),
         "clinical_report": report.clinical_report,
-        "cpt_suggestions_llm": [c.to_dict() for c in report.cpt_suggestions],
-        "cpt_suggestions_rules": [
+        "billing_descriptions": [
+            {
+                "category": b.category,
+                "service_type": b.service_type,
+                "justification": b.justification,
+                "units": b.units,
+            }
+            for b in billing_descriptions
+        ],
+        "criteria": result_dict["criteria"],
+        "angles_at_depth": result_dict["angles_at_depth"],
+        "bilateral_differences": result_dict["left_right_differences"],
+    }
+
+    # CPT codes only included when explicitly requested (Pro tier / EHR integration)
+    if include_cpt_codes:
+        # Also get rule-based CPT as a comparison/fallback
+        rule_based_cpt = suggest_all_codes(
+            score=result.score,
+            criteria_results=result_dict["criteria"],
+        )
+        output["cpt_suggestions_llm"] = [c.to_dict() for c in report.cpt_suggestions]
+        output["cpt_suggestions_rules"] = [
             {
                 "code": s.code,
                 "description": s.description,
@@ -108,11 +152,9 @@ def run_full(csv_path: str, pain: bool = False) -> dict:
                 "units": s.units,
             }
             for s in rule_based_cpt
-        ],
-        "criteria": result_dict["criteria"],
-        "angles_at_depth": result_dict["angles_at_depth"],
-        "bilateral_differences": result_dict["left_right_differences"],
-    }
+        ]
+
+    return output
 
 
 def main():
@@ -144,6 +186,11 @@ def main():
         type=str,
         help="Save output to file",
     )
+    parser.add_argument(
+        "--cpt",
+        action="store_true",
+        help="Include CPT codes in output (requires AMA license for production use)",
+    )
 
     args = parser.parse_args()
 
@@ -155,10 +202,13 @@ def main():
 
     # Run pipeline
     if args.full_report:
-        print("Running full pipeline (scoring + LLM report + CPT codes)...")
+        mode_desc = "scoring + LLM report"
+        if args.cpt:
+            mode_desc += " + CPT codes"
+        print(f"Running full pipeline ({mode_desc})...")
         print()
         try:
-            output = run_full(str(csv_path), pain=args.pain)
+            output = run_full(str(csv_path), pain=args.pain, include_cpt_codes=args.cpt)
         except ImportError as e:
             print(f"Error: {e}", file=sys.stderr)
             print("Install with: pip install anthropic", file=sys.stderr)
@@ -167,10 +217,13 @@ def main():
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
     else:
-        print("Running quick pipeline (scoring + rule-based CPT codes)...")
+        mode_desc = "scoring + rule-based billing categories"
+        if args.cpt:
+            mode_desc += " + CPT codes"
+        print(f"Running quick pipeline ({mode_desc})...")
         print("(Use --full-report for LLM-generated clinical narrative)")
         print()
-        output = run_quick(str(csv_path), pain=args.pain)
+        output = run_quick(str(csv_path), pain=args.pain, include_cpt_codes=args.cpt)
 
     # Display results
     if args.json:
@@ -188,19 +241,26 @@ def main():
             print()
 
         print("-" * 70)
-        print("SUGGESTED CPT CODES")
+        print("BILLING CATEGORIES")
         print("-" * 70)
 
-        # Use LLM suggestions if available, otherwise rule-based
-        cpt_key = "cpt_suggestions_llm" if "cpt_suggestions_llm" in output else "cpt_suggestions"
-        for cpt in output[cpt_key]:
-            units = f" ({cpt['units']} units)" if cpt.get("units") else ""
-            print(f"\n  {cpt['code']}{units} - {cpt['description']}")
-            print(f"    {cpt['justification']}")
-
-        print()
-        print("⚠ CPT codes are SUGGESTIONS only. The treating physical")
-        print("  therapist must review and approve all billing codes.")
+        if "cpt_suggestions" in output or "cpt_suggestions_llm" in output:
+            cpt_key = "cpt_suggestions_llm" if "cpt_suggestions_llm" in output else "cpt_suggestions"
+            for cpt in output[cpt_key]:
+                units = f" ({cpt['units']} units)" if cpt.get("units") else ""
+                print(f"\n  {cpt['code']}{units} - {cpt['description']}")
+                print(f"    {cpt['justification']}")
+            print()
+            print("⚠ CPT codes are SUGGESTIONS only. The treating physical")
+            print("  therapist must review and approve all billing codes.")
+        else:
+            for b in output["billing_descriptions"]:
+                units = f" ({b['units']} units)" if b.get("units") else ""
+                print(f"\n  {b['category']}{units} [{b['service_type']}]")
+                print(f"    {b['justification']}")
+            print()
+            print("Findings support the billing categories listed above.")
+            print("Consult your practice's billing guidelines for specific codes.")
 
     # Save to file if requested
     if args.output:

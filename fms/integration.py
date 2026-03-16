@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from .pipeline import run_quick
+from .disclaimer import CLINICAL_DISCLAIMER, BILLING_DISCLAIMER
 
 
 # =============================================================================
@@ -74,7 +75,9 @@ def run_fms_on_export(
         "criteria": result["criteria"],
         "angles_at_depth": result.get("angles_at_depth", {}),
         "bilateral_differences": result.get("bilateral_differences", {}),
-        "cpt_suggestions": result.get("cpt_suggestions", []),
+        "billing_descriptions": result.get("billing_descriptions", []),
+        "disclaimer": CLINICAL_DISCLAIMER,
+        "billing_disclaimer": BILLING_DISCLAIMER,
     }
     with open(json_output, "w") as f:
         json.dump(report_data, f, indent=2)
@@ -138,17 +141,17 @@ def _save_findings_csv(result: dict, output_path: Path):
                 "detail": "Asymmetry detected" if abs(diff) > 10 else "Within normal range",
             })
 
-        # Add CPT suggestions as additional rows
-        for cpt in result.get("cpt_suggestions", []):
+        # Add billing categories as additional rows
+        for b in result.get("billing_descriptions", []):
             writer.writerow({
                 "assessment_date": now,
                 "fms_test": "deep_squat",
                 "overall_score": result["score"],
-                "criterion": f"CPT Suggestion: {cpt['code']}",
+                "criterion": f"Billing Category: {b['category']}",
                 "passed": "",
-                "measured_value": cpt.get("units", ""),
+                "measured_value": b.get("units", ""),
                 "threshold": "",
-                "detail": f"{cpt['description']} — {cpt['justification']}",
+                "detail": f"[{b['service_type']}] {b['justification']}",
             })
 
 
@@ -238,6 +241,7 @@ def generate_user_report(result: dict) -> dict:
         "criteria": criteria_summary,
         "asymmetries": asymmetries,
         "focus_areas": list(set(focus_areas)),  # deduplicate
+        "disclaimer": CLINICAL_DISCLAIMER,
     }
 
 
@@ -299,11 +303,12 @@ def register_fms_routes(app):
         return JSONResponse(content=user_report)
 
     @app.get("/api/fms/findings/{video_id}")
-    async def get_fms_findings(video_id: int):
+    async def get_fms_findings(video_id: int, cpt: bool = False):
         """
-        Get the full assessment findings for a video (PT-facing, includes CPT codes).
+        Get the full assessment findings for a video (PT-facing).
 
-        This is the complete assessment data for clinical use.
+        By default returns billing categories (descriptive language).
+        Pass ?cpt=true to include CPT codes (Pro tier, requires AMA license).
         """
         findings_dir = Path("data/exports/fms_findings")
 
@@ -323,6 +328,14 @@ def register_fms_routes(app):
         report_path = sorted(matches)[-1]
         with open(report_path) as f:
             full_report = json.load(f)
+
+        # Strip CPT codes unless explicitly requested (Pro tier)
+        if not cpt:
+            full_report.pop("cpt_suggestions", None)
+
+        # Ensure disclaimers are present
+        full_report["disclaimer"] = CLINICAL_DISCLAIMER
+        full_report["billing_disclaimer"] = BILLING_DISCLAIMER
 
         return JSONResponse(content=full_report)
 
@@ -351,4 +364,63 @@ def register_fms_routes(app):
             filename=csv_path.name,
         )
 
+    # ----- EHR Integration Stubs (Pro tier) -----
+
+    @app.post("/api/fms/findings/{video_id}/push")
+    async def push_to_ehr(video_id: int, clinic_id: str = "", provider_id: str = ""):
+        """
+        Push assessment findings to the clinic's EHR via MedStatix.
+
+        STUB — returns 501 until MedStatix integration is live.
+
+        This endpoint will:
+        1. Load the assessment findings for the video
+        2. Map billing categories to the clinic's specific codes
+        3. Push the full assessment (narrative + scores + billing) to the EHR
+        4. Return the EHR record ID for confirmation
+        """
+        return JSONResponse(
+            status_code=501,
+            content={
+                "error": "EHR integration not yet available",
+                "message": "MedStatix integration is in development. "
+                           "Assessment data is available via /api/fms/findings/{video_id}.",
+                "video_id": video_id,
+                "clinic_id": clinic_id,
+                "provider_id": provider_id,
+            }
+        )
+
+    @app.get("/api/ehr/config/{clinic_id}")
+    async def get_ehr_config(clinic_id: str):
+        """
+        Get EHR configuration for a clinic.
+
+        STUB — returns 501 until MedStatix integration is live.
+        """
+        return JSONResponse(
+            status_code=501,
+            content={
+                "error": "EHR integration not yet available",
+                "clinic_id": clinic_id,
+            }
+        )
+
+    @app.post("/api/ehr/webhook/register")
+    async def register_ehr_webhook(clinic_id: str = "", webhook_url: str = ""):
+        """
+        Register a webhook for EHR events.
+
+        STUB — returns 501 until MedStatix integration is live.
+        """
+        return JSONResponse(
+            status_code=501,
+            content={
+                "error": "EHR webhook registration not yet available",
+                "clinic_id": clinic_id,
+                "webhook_url": webhook_url,
+            }
+        )
+
     print("✓ Assessment routes registered: /api/fms/report/{id}, /api/fms/findings/{id}, /api/fms/findings/{id}/csv")
+    print("✓ EHR stub routes registered: /api/fms/findings/{id}/push, /api/ehr/config/{id}, /api/ehr/webhook/register")

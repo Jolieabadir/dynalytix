@@ -41,33 +41,49 @@ class FMSReport:
     cpt_suggestions: list[CPTSuggestion]
     score: int
     raw_data: dict
+    billing_descriptions: list[dict] | None = None
 
     def to_dict(self) -> dict:
         return {
             "clinical_report": self.clinical_report,
             "cpt_suggestions": [c.to_dict() for c in self.cpt_suggestions],
+            "billing_descriptions": self.billing_descriptions or [],
             "score": self.score,
         }
 
     def print_report(self):
         """Print the full formatted report."""
         print("=" * 70)
-        print("DEEP SQUAT ASSESSMENT REPORT")
+        print("MOVEMENT ASSESSMENT REPORT")
         print("=" * 70)
         print()
         print(self.clinical_report)
         print()
         print("-" * 70)
-        print("SUGGESTED CPT CODES")
+        print("BILLING CATEGORIES")
         print("-" * 70)
-        for cpt in self.cpt_suggestions:
-            units_str = f" ({cpt.units} units)" if cpt.units else ""
-            print(f"\n  {cpt.code}{units_str} - {cpt.description}")
-            print(f"    Justification: {cpt.justification}")
+        if self.billing_descriptions:
+            for b in self.billing_descriptions:
+                units_str = f" ({b.get('units', '')} units)" if b.get("units") else ""
+                print(f"\n  {b['category']}{units_str} [{b['service_type']}]")
+                print(f"    Justification: {b['justification']}")
+        if self.cpt_suggestions:
+            print()
+            print("CPT CODE SUGGESTIONS (Pro tier)")
+            print("-" * 70)
+            for cpt in self.cpt_suggestions:
+                units_str = f" ({cpt.units} units)" if cpt.units else ""
+                print(f"\n  {cpt.code}{units_str} - {cpt.description}")
+                print(f"    Justification: {cpt.justification}")
+            print()
+            print("⚠ CPT codes are SUGGESTIONS only. The treating physical")
+            print("  therapist must review and approve all billing codes.")
+        from ..disclaimer import CLINICAL_DISCLAIMER
         print()
-        print("=" * 70)
-        print("NOTE: CPT codes are SUGGESTIONS only. The treating physical")
-        print("therapist must review and approve all billing codes.")
+        print("DISCLAIMER")
+        print("-" * 70)
+        print(CLINICAL_DISCLAIMER)
+        print()
         print("=" * 70)
 
 
@@ -157,22 +173,44 @@ def generate_cpt_suggestions(result_dict: dict) -> list[CPTSuggestion]:
     return suggestions
 
 
-def generate_full_report(result_dict: dict) -> FMSReport:
+def generate_full_report(result_dict: dict, include_cpt_codes: bool = False) -> FMSReport:
     """
-    Generate the complete report: clinical narrative + CPT suggestions.
+    Generate the complete report: clinical narrative + billing descriptions.
 
     Args:
         result_dict: Output from DeepSquatResult.to_dict()
+        include_cpt_codes: If True, include CPT codes (Pro tier / EHR integration).
 
     Returns:
         FMSReport with all components.
     """
+    from ..billing.cpt_codes import suggest_all_billing_descriptions
+
     clinical = generate_clinical_report(result_dict)
-    cpt_codes = generate_cpt_suggestions(result_dict)
+
+    # Billing descriptions (always generated — base tier)
+    billing_descs = suggest_all_billing_descriptions(
+        score=result_dict["score"],
+        criteria_results=result_dict["criteria"],
+    )
+
+    # CPT codes only if explicitly requested (Pro tier)
+    cpt_codes = None
+    if include_cpt_codes:
+        cpt_codes = generate_cpt_suggestions(result_dict)
 
     return FMSReport(
         clinical_report=clinical,
-        cpt_suggestions=cpt_codes,
+        cpt_suggestions=cpt_codes or [],
         score=result_dict["score"],
         raw_data=result_dict,
+        billing_descriptions=[
+            {
+                "category": b.category,
+                "service_type": b.service_type,
+                "justification": b.justification,
+                "units": b.units,
+            }
+            for b in billing_descs
+        ],
     )
