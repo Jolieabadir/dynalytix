@@ -3,6 +3,11 @@
  *
  * Handles client-side pose extraction using MediaPipe JS.
  * Video never leaves the browser - only CSV data is sent to server.
+ *
+ * Dual-angle flow:
+ * 1. Upload Front View (required)
+ * 2. Upload Side View (optional, can skip)
+ * 3. Score both views together
  */
 import { useState, useRef } from 'react';
 import { getAssessments } from '../api/client';
@@ -24,6 +29,15 @@ function VideoUpload() {
     setVideoBlobUrl,
     setCsvData,
     setCsvString,
+    // Dual-angle state
+    assessmentPhase,
+    setAssessmentPhase,
+    frontVideoId,
+    setFrontVideoId,
+    sideVideoId,
+    setSideVideoId,
+    setFrontVideoBlobUrl,
+    setSideVideoBlobUrl,
   } = useStore();
 
   const handleFileSelect = async (e) => {
@@ -46,6 +60,13 @@ function VideoUpload() {
       // Create blob URL for local video playback
       const blobUrl = URL.createObjectURL(file);
       setVideoBlobUrl(blobUrl);
+
+      // Store blob URL for the current view
+      if (assessmentPhase === 'front') {
+        setFrontVideoBlobUrl(blobUrl);
+      } else {
+        setSideVideoBlobUrl(blobUrl);
+      }
 
       // Create hidden video element for processing
       const video = document.createElement('video');
@@ -123,10 +144,23 @@ function VideoUpload() {
 
       setProgress('Processing complete!');
 
-      // Load video and its assessments
-      setCurrentVideo(videoData);
-      const assessments = await getAssessments(videoData.id);
-      setMoves(assessments);
+      // Store video ID for the current phase
+      if (assessmentPhase === 'front') {
+        setFrontVideoId(videoData.id);
+        // Move to side view phase
+        setAssessmentPhase('side');
+        setProcessing(false);
+        setProgress('');
+        setProgressPercent(0);
+      } else {
+        // Side view - proceed to scoring
+        setSideVideoId(videoData.id);
+        setAssessmentPhase('complete');
+        // Set as current video for the scoring flow
+        setCurrentVideo(videoData);
+        const assessments = await getAssessments(videoData.id);
+        setMoves(assessments);
+      }
 
     } catch (err) {
       console.error('Processing error:', err);
@@ -137,11 +171,59 @@ function VideoUpload() {
     }
   };
 
+  const handleSkipSideView = async () => {
+    // Skip side view - proceed with front view only
+    setAssessmentPhase('complete');
+    setSideVideoId(null);
+
+    // Load the front video as current
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/videos/${frontVideoId}`);
+      if (response.ok) {
+        const videoData = await response.json();
+        setCurrentVideo(videoData);
+        const assessments = await getAssessments(videoData.id);
+        setMoves(assessments);
+      }
+    } catch (err) {
+      console.error('Failed to load front video:', err);
+      // Still proceed - the video ID is stored
+      setCurrentVideo({ id: frontVideoId });
+    }
+  };
+
+  // Determine what to show based on phase
+  const isFrontPhase = assessmentPhase === 'front';
+  const isSidePhase = assessmentPhase === 'side';
+
+  const phaseTitle = isFrontPhase
+    ? 'Upload Front View'
+    : 'Upload Side View';
+
+  const phaseDescription = isFrontPhase
+    ? 'Record a deep squat from the front (facing the camera)'
+    : 'Record a deep squat from the side (camera perpendicular to you)';
+
+  const phaseIcon = isFrontPhase ? '👤' : '👤➡️';
+
   return (
     <div className="video-upload">
       <div className="upload-container">
-        <h2>Upload Deep Squat Assessment</h2>
-        <p>Upload a video to begin movement assessment</p>
+        {/* Phase indicator */}
+        <div className="phase-indicator">
+          <div className={`phase-step ${isFrontPhase ? 'active' : 'completed'}`}>
+            <span className="phase-number">1</span>
+            <span className="phase-label">Front View</span>
+          </div>
+          <div className="phase-connector"></div>
+          <div className={`phase-step ${isSidePhase ? 'active' : ''}`}>
+            <span className="phase-number">2</span>
+            <span className="phase-label">Side View</span>
+          </div>
+        </div>
+
+        <h2>{phaseIcon} {phaseTitle}</h2>
+        <p>{phaseDescription}</p>
 
         {!processing ? (
           <div className="upload-area">
@@ -159,6 +241,16 @@ function VideoUpload() {
             <p className="upload-hint" style={{ marginTop: '8px', fontSize: '12px', color: '#888' }}>
               Video is processed locally in your browser
             </p>
+
+            {/* Skip button for side view phase */}
+            {isSidePhase && (
+              <button
+                className="skip-button"
+                onClick={handleSkipSideView}
+              >
+                Skip Side View (use front only)
+              </button>
+            )}
           </div>
         ) : (
           <div className="upload-progress">
@@ -181,6 +273,13 @@ function VideoUpload() {
         {error && (
           <div className="error-message">
             <p>{error}</p>
+          </div>
+        )}
+
+        {/* Show front view success message when on side phase */}
+        {isSidePhase && !processing && (
+          <div className="phase-success">
+            ✓ Front view processed successfully
           </div>
         )}
       </div>

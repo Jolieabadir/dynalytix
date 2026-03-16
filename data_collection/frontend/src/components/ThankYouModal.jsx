@@ -4,17 +4,21 @@
  * Shows after export completes. Offers two report views:
  * - Patient Report (no billing codes, plain language)
  * - Provider Report (full clinical data with billing categories)
+ *
+ * Supports dual-angle assessments (front + side views).
  */
 import { useState } from 'react';
 import useStore from '../store/useStore';
 import { getFMSPatientReport, getFMSProviderReport } from '../api/client';
 
-function ThankYouModal({ show, onClose, videoId }) {
-  const { setCurrentVideo, setCurrentMove, setFrameTags, setMode } = useStore();
+function ThankYouModal({ show, onClose, videoId, frontVideoId, sideVideoId, dualAngleResults }) {
+  const { setCurrentVideo, setCurrentMove, setFrameTags, setMode, resetDualAngle } = useStore();
   const [activeReport, setActiveReport] = useState(null);
   const [reportData, setReportData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  const isDualAngle = frontVideoId && sideVideoId;
 
   if (!show) return null;
 
@@ -23,6 +27,7 @@ function ThankYouModal({ show, onClose, videoId }) {
     setCurrentMove(null);
     setFrameTags([]);
     setCurrentVideo(null);
+    resetDualAngle();
     setActiveReport(null);
     setReportData(null);
     if (onClose) onClose();
@@ -57,6 +62,21 @@ function ThankYouModal({ show, onClose, videoId }) {
         <div className="thank-you-modal">
           <h2>Assessment Complete</h2>
           <p className="export-success">✅ Data exported and scored successfully!</p>
+
+          {isDualAngle && (
+            <div className="dual-angle-summary">
+              <span className="dual-badge">Dual-Angle Assessment</span>
+              <p>Front view + Side view analyzed</p>
+              {dualAngleResults && (
+                <div className="dual-scores">
+                  <span className="view-score">Front: {dualAngleResults.front_score}/3</span>
+                  <span className="view-score">Side: {dualAngleResults.side_score}/3</span>
+                  <span className="merged-score">Merged: {dualAngleResults.score}/3</span>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="report-buttons">
             <button onClick={() => handleViewReport('patient')} className="report-btn patient-btn" disabled={loading}>
               {loading ? 'Loading...' : '📋 Patient Report'}

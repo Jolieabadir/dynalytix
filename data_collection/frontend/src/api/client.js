@@ -135,4 +135,18 @@ export const getFMSProviderReport = async (videoId) => {
   return response.data;
 };
 
+/**
+ * Score dual-angle assessment (front + side views).
+ * @param {number|null} frontVideoId - Front view video ID
+ * @param {number|null} sideVideoId - Side view video ID
+ * @returns {Promise<object>} Dual-angle scoring results
+ */
+export const scoreDualAngle = async (frontVideoId, sideVideoId) => {
+  const params = new URLSearchParams();
+  if (frontVideoId) params.append('front_video_id', frontVideoId);
+  if (sideVideoId) params.append('side_video_id', sideVideoId);
+  const response = await api.post(`/api/fms/score-dual?${params.toString()}`);
+  return response.data;
+};
+
 export default api;

@@ -315,6 +315,115 @@ body {
   border: 1px solid rgba(201, 160, 160, 0.3);
 }
 
+/* Phase Indicator (Dual-Angle Flow) */
+.phase-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-xl);
+}
+
+.phase-step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-full);
+  background: var(--bg-warm);
+  border: 2px solid var(--border-light);
+  transition: all var(--transition-normal);
+}
+
+.phase-step.active {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+}
+
+.phase-step.completed {
+  background: var(--success-soft);
+  border-color: var(--success);
+}
+
+.phase-number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--border-light);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.phase-step.active .phase-number {
+  background: var(--primary);
+  color: white;
+}
+
+.phase-step.completed .phase-number {
+  background: var(--success);
+  color: white;
+}
+
+.phase-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.phase-step.active .phase-label {
+  color: var(--primary-dark);
+}
+
+.phase-step.completed .phase-label {
+  color: var(--accent-sage-dark);
+}
+
+.phase-connector {
+  width: 40px;
+  height: 2px;
+  background: var(--border-light);
+}
+
+.skip-button {
+  display: block;
+  margin: var(--space-lg) auto 0;
+  padding: var(--space-sm) var(--space-lg);
+  background: transparent;
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-full);
+  color: var(--text-muted);
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.skip-button:hover {
+  border-color: var(--primary);
+  color: var(--primary-dark);
+  background: var(--primary-soft);
+}
+
+.phase-success {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  margin-top: var(--space-lg);
+  padding: var(--space-md) var(--space-lg);
+  background: var(--success-soft);
+  border: 1px solid var(--success);
+  border-radius: var(--radius-md);
+  color: var(--accent-sage-dark);
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
 /* ==================== DEFINE MODE ==================== */
 
 .define-mode {
@@ -1396,6 +1505,58 @@ body {
   background: var(--gradient-button-hover);
   transform: translateY(-2px);
   box-shadow: var(--shadow-medium);
+}
+
+/* Dual-Angle Summary */
+.dual-angle-summary {
+  background: var(--bg-warm);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  padding: var(--space-md) var(--space-lg);
+  margin: var(--space-md) 0;
+  text-align: center;
+}
+
+.dual-badge {
+  display: inline-block;
+  background: var(--gradient-button);
+  color: white;
+  padding: var(--space-xs) var(--space-md);
+  border-radius: var(--radius-full);
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: var(--space-sm);
+}
+
+.dual-angle-summary p {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin-bottom: var(--space-sm);
+}
+
+.dual-scores {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+.view-score {
+  background: var(--bg-card-solid);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.merged-score {
+  background: var(--success-soft);
+  color: var(--accent-sage-dark);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  font-weight: 700;
 }
 
 /* ==================== TAGGING MODE ==================== */

@@ -86,8 +86,31 @@ const useStore = create((set, get) => ({
   
   // ==================== CONFIG ====================
   config: null,
-  
+
   setConfig: (config) => set({ config }),
+
+  // ==================== DUAL-ANGLE ASSESSMENT ====================
+  // Phase: 'front' | 'side' | 'complete'
+  assessmentPhase: 'front',
+  frontVideoId: null,
+  sideVideoId: null,
+  frontVideoBlobUrl: null,
+  sideVideoBlobUrl: null,
+
+  setAssessmentPhase: (phase) => set({ assessmentPhase: phase }),
+  setFrontVideoId: (id) => set({ frontVideoId: id }),
+  setSideVideoId: (id) => set({ sideVideoId: id }),
+  setFrontVideoBlobUrl: (url) => set({ frontVideoBlobUrl: url }),
+  setSideVideoBlobUrl: (url) => set({ sideVideoBlobUrl: url }),
+
+  // Reset dual-angle state for new assessment
+  resetDualAngle: () => set({
+    assessmentPhase: 'front',
+    frontVideoId: null,
+    sideVideoId: null,
+    frontVideoBlobUrl: null,
+    sideVideoBlobUrl: null,
+  }),
 }));
 
 export default useStore;

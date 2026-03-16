@@ -3,7 +3,7 @@
  */
 import { useEffect, useState } from 'react';
 import useStore from './store/useStore';
-import { getConfig } from './api/client';
+import { getConfig, scoreDualAngle } from './api/client';
 import { exportVideo } from './api/ExportService';
 import VideoUpload from './components/VideoUpload';
 import VideoPlayer from './components/VideoPlayer';
@@ -53,18 +53,45 @@ function App() {
  * Define Mode - Main view for creating moves
  */
 function DefineMode() {
-  const { currentVideo } = useStore();
+  const {
+    currentVideo,
+    frontVideoId,
+    sideVideoId,
+    assessmentPhase,
+  } = useStore();
   const [showThankYou, setShowThankYou] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [dualAngleResults, setDualAngleResults] = useState(null);
 
-  if (!currentVideo) {
+  // Show VideoUpload if still in front or side phase
+  if (!currentVideo || assessmentPhase !== 'complete') {
     return <VideoUpload />;
   }
 
   const handleDone = async () => {
     setExporting(true);
     try {
-      await exportVideo(currentVideo.id);
+      // Export all videos that were uploaded
+      const exportPromises = [];
+      if (frontVideoId) {
+        exportPromises.push(exportVideo(frontVideoId));
+      }
+      if (sideVideoId && sideVideoId !== frontVideoId) {
+        exportPromises.push(exportVideo(sideVideoId));
+      }
+      await Promise.all(exportPromises);
+
+      // If we have dual-angle, call the scoring endpoint
+      if (frontVideoId && sideVideoId) {
+        try {
+          const dualResults = await scoreDualAngle(frontVideoId, sideVideoId);
+          setDualAngleResults(dualResults);
+        } catch (err) {
+          console.error('Dual-angle scoring failed:', err);
+          // Continue - single video scoring will still work
+        }
+      }
+
       setShowThankYou(true);
     } catch (err) {
       console.error('Export failed:', err);
@@ -86,7 +113,14 @@ function DefineMode() {
         <MovesList />
       </div>
       <MoveForm />
-      <ThankYouModal show={showThankYou} onClose={() => setShowThankYou(false)} videoId={currentVideo?.id} />
+      <ThankYouModal
+        show={showThankYou}
+        onClose={() => setShowThankYou(false)}
+        videoId={currentVideo?.id}
+        frontVideoId={frontVideoId}
+        sideVideoId={sideVideoId}
+        dualAngleResults={dualAngleResults}
+      />
     </div>
   );
 }
