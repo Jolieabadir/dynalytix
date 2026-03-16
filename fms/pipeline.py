@@ -67,6 +67,9 @@ def run_quick(csv_path: str, pain: bool = False, include_cpt_codes: bool = False
                 "service_type": b.service_type,
                 "justification": b.justification,
                 "units": b.units,
+                "practice_code": b.practice_code,        # None until EHR integration
+                "practice_modifier": b.practice_modifier,  # None until EHR integration
+                "mapping_status": b.mapping_status,        # "unmapped" until EHR integration
             }
             for b in billing_descriptions
         ],
@@ -128,6 +131,9 @@ def run_full(csv_path: str, pain: bool = False, include_cpt_codes: bool = False)
                 "service_type": b.service_type,
                 "justification": b.justification,
                 "units": b.units,
+                "practice_code": b.practice_code,        # None until EHR integration
+                "practice_modifier": b.practice_modifier,  # None until EHR integration
+                "mapping_status": b.mapping_status,        # "unmapped" until EHR integration
             }
             for b in billing_descriptions
         ],

@@ -31,20 +31,22 @@ Dynalytix uses computer vision to analyze movement patterns from video, automati
 - [x] Frame tagging for observations
 - [x] Labeled data export
 
-### Phase 3: Movement Scoring Engine (In Progress)
+### Phase 3: Movement Scoring Engine (Complete) ✅
 - [x] Rule-based Deep Squat scoring engine (0-3)
 - [x] Scoring criteria: squat depth, torso-tibia alignment, knee-over-foot alignment, heel position, lumbar flexion control
 - [x] Bilateral asymmetry detection
 - [x] Auto-scoring on export (hooks into data collection pipeline)
 - [x] Findings saved as CSV and JSON
-- [x] CPT billing code suggestions (rule-based)
-- [x] Patient-facing report API (no billing codes)
-- [x] Provider-facing report API (full clinical data + CPT codes)
+- [x] Descriptive billing categories with practice code placeholder slots
+- [x] Patient-facing report API (no billing codes, with disclaimer)
+- [x] Provider-facing report API (billing categories + practice code slots)
 - [x] Post-export UI with Patient Report and Provider Report views
 - [x] LLM clinical report generation (stub, requires API key)
+- [x] Clinical + billing disclaimers on all reports
+- [x] EHR integration stubs (MedStatix gateway, payload schema, webhooks)
 - [ ] Threshold calibration against PT-scored videos
+- [ ] MedStatix EHR integration go-live
 - [ ] Additional movement assessments (hurdle step, inline lunge, etc.)
-- [ ] Real-time feedback system
 
 ## Model Training Approaches
 
@@ -74,10 +76,12 @@ For subjective assessments like climbing injury risk, we use ML trained on label
 - **Data Collection UI:** React + FastAPI
 - **Tracking:** 12 joint angles per frame
 
-**Phase 3 (In Progress):**
+**Phase 3 (Complete):**
 - **Movement Scoring:** Rule-based engine with research-backed thresholds
 - **Reporting:** Anthropic Claude API (optional, for clinical narratives)
-- **Billing:** Rule-based CPT code mapping
+- **Billing:** Descriptive billing categories with practice code slots (CPT codes behind Pro flag)
+- **EHR Integration:** MedStatix gateway stubs (Dynalytix → MedStatix → EHR)
+- **Disclaimers:** Clinical + billing disclaimers on all generated reports
 
 ## Tracked Measurements
 
@@ -182,9 +186,15 @@ dynalytics/
 │   │   ├── report_generator.py # LLM-powered clinical reports
 │   │   └── templates.py        # Prompt templates
 │   ├── billing/
-│   │   └── cpt_codes.py        # CPT code suggestions
+│   │   └── cpt_codes.py        # Billing categories + CPT code suggestions
+│   ├── ehr/                    # EHR integration stubs (MedStatix gateway)
+│   │   ├── payload.py          # Assessment payload schema (→ MedStatix)
+│   │   ├── adapter.py          # Abstract gateway interface
+│   │   ├── medstatix.py        # MedStatix gateway (stub)
+│   │   └── events.py           # Webhook event types
+│   ├── disclaimer.py           # Clinical + billing disclaimers
 │   ├── integration.py          # FastAPI hooks + auto-run on export
-│   └── pipeline.py             # CLI: CSV → score + report + codes
+│   └── pipeline.py             # CLI: CSV → score + report + billing
 ├── data_collection/
 │   ├── backend/                # FastAPI server
 │   │   ├── src/
@@ -216,8 +226,9 @@ Labeled Data CSV
 Movement Scoring Engine (auto-runs on export)
     ↓
 ├── Findings CSV + JSON
-├── Patient Report (no billing codes)
-├── Provider Report (full clinical + CPT codes)
+├── Patient Report (no billing codes, with disclaimer)
+├── Provider Report (billing categories + practice code slots)
+├── → EHR Push via MedStatix (when connected)
     ↓
 ML Training (future)
 ```

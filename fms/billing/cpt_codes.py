@@ -155,11 +155,20 @@ class CPTSuggestion:
 
 @dataclass
 class BillingDescription:
-    """A descriptive billing category (no CPT codes — used in base tier)."""
+    """A descriptive billing category (no CPT codes — used in base tier).
+
+    The practice_code field is a placeholder for EHR integration.
+    When a clinic is connected via MedStatix, this field will be populated
+    with the clinic's own billing code for this service category.
+    Until then, it remains None.
+    """
     category: str          # e.g. "Physical Performance Testing"
     service_type: str      # e.g. "assessment" or "treatment"
-    justification: str     # same justification text as CPTSuggestion
+    justification: str     # clinical justification for this service
     units: int | None = None
+    practice_code: str | None = None       # Filled by EHR integration (clinic's own code)
+    practice_modifier: str | None = None   # Filled by EHR integration (e.g. "GP", "59")
+    mapping_status: str = "unmapped"       # "unmapped" | "default" | "clinic_mapped"
 
 
 def suggest_assessment_codes(score: int, test_duration_minutes: int = 15) -> list[CPTSuggestion]:

@@ -150,7 +150,7 @@ def _save_findings_csv(result: dict, output_path: Path):
                 "criterion": f"Billing Category: {b['category']}",
                 "passed": "",
                 "measured_value": b.get("units", ""),
-                "threshold": "",
+                "threshold": b.get("practice_code", "unmapped"),
                 "detail": f"[{b['service_type']}] {b['justification']}",
             })
 
@@ -364,63 +364,67 @@ def register_fms_routes(app):
             filename=csv_path.name,
         )
 
-    # ----- EHR Integration Stubs (Pro tier) -----
+    # =========================================================================
+    # EHR INTEGRATION STUBS (MedStatix Gateway)
+    # =========================================================================
 
-    @app.post("/api/fms/findings/{video_id}/push")
-    async def push_to_ehr(video_id: int, clinic_id: str = "", provider_id: str = ""):
-        """
-        Push assessment findings to the clinic's EHR via MedStatix.
-
-        STUB — returns 501 until MedStatix integration is live.
-
-        This endpoint will:
-        1. Load the assessment findings for the video
-        2. Map billing categories to the clinic's specific codes
-        3. Push the full assessment (narrative + scores + billing) to the EHR
-        4. Return the EHR record ID for confirmation
-        """
+    @app.post("/api/ehr/push/{video_id}")
+    async def push_to_ehr(video_id: int, clinic_id: str = "", provider_id: str = "", patient_id: str = ""):
+        """Push assessment to EHR via MedStatix. STUB — returns 501."""
         return JSONResponse(
             status_code=501,
             content={
-                "error": "EHR integration not yet available",
-                "message": "MedStatix integration is in development. "
-                           "Assessment data is available via /api/fms/findings/{video_id}.",
-                "video_id": video_id,
-                "clinic_id": clinic_id,
-                "provider_id": provider_id,
+                "status": "not_implemented",
+                "message": "EHR integration not yet available. Use /api/fms/findings/{video_id} for assessment data.",
+                "video_id": video_id, "clinic_id": clinic_id, "provider_id": provider_id, "patient_id": patient_id,
             }
         )
 
-    @app.get("/api/ehr/config/{clinic_id}")
-    async def get_ehr_config(clinic_id: str):
-        """
-        Get EHR configuration for a clinic.
+    @app.post("/api/ehr/map-codes/{video_id}")
+    async def preview_code_mapping(video_id: int, clinic_id: str = ""):
+        """Preview code mapping for a clinic without pushing. Returns billing descriptions with practice_code=null."""
+        findings_dir = Path("data/exports/fms_findings")
+        if not findings_dir.exists():
+            raise HTTPException(status_code=404, detail="No assessment findings available")
+        matches = [m for m in findings_dir.glob("*_fms_report.json") if f"video_{video_id}" in m.stem or str(video_id) in m.stem]
+        if not matches:
+            raise HTTPException(status_code=404, detail=f"No findings for video {video_id}")
+        report_path = sorted(matches)[-1]
+        with open(report_path) as f:
+            full_report = json.load(f)
+        billing = full_report.get("billing_descriptions", [])
+        for item in billing:
+            item.setdefault("practice_code", None)
+            item.setdefault("practice_modifier", None)
+            item.setdefault("mapping_status", "unmapped")
+        return JSONResponse(content={
+            "video_id": video_id, "clinic_id": clinic_id or "not_specified",
+            "mapping_status": "unmapped",
+            "message": "Code mapping requires MedStatix integration. Billing categories shown without practice codes.",
+            "billing_items": billing,
+        })
 
-        STUB — returns 501 until MedStatix integration is live.
-        """
-        return JSONResponse(
-            status_code=501,
-            content={
-                "error": "EHR integration not yet available",
-                "clinic_id": clinic_id,
-            }
-        )
+    @app.get("/api/ehr/clinic/{clinic_id}/config")
+    async def get_clinic_ehr_config(clinic_id: str):
+        """Get EHR config for a clinic. STUB — returns not_configured."""
+        return JSONResponse(content={
+            "clinic_id": clinic_id, "configured": False, "ehr_system": None, "code_mappings": {},
+            "message": "MedStatix integration not yet configured for this clinic.",
+        })
 
-    @app.post("/api/ehr/webhook/register")
-    async def register_ehr_webhook(clinic_id: str = "", webhook_url: str = ""):
-        """
-        Register a webhook for EHR events.
+    @app.post("/api/ehr/webhook")
+    async def ehr_webhook(request_body: dict = {}):
+        """Webhook receiver for MedStatix events. STUB — logs and returns 200."""
+        event_type = request_body.get("event_type", "unknown")
+        print(f"EHR webhook received (stub): {event_type} — {request_body}")
+        return JSONResponse(content={"received": True, "event_type": event_type, "processed": False})
 
-        STUB — returns 501 until MedStatix integration is live.
-        """
-        return JSONResponse(
-            status_code=501,
-            content={
-                "error": "EHR webhook registration not yet available",
-                "clinic_id": clinic_id,
-                "webhook_url": webhook_url,
-            }
-        )
+    @app.get("/api/ehr/status/{gateway_request_id}")
+    async def check_push_status(gateway_request_id: str):
+        """Check EHR push status. STUB — returns 501."""
+        return JSONResponse(status_code=501, content={
+            "status": "not_implemented", "gateway_request_id": gateway_request_id,
+        })
 
-    print("✓ Assessment routes registered: /api/fms/report/{id}, /api/fms/findings/{id}, /api/fms/findings/{id}/csv")
-    print("✓ EHR stub routes registered: /api/fms/findings/{id}/push, /api/ehr/config/{id}, /api/ehr/webhook/register")
+    print("✓ Assessment routes: /api/fms/report/{id}, /api/fms/findings/{id}, /api/fms/findings/{id}/csv")
+    print("✓ EHR stubs: /api/ehr/push/{id}, /api/ehr/map-codes/{id}, /api/ehr/clinic/{id}/config, /api/ehr/webhook, /api/ehr/status/{id}")

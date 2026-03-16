@@ -210,6 +210,9 @@ def generate_full_report(result_dict: dict, include_cpt_codes: bool = False) -> 
                 "service_type": b.service_type,
                 "justification": b.justification,
                 "units": b.units,
+                "practice_code": b.practice_code,        # None until EHR integration
+                "practice_modifier": b.practice_modifier,  # None until EHR integration
+                "mapping_status": b.mapping_status,        # "unmapped" until EHR integration
             }
             for b in billing_descs
         ],

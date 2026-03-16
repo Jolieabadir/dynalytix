@@ -1,125 +1,50 @@
 """
-MedStatix EHR Adapter — STUB.
+MedStatix EHR Gateway — STUB.
 
-MedStatix is Dynalytix's EHR integration partner. This adapter will handle:
-- Pushing assessment results into patient charts
-- Mapping Dynalytix billing categories to each practice's own codes
-- Formatting clinical narratives in the practice's documentation style
-- Receiving webhooks when patients are scheduled for assessments
+MedStatix handles: EHR connections (WebPT, Clinicient, TheraOffice, Net Health),
+billing code mapping per clinic, documentation formatting, patient chart operations.
 
-This is a stub implementation. The real integration will be built once
-MedStatix provides their API documentation and sandbox credentials.
+Stub until MedStatix provides API docs and sandbox credentials.
 
-Contact: MedStatix team (via Jolie's dad)
+Environment variables (set when MedStatix provides them):
+- MEDSTATIX_API_URL
+- MEDSTATIX_API_KEY
+- MEDSTATIX_WEBHOOK_SECRET
 """
 import os
-from .ehr_adapter import EHRAdapter, EHRPushResult, PatientRef, ProviderRef
+from .adapter import EHRGateway, PushResult, PushStatus
+from .payload import AssessmentPayload, ClinicRef
 
 
-class MedStatixAdapter(EHRAdapter):
-    """
-    MedStatix EHR integration.
-
-    Config via environment variables:
-    - MEDSTATIX_API_URL: Base URL for MedStatix API
-    - MEDSTATIX_API_KEY: API key for authentication
-    - MEDSTATIX_CLINIC_ID: Default clinic ID (can be overridden per-call)
-    """
+class MedStatixGateway(EHRGateway):
 
     def __init__(self):
         self.api_url = os.environ.get("MEDSTATIX_API_URL", "")
         self.api_key = os.environ.get("MEDSTATIX_API_KEY", "")
-        self.default_clinic_id = os.environ.get("MEDSTATIX_CLINIC_ID", "")
-        self._initialized = bool(self.api_url and self.api_key)
+        self.webhook_secret = os.environ.get("MEDSTATIX_WEBHOOK_SECRET", "")
 
     @property
     def is_configured(self) -> bool:
-        """Check if MedStatix credentials are set."""
-        return self._initialized
+        return bool(self.api_url and self.api_key)
 
-    async def push_assessment(
-        self,
-        assessment_data: dict,
-        patient: PatientRef,
-        provider: ProviderRef,
-    ) -> EHRPushResult:
-        """
-        Push assessment to MedStatix patient chart.
-
-        STUB: Returns a mock success response.
-
-        Real implementation will:
-        1. POST to MedStatix API with assessment data
-        2. MedStatix maps to practice's documentation format
-        3. Assessment appears in patient's chart
-        4. Return the EHR record ID for reference
-        """
+    async def push_assessment(self, payload: AssessmentPayload) -> PushResult:
+        """STUB: Returns not_implemented."""
         if not self.is_configured:
-            return EHRPushResult(
-                success=False,
-                error="MedStatix not configured. Set MEDSTATIX_API_URL and MEDSTATIX_API_KEY.",
-            )
+            return PushResult(status=PushStatus.NOT_CONFIGURED, error="Set MEDSTATIX_API_URL and MEDSTATIX_API_KEY.")
+        return PushResult(status=PushStatus.NOT_IMPLEMENTED, error="Awaiting MedStatix API docs.")
 
-        # STUB — will be replaced with actual API call
-        return EHRPushResult(
-            success=False,
-            error="MedStatix integration not yet implemented. Stub only.",
-        )
+    async def map_codes(self, payload: AssessmentPayload) -> AssessmentPayload:
+        """STUB: Returns payload unchanged (codes remain unmapped)."""
+        return payload
 
-    async def get_patient(self, patient_id: str) -> PatientRef | None:
-        """
-        Look up patient in MedStatix.
+    async def get_clinic_config(self, clinic: ClinicRef) -> dict:
+        """STUB: Returns empty config."""
+        return {"clinic_id": clinic.dynalytix_clinic_id, "configured": False, "code_mappings": {}, "providers": []}
 
-        STUB: Returns None.
-        """
-        if not self.is_configured:
-            return None
-
-        # STUB
+    async def lookup_patient(self, clinic: ClinicRef, first_name: str = "", last_name: str = "", dob: str = "", email: str = "") -> dict | None:
+        """STUB: Returns None."""
         return None
 
-    async def map_billing_codes(
-        self,
-        billing_descriptions: list[dict],
-        clinic_id: str = "",
-    ) -> list[dict]:
-        """
-        Map Dynalytix billing categories to the clinic's specific codes.
-
-        STUB: Returns descriptions unchanged (no mapping applied).
-
-        Real implementation will:
-        1. Fetch clinic's code mapping from MedStatix
-        2. Map each billing category to the practice's preferred codes
-        3. Return enriched descriptions with mapped_code field
-        """
-        clinic_id = clinic_id or self.default_clinic_id
-
-        # STUB — return descriptions with empty mapped_code
-        for desc in billing_descriptions:
-            desc["mapped_code"] = None
-            desc["mapping_source"] = "unmapped"
-
-        return billing_descriptions
-
-    async def get_clinic_config(self, clinic_id: str = "") -> dict:
-        """
-        Get clinic configuration from MedStatix.
-
-        STUB: Returns empty config.
-        """
-        return {
-            "clinic_id": clinic_id or self.default_clinic_id,
-            "configured": False,
-            "documentation_template": None,
-            "code_mapping": {},
-            "providers": [],
-        }
-
-    async def webhook_register(self, clinic_id: str, webhook_url: str) -> bool:
-        """
-        Register webhook with MedStatix.
-
-        STUB: Returns False.
-        """
-        return False
+    async def check_status(self, gateway_request_id: str) -> PushResult:
+        """STUB: Returns not_implemented."""
+        return PushResult(status=PushStatus.NOT_IMPLEMENTED, error="Status checking not yet implemented.")
