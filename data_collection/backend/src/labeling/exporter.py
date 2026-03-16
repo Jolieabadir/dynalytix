@@ -61,9 +61,9 @@ class Exporter:
         # Create exports directory
         exports_dir = Path('data/exports')
         exports_dir.mkdir(exist_ok=True)
-        
-        # Output path
-        export_path = exports_dir / f"{raw_csv_path.stem}_labeled.csv"
+
+        # Output path - include video_id for API lookup
+        export_path = exports_dir / f"video_{video_id}_{raw_csv_path.stem}_labeled.csv"
         
         # Combine and write
         with open(raw_csv_path, 'r') as infile, open(export_path, 'w', newline='') as outfile:
