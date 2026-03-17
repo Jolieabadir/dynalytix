@@ -326,9 +326,9 @@ def generate_user_report(result: dict) -> dict:
         )
     elif score == 2:
         interpretation = (
-            "Good movement quality with minor limitations. You achieved "
-            "adequate depth but required heel elevation, suggesting some "
-            "ankle mobility restriction."
+            "Good movement quality with minor compensations. You achieved "
+            "adequate squat depth, but some movement compensations were "
+            "detected. See the criteria details below for specifics."
         )
     elif score == 1:
         interpretation = (

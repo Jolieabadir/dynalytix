@@ -606,22 +606,26 @@ def score_deep_squat(
     bilateral = calculate_bilateral_differences(angles)
 
     # === SCORING LOGIC ===
-    # Score 3: All criteria pass (including heels down)
-    # Score 2: Depth + alignment + knee alignment pass, but heels rise
-    # Score 1: Any core criterion fails
+    # Depth is the gatekeeper for "can complete" vs "cannot complete."
+    # All other criteria are compensations that distinguish 2 from 3.
+    #
+    # Score 3: Adequate depth + no compensations (all criteria pass)
+    # Score 2: Adequate depth + one or more compensations
+    # Score 1: Cannot achieve adequate squat depth
     # Score 0: Pain (handled above)
 
-    core_pass = depth_result.passed and alignment_result.passed and knee_result.passed
-    no_lumbar_issues = lumbar_result.passed
-    heels_down = heel_result.passed
+    can_complete = depth_result.passed
+    no_compensations = (
+        alignment_result.passed
+        and knee_result.passed
+        and heel_result.passed
+        and lumbar_result.passed
+    )
 
-    if core_pass and no_lumbar_issues and heels_down:
+    if can_complete and no_compensations:
         score = 3
-    elif core_pass and no_lumbar_issues and not heels_down:
+    elif can_complete:
         score = 2
-    elif core_pass and not no_lumbar_issues:
-        # Depth achieved but with lumbar flexion compensation
-        score = 1
     else:
         score = 1
 

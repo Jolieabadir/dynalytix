@@ -260,24 +260,25 @@ def score_deep_squat_dual(
             # Prefix with "front_" if key already exists from side view
             merged_angles[f"front_{k}" if k in merged_angles else k] = v
 
-    # === SCORING LOGIC (same as single-angle) ===
+    # === SCORING LOGIC ===
+    # Depth is the gatekeeper. All other criteria are compensations.
     depth = _find_criterion_by_name(merged_criteria, "Squat Depth (femur below horizontal)")
     alignment = _find_criterion_by_name(merged_criteria, "Torso-Tibia Alignment")
     knee = _find_criterion_by_name(merged_criteria, "Knee-Over-Foot Alignment")
     heel = _find_criterion_by_name(merged_criteria, "Heel Position (ankle dorsiflexion)")
     lumbar = _find_criterion_by_name(merged_criteria, "Lumbar Flexion Control")
 
-    core_pass = (
-        (depth.passed if depth else False) and
-        (alignment.passed if alignment else False) and
-        (knee.passed if knee else False)
+    can_complete = depth.passed if depth else False
+    no_compensations = (
+        (alignment.passed if alignment else True)
+        and (knee.passed if knee else True)
+        and (heel.passed if heel else True)
+        and (lumbar.passed if lumbar else True)
     )
-    lumbar_ok = lumbar.passed if lumbar else True
-    heel_ok = heel.passed if heel else True
 
-    if core_pass and lumbar_ok and heel_ok:
+    if can_complete and no_compensations:
         score = 3
-    elif core_pass and lumbar_ok and not heel_ok:
+    elif can_complete:
         score = 2
     else:
         score = 1
