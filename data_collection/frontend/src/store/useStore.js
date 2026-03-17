@@ -96,12 +96,16 @@ const useStore = create((set, get) => ({
   sideVideoId: null,
   frontVideoBlobUrl: null,
   sideVideoBlobUrl: null,
+  frontCsvData: null,
+  sideCsvData: null,
 
   setAssessmentPhase: (phase) => set({ assessmentPhase: phase }),
   setFrontVideoId: (id) => set({ frontVideoId: id }),
   setSideVideoId: (id) => set({ sideVideoId: id }),
   setFrontVideoBlobUrl: (url) => set({ frontVideoBlobUrl: url }),
   setSideVideoBlobUrl: (url) => set({ sideVideoBlobUrl: url }),
+  setFrontCsvData: (data) => set({ frontCsvData: data }),
+  setSideCsvData: (data) => set({ sideCsvData: data }),
 
   // Reset dual-angle state for new assessment
   resetDualAngle: () => set({
@@ -110,6 +114,8 @@ const useStore = create((set, get) => ({
     sideVideoId: null,
     frontVideoBlobUrl: null,
     sideVideoBlobUrl: null,
+    frontCsvData: null,
+    sideCsvData: null,
     // Also reset general video state for clean slate
     currentVideo: null,
     moves: [],

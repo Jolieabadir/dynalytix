@@ -38,6 +38,8 @@ function VideoUpload() {
     setSideVideoId,
     setFrontVideoBlobUrl,
     setSideVideoBlobUrl,
+    setFrontCsvData,
+    setSideCsvData,
   } = useStore();
 
   const handleFileSelect = async (e) => {
@@ -117,6 +119,13 @@ function VideoUpload() {
         return row;
       }).filter(row => row.frame_number);
       setCsvData(csvData);
+
+      // Store CSV data for the specific view (for skeleton overlay)
+      if (assessmentPhase === 'front') {
+        setFrontCsvData(csvData);
+      } else {
+        setSideCsvData(csvData);
+      }
 
       // Clean up extractor
       extractor.close();
