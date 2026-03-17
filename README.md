@@ -51,6 +51,18 @@ Dynalytix uses computer vision to analyze movement patterns from video, automati
 - [ ] MedStatix EHR integration go-live
 - [ ] Additional movement assessments (hurdle step, inline lunge, etc.)
 
+### Phase 4: Patient-Facing Assessment Flow (Complete) ✅
+- [x] Dual-angle video upload (front view → side view, with skip option)
+- [x] Client-side pose extraction (MediaPipe JS, video never leaves browser)
+- [x] Video review screen with dual video display (both angles side-by-side)
+- [x] Skeleton overlay on both videos with frame-by-frame scrubbing
+- [x] Toggle skeleton visibility per video
+- [x] Auto-scoring runs in background while patient reviews videos
+- [x] "View Results" button (user controls transition, no auto-redirect)
+- [x] Results page with score, criteria cards, bilateral differences, billing categories
+- [x] Back navigation throughout (Re-upload ← Review ← Results)
+- [x] "Start New Assessment" to reset flow
+
 ## Model Training Approaches
 
 ### Rule-Based Engine (Recommended for Movement Assessments)
@@ -147,7 +159,15 @@ npm run dev
 
 Open http://localhost:5173
 
-**Workflow:**
+**Patient Assessment Flow (fms-demo branch):**
+1. Upload front view video → poses extracted in browser
+2. Upload side view video (or skip for single-angle)
+3. Review both videos with skeleton overlays, scrub through frames
+4. Scoring runs automatically in background
+5. Click "View Results" to see score, criteria, and recommendations
+6. Use back buttons to review videos or start new assessment
+
+**Data Collection Flow (main branch):**
 1. Upload a deep squat assessment video
 2. Mark assessment boundaries with `[` and `]` keys
 3. Score using 0-3 movement assessment scale (Quick Mode or Detailed Mode)
