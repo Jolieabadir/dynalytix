@@ -10,7 +10,7 @@ const SCORE_LABELS = {
   0: { label: 'Pain', color: '#991b1b', description: 'Pain reported during movement' },
 };
 
-function AssessmentResults({ results, error, frontVideoId, sideVideoId, onStartNew }) {
+function AssessmentResults({ results, error, frontVideoId, sideVideoId, onStartNew, onBackToReview }) {
   const [reportTab, setReportTab] = useState('provider'); // 'patient' | 'provider'
 
   if (error && !results) {
@@ -49,6 +49,11 @@ function AssessmentResults({ results, error, frontVideoId, sideVideoId, onStartN
 
   return (
     <div className="assessment-results">
+      {/* Back button */}
+      <button className="back-button" onClick={onBackToReview}>
+        ← Back to Review
+      </button>
+
       {/* Score Header */}
       <div className="score-header" style={{ borderColor: scoreInfo.color }}>
         <div className="score-circle" style={{ backgroundColor: scoreInfo.color }}>

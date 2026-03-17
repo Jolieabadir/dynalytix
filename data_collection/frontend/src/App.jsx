@@ -3,8 +3,10 @@
  *
  * Three-state flow:
  * 1. Upload (front + side videos)
- * 2. Review (both videos with skeleton overlays while scoring runs)
+ * 2. Review (both videos with playback controls, scoring runs in background)
  * 3. Results (score, criteria, billing, disclaimer)
+ *
+ * Navigation: User controls transitions via buttons (no auto-transition)
  */
 import { useEffect, useState } from 'react';
 import useStore from './store/useStore';
@@ -71,15 +73,31 @@ function App() {
       }
 
       setScoringResults(results);
-      setAppState('results');
+      // Do NOT auto-transition to results — stay on review screen
+      // User will click "View Results" when ready
     } catch (err) {
       console.error('Auto-scoring failed:', err);
       setScoringError(err.message || 'Scoring failed');
-      // Still move to results to show what we have
-      setAppState('results');
+      // Stay on review screen — user can still view available results
     } finally {
       setIsScoring(false);
     }
+  };
+
+  // Navigation handlers
+  const handleViewResults = () => {
+    setAppState('results');
+  };
+
+  const handleBackToUpload = () => {
+    resetDualAngle();
+    setScoringResults(null);
+    setScoringError(null);
+    setAppState('upload');
+  };
+
+  const handleBackToReview = () => {
+    setAppState('review');
   };
 
   const handleStartNew = () => {
@@ -110,6 +128,9 @@ function App() {
         <DualVideoReview
           isScoring={isScoring}
           scoringError={scoringError}
+          scoringComplete={scoringResults !== null}
+          onViewResults={handleViewResults}
+          onBackToUpload={handleBackToUpload}
         />
       )}
 
@@ -120,6 +141,7 @@ function App() {
           frontVideoId={frontVideoId}
           sideVideoId={sideVideoId}
           onStartNew={handleStartNew}
+          onBackToReview={handleBackToReview}
         />
       )}
     </div>

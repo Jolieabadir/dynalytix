@@ -2648,3 +2648,77 @@ body {
 .error-text {
   color: #ef4444;
 }
+
+/* ==================== BACK BUTTONS ==================== */
+.back-button {
+  background: none;
+  border: none;
+  color: #666;
+  font-size: 14px;
+  font-family: var(--font-body);
+  cursor: pointer;
+  padding: 8px 0;
+  margin-bottom: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: color var(--transition-fast);
+}
+
+.back-button:hover {
+  color: #333;
+}
+
+/* ==================== REVIEW SCREEN ==================== */
+.dual-video-review h2 {
+  margin: 0 0 8px;
+  font-size: 1.5rem;
+  color: var(--text-primary);
+}
+
+.review-subtitle {
+  color: #888;
+  margin-bottom: 20px;
+}
+
+.review-actions {
+  text-align: center;
+  margin-top: 24px;
+  padding: 20px;
+}
+
+.scoring-in-progress {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: #666;
+}
+
+.scoring-in-progress .spinner {
+  width: 24px;
+  height: 24px;
+}
+
+.scoring-complete {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.scoring-success {
+  color: #22c55e;
+  font-weight: 600;
+  font-size: 1.1rem;
+}
+
+.scoring-error p {
+  color: #ef4444;
+  margin-bottom: 12px;
+}
+
+.view-results-button {
+  font-size: 18px;
+  padding: 14px 40px;
+}
