@@ -1,6 +1,7 @@
 """
 Data models for labeling system.
 
+Three-lens model: Environment / Strategy / Outcome
 These are pure Python dataclasses with no database dependencies.
 Database layer handles persistence separately.
 """
@@ -12,7 +13,7 @@ from typing import Optional
 @dataclass
 class Video:
     """Represents an uploaded video with metadata."""
-    
+
     id: Optional[int] = None
     filename: str = ""
     path: str = ""
@@ -21,14 +22,14 @@ class Video:
     total_frames: int = 0
     duration_ms: float = 0.0
     uploaded_at: Optional[datetime] = None
-    
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         data = asdict(self)
         if self.uploaded_at:
             data['uploaded_at'] = self.uploaded_at.isoformat()
         return data
-    
+
     @classmethod
     def from_dict(cls, data: dict) -> 'Video':
         """Create from dictionary."""
@@ -40,53 +41,52 @@ class Video:
 @dataclass
 class Move:
     """
-    Represents a labeled climbing move.
-    
-    Contains move boundaries, type, and all contextual answers.
+    Represents a labeled climbing move (Lens 2: Strategy).
+
+    Contains move boundaries and strategy information.
     """
-    
+
     id: Optional[int] = None
     video_id: int = 0
     frame_start: int = 0
     frame_end: int = 0
     timestamp_start_ms: float = 0.0
     timestamp_end_ms: float = 0.0
-    
-    # Core move data
-    move_type: str = ""  # 'dyno', 'lock_off', 'bump', 'coordination', etc.
+
+    # Strategy lens
+    approach: str = ""  # static | dynamic | coordination
+    size: str = ""  # small | medium | large
+    move_tags: list[str] = field(default_factory=list)  # multi-select from MOVE_TAGS
+
+    # Quality metrics (unchanged)
     form_quality: int = 3  # 1-5
     effort_level: int = 5  # 0-10
-    
-    # Contextual answers (stored as dict - specific to move type)
-    # Example for dyno: {'catching_hand': 'right_hand', 'dyno_style': 'double_clutch', ...}
+
+    # Contextual data (kept but unused - design decision pending)
     contextual_data: dict = field(default_factory=dict)
-    
-    # Technique modifiers (applicable to ALL moves)
-    # Example: ['drop_knee', 'heel_hook']
-    technique_modifiers: list[str] = field(default_factory=list)
-    
+
     # Tags and description
     tags: list[str] = field(default_factory=list)
     description: str = ""
-    
+
     # Metadata
     labeled_at: Optional[datetime] = None
-    
+
     def duration_seconds(self) -> float:
         """Calculate move duration in seconds."""
         return (self.timestamp_end_ms - self.timestamp_start_ms) / 1000.0
-    
+
     def frame_count(self) -> int:
         """Calculate number of frames in this move."""
         return self.frame_end - self.frame_start + 1
-    
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         data = asdict(self)
         if self.labeled_at:
             data['labeled_at'] = self.labeled_at.isoformat()
         return data
-    
+
     @classmethod
     def from_dict(cls, data: dict) -> 'Move':
         """Create from dictionary."""
@@ -96,45 +96,101 @@ class Move:
 
 
 @dataclass
+class Environment:
+    """
+    Represents the environment context for a move (Lens 1: Environment).
+
+    One record per move, joined by move_id.
+    """
+
+    id: Optional[int] = None
+    move_id: int = 0
+
+    wall_angle: str = ""  # slab | vertical | gentle_overhang | steep
+    hold_type_reaching: str = ""  # horizontal_edge | gaston | side_pull | undercling
+    hold_type_non_reaching: str = ""  # horizontal_edge | gaston | side_pull | undercling
+    hold_quality: list[str] = field(default_factory=list)  # multi-select: incut | sloped | small
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'Environment':
+        """Create from dictionary."""
+        return cls(**data)
+
+
+@dataclass
+class Outcome:
+    """
+    Represents the outcome of a move (Lens 3: Outcome).
+
+    One record per move, joined by move_id.
+    """
+
+    id: Optional[int] = None
+    move_id: int = 0
+
+    result: str = ""  # success | fall
+    reach_detail: str = ""  # reached_controlled | reached_not_controlled | didnt_reach
+    foot_cut: bool = False
+    confidence: str = ""  # low | med | high
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'Outcome':
+        """Create from dictionary."""
+        return cls(**data)
+
+
+@dataclass
 class FrameTag:
     """
     Represents a tag on a specific frame within a move.
-    
-    Used for precise sensation tracking (pain, instability, weakness).
+
+    Used for precise sensation tracking (pain, instability, weakness, etc.).
     """
-    
+
     id: Optional[int] = None
     move_id: int = 0
     frame_number: int = 0
     timestamp_ms: float = 0.0
-    
-    # Tag type: 'pain', 'instability', 'weakness', 'technique', 'slip'
+
+    # Tag type from TAG_TYPES
     tag_type: str = ""
-    
+
     # For sensation tags (0-10 scale, None for non-sensation tags)
     level: Optional[int] = None
-    
+
     # Body part locations (for sensation tags)
-    # Example: ['left_knee', 'lower_back']
     locations: list[str] = field(default_factory=list)
-    
+
+    # New fields for three-lens schema
+    side: Optional[str] = None  # left | right | null
+    traction_source: Optional[str] = None  # hip | hand | null
+    traction_direction: Optional[str] = None  # free text, nullable
+
     # Optional note
     note: str = ""
-    
+
     # Metadata
     tagged_at: Optional[datetime] = None
-    
+
     def is_sensation_tag(self) -> bool:
         """Check if this is a sensation tag (pain/instability/weakness)."""
-        return self.tag_type in ['pain', 'instability', 'weakness']
-    
+        return self.tag_type in ['sharp_pain', 'dull_pain', 'unstable', 'weak']
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         data = asdict(self)
         if self.tagged_at:
             data['tagged_at'] = self.tagged_at.isoformat()
         return data
-    
+
     @classmethod
     def from_dict(cls, data: dict) -> 'FrameTag':
         """Create from dictionary."""
@@ -144,210 +200,65 @@ class FrameTag:
 
 
 # =============================================================================
-# MOVE TYPES - Primary move categories
-# Removed: static, campus, flag (flag is a technique modifier)
+# LENS 2: STRATEGY CONSTANTS
 # =============================================================================
-MOVE_TYPES = [
-    'lock_off',
-    'dyno',
-    'deadpoint',
+
+APPROACHES = ['static', 'dynamic', 'coordination']
+
+SIZES = ['small', 'medium', 'large']
+
+MOVE_TAGS = [
     'bump',
     'mantle',
-    'coordination',
-    'gaston',
-    'undercling',
+    'balance',
+    'upper_body_coordination',
+    'lower_body_coordination',
+    'heel_hook',
+    'toe_hook',
+    'no_feet_on',
 ]
 
 # =============================================================================
-# TECHNIQUE MODIFIERS - Can be applied to ANY move type
-# These describe HOW the move was executed, not WHAT the move is
+# LENS 1: ENVIRONMENT CONSTANTS
 # =============================================================================
-TECHNIQUE_MODIFIERS = [
-    {
-        'id': 'drop_knee',
-        'label': 'Drop Knee',
-        'description': 'Hip turned in with knee dropped'
-    },
-    {
-        'id': 'heel_hook',
-        'label': 'Heel Hook',
-        'description': 'Heel placed on hold for leverage'
-    },
-    {
-        'id': 'toe_hook',
-        'label': 'Toe Hook',
-        'description': 'Top of foot hooked on hold'
-    },
-    {
-        'id': 'smear',
-        'label': 'Smear',
-        'description': 'Foot pressed against wall without hold'
-    },
-    {
-        'id': 'flag',
-        'label': 'Flag',
-        'description': 'Leg extended for balance/counterweight'
-    },
-]
+
+WALL_ANGLES = ['slab', 'vertical', 'gentle_overhang', 'steep']
+
+HOLD_TYPES = ['horizontal_edge', 'gaston', 'side_pull', 'undercling']
+
+HOLD_QUALITIES = ['incut', 'sloped', 'small']
 
 # =============================================================================
-# CONTEXTUAL QUESTIONS - Specific to each move type
+# LENS 3: OUTCOME CONSTANTS
 # =============================================================================
-MOVE_TYPE_QUESTIONS = {
-    'dyno': {
-        'dyno_style': {
-            'question': 'Dyno style',
-            'options': ['double_clutch', 'paddle_dyno', 'single_arm_catch']
-        },
-        'catching_hand': {
-            'question': 'Which hand caught the target hold?',
-            'options': ['left_hand', 'right_hand', 'both_hands', 'missed']
-        },
-        'push_foot': {
-            'question': 'Which foot pushed off?',
-            'options': ['left_foot', 'right_foot', 'both_feet']
-        },
-        'contact_at_launch': {
-            'question': 'Contact points at launch',
-            'options': ['left_hand', 'right_hand', 'left_foot', 'right_foot'],
-            'multi_select': True
-        },
-        'body_position': {
-            'question': 'Body position at launch',
-            'options': ['square', 'side_on', 'turned_away']
-        }
-    },
-    
-    'lock_off': {
-        'lock_off_arm': {
-            'question': 'Which arm was the lock-off on?',
-            'options': ['left_arm', 'right_arm', 'both_arms']
-        },
-        'lock_angle': {
-            'question': 'Lock-off angle (elbow bend)',
-            'options': ['full_lock', 'ninety_degrees', 'slight_bend']
-        },
-        'reaching_hand': {
-            'question': 'Which hand reached?',
-            'options': ['left_hand', 'right_hand']
-        },
-        'contact_points': {
-            'question': 'Contact points during lock-off',
-            'options': ['left_hand', 'right_hand', 'left_foot', 'right_foot'],
-            'multi_select': True
-        },
-        'hold_duration': {
-            'question': 'How long held (estimate)',
-            'options': ['<1sec', '1-3sec', '3-5sec', '>5sec']
-        }
-    },
-    
-    'deadpoint': {
-        'reaching_hand': {
-            'question': 'Which hand reached?',
-            'options': ['left_hand', 'right_hand', 'both_hands']
-        },
-        'push_foot': {
-            'question': 'Push foot',
-            'options': ['left_foot', 'right_foot', 'both_feet']
-        },
-        'contact_at_peak': {
-            'question': 'Contact at peak (dead point moment)',
-            'options': ['left_hand', 'right_hand', 'left_foot', 'right_foot'],
-            'multi_select': True
-        },
-        'body_position': {
-            'question': 'Body position',
-            'options': ['square', 'side_on', 'twisted']
-        }
-    },
-    
-    'bump': {
-        'bumping_hand': {
-            'question': 'Which hand bumped?',
-            'options': ['left_hand', 'right_hand']
-        },
-        'bump_distance': {
-            'question': 'Bump distance',
-            'options': ['short', 'medium', 'long']
-        },
-        'supporting_hand': {
-            'question': 'Other hand position',
-            'options': ['on_hold', 'moving', 'not_in_contact']
-        }
-    },
-    
-    'mantle': {
-        'mantle_side': {
-            'question': 'Which side mantled first?',
-            'options': ['left_side', 'right_side', 'both_together']
-        },
-        'starting_position': {
-            'question': 'Starting position',
-            'options': ['below_hold', 'level_with_hold', 'above_hold']
-        },
-        'contact_at_top': {
-            'question': 'Contact points at top',
-            'options': ['left_hand', 'right_hand', 'left_knee', 'right_knee'],
-            'multi_select': True
-        },
-        'press_type': {
-            'question': 'Press type',
-            'options': ['palm_press', 'finger_press', 'elbow_press']
-        }
-    },
-    
-    'coordination': {
-        'coordination_style': {
-            'question': 'Coordination move style',
-            'options': ['skate_move', 'throw_hook', 'bicycle', 'other']
-        },
-        'primary_limb': {
-            'question': 'Primary moving limb',
-            'options': ['left_hand', 'right_hand', 'left_foot', 'right_foot']
-        },
-        'secondary_limb': {
-            'question': 'Secondary moving limb (if any)',
-            'options': ['left_hand', 'right_hand', 'left_foot', 'right_foot', 'none']
-        },
-        'timing': {
-            'question': 'Movement timing',
-            'options': ['simultaneous', 'sequential', 'alternating']
-        }
-    },
-    
-    'gaston': {
-        'gaston_hand': {
-            'question': 'Which hand is gastoning?',
-            'options': ['left_hand', 'right_hand', 'both_hands']
-        },
-        'elbow_position': {
-            'question': 'Elbow position',
-            'options': ['high', 'level', 'low']
-        },
-        'body_position': {
-            'question': 'Body position relative to hold',
-            'options': ['inside', 'outside', 'directly_below']
-        }
-    },
-    
-    'undercling': {
-        'undercling_hand': {
-            'question': 'Which hand is underclinging?',
-            'options': ['left_hand', 'right_hand', 'both_hands']
-        },
-        'hip_position': {
-            'question': 'Hip position',
-            'options': ['low', 'level', 'high']
-        },
-        'pulling_direction': {
-            'question': 'Pulling direction',
-            'options': ['straight_up', 'diagonal', 'outward']
-        }
-    },
+
+RESULTS = ['success', 'fall']
+
+REACH_DETAILS = ['reached_controlled', 'reached_not_controlled', 'didnt_reach']
+
+CONFIDENCE_LEVELS = ['low', 'med', 'high']
+
+# =============================================================================
+# SENSATION (FRAME TAG) CONSTANTS
+# =============================================================================
+
+TAG_TYPES = {
+    'sharp_pain': 'Sharp Pain',
+    'dull_pain': 'Dull Pain',
+    'audible_pop': 'Audible Pop',
+    'unstable': 'Unstable',
+    'stretch': 'Stretch',
+    'strong': 'Strong',
+    'weak': 'Weak',
+    'pumped': 'Pumped',
+    'fatigue': 'Fatigue',
 }
 
-# Body part options for sensation tagging
+SIDES = ['left', 'right']
+
+TRACTION_SOURCES = ['hip', 'hand']
+
+# Body part options for sensation tagging (unchanged - 16 entries)
 BODY_PARTS = [
     'left_shoulder', 'right_shoulder',
     'left_elbow', 'right_elbow',
@@ -356,18 +267,5 @@ BODY_PARTS = [
     'left_knee', 'right_knee',
     'left_ankle', 'right_ankle',
     'lower_back', 'upper_back',
-    'core', 'forearms'
+    'core', 'forearms',
 ]
-
-# Tag types
-TAG_TYPES = {
-    'sharp_pain': 'Sharp Pain',
-    'dull_pain': 'Dull Pain',
-    'pop': 'Pop',
-    'unstable': 'Unstable',
-    'stretch_awkward': 'Stretch/Awkward',
-    'strong_controlled': 'Strong/Controlled',
-    'weak': 'Weak',
-    'pumped': 'Pumped',
-    'fatigue': 'Fatigue',
-}

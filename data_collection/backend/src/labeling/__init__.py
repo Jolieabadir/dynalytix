@@ -1,12 +1,44 @@
 """Labeling module for video data collection."""
-from .models import Video, Move, FrameTag, MOVE_TYPES, MOVE_TYPE_QUESTIONS
+from .models import (
+    Video,
+    Move,
+    Environment,
+    Outcome,
+    FrameTag,
+    APPROACHES,
+    SIZES,
+    MOVE_TAGS,
+    WALL_ANGLES,
+    HOLD_TYPES,
+    HOLD_QUALITIES,
+    RESULTS,
+    REACH_DETAILS,
+    CONFIDENCE_LEVELS,
+    TAG_TYPES,
+    SIDES,
+    TRACTION_SOURCES,
+    BODY_PARTS,
+)
 from .database import Database
 
 __all__ = [
     'Video',
     'Move',
+    'Environment',
+    'Outcome',
     'FrameTag',
-    'MOVE_TYPES',
-    'MOVE_TYPE_QUESTIONS',
+    'APPROACHES',
+    'SIZES',
+    'MOVE_TAGS',
+    'WALL_ANGLES',
+    'HOLD_TYPES',
+    'HOLD_QUALITIES',
+    'RESULTS',
+    'REACH_DETAILS',
+    'CONFIDENCE_LEVELS',
+    'TAG_TYPES',
+    'SIDES',
+    'TRACTION_SOURCES',
+    'BODY_PARTS',
     'Database',
 ]
