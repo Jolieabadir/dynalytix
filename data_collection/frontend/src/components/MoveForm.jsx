@@ -35,6 +35,8 @@ const REQUIRED_CONFIG_KEYS = [
   'approaches',
   'sizes',
   'move_tags',
+  'timings',
+  'dyno_styles',
   'results',
   'reach_details',
   'confidence_levels',
@@ -66,6 +68,8 @@ function MoveForm() {
   const [approach, setApproach] = useState('');
   const [size, setSize] = useState('');
   const [moveTags, setMoveTags] = useState([]);
+  const [timing, setTiming] = useState('');
+  const [dynoStyle, setDynoStyle] = useState('');
   const [formQuality, setFormQuality] = useState(3);
   const [effortLevel, setEffortLevel] = useState(5);
   const [description, setDescription] = useState('');
@@ -125,6 +129,8 @@ function MoveForm() {
       setApproach('');
       setSize('');
       setMoveTags([]);
+      setTiming('');
+      setDynoStyle('');
       setFormQuality(3);
       setEffortLevel(5);
       setDescription('');
@@ -144,9 +150,37 @@ function MoveForm() {
   };
 
   const toggleMoveTag = (tag) => {
-    setMoveTags((prev) =>
-      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
-    );
+    setMoveTags((prev) => {
+      const isSelected = prev.includes(tag);
+
+      if (isSelected) {
+        // Unchecking
+        const newTags = prev.filter((t) => t !== tag);
+        // If unchecking dyno, clear dyno_style
+        if (tag === 'dyno') {
+          setDynoStyle('');
+        }
+        return newTags;
+      } else {
+        // Checking
+        let newTags = [...prev, tag];
+
+        // Mutual exclusion: no_hands and no_feet_on cannot both be selected
+        if (tag === 'no_hands' && prev.includes('no_feet_on')) {
+          newTags = newTags.filter((t) => t !== 'no_feet_on');
+        } else if (tag === 'no_feet_on' && prev.includes('no_hands')) {
+          newTags = newTags.filter((t) => t !== 'no_hands');
+        }
+
+        // If selecting no_hands, clear hold type fields
+        if (tag === 'no_hands') {
+          setHoldTypeReaching('');
+          setHoldTypeNonReaching('');
+        }
+
+        return newTags;
+      }
+    });
   };
 
   const toggleHoldQuality = (quality) => {
@@ -165,8 +199,14 @@ function MoveForm() {
     }
 
     // Lens 1 validation
-    if (!wallAngle || !holdTypeReaching || !holdTypeNonReaching) {
-      setError('Please complete all Environment fields');
+    // Hold types not required when no_hands is tagged (hands are off the wall)
+    const noHandsSelected = moveTags.includes('no_hands');
+    if (!wallAngle) {
+      setError('Please select Wall Angle');
+      return;
+    }
+    if (!noHandsSelected && (!holdTypeReaching || !holdTypeNonReaching)) {
+      setError('Please complete Hold Type fields');
       return;
     }
 
@@ -200,6 +240,8 @@ function MoveForm() {
         approach: approach,
         size: size,
         move_tags: moveTags,
+        timing: timing || null,
+        dyno_style: dynoStyle || null,
         form_quality: formQuality,
         effort_level: effortLevel,
         tags: [],
@@ -209,11 +251,12 @@ function MoveForm() {
       createdMove = await createMove(moveData);
 
       // Step 2: Create the environment (Lens 1)
+      // When no_hands is selected, hold types should be null
       const envData = {
         move_id: createdMove.id,
         wall_angle: wallAngle,
-        hold_type_reaching: holdTypeReaching,
-        hold_type_non_reaching: holdTypeNonReaching,
+        hold_type_reaching: noHandsSelected ? null : holdTypeReaching,
+        hold_type_non_reaching: noHandsSelected ? null : holdTypeNonReaching,
         hold_quality: holdQuality,
       };
 
@@ -345,41 +388,61 @@ function MoveForm() {
               </div>
             </div>
 
-            <div className="form-field">
-              <label className="form-label">Hold Type (Reaching Hand)</label>
-              <div className="radio-group">
-                {(config.hold_types ?? []).map((type) => (
-                  <label key={type} className="radio-label">
-                    <input
-                      type="radio"
-                      name="hold_type_reaching"
-                      value={type}
-                      checked={holdTypeReaching === type}
-                      onChange={() => setHoldTypeReaching(type)}
-                    />
-                    {formatLabel(type)}
-                  </label>
-                ))}
+            {/* Hold Type fields - disabled when no_hands is tagged */}
+            {moveTags.includes('no_hands') ? (
+              <div className="form-field disabled-field">
+                <label className="form-label">Hold Types</label>
+                <p className="field-disabled-note">
+                  Disabled — hands are off the wall for this move
+                </p>
               </div>
-            </div>
+            ) : (
+              <>
+                <div className="form-field">
+                  <label className="form-label">
+                    {moveTags.includes('foot_move')
+                      ? 'Hold Type (Left Hand)'
+                      : 'Hold Type (Reaching Hand)'}
+                  </label>
+                  <div className="radio-group">
+                    {(config.hold_types ?? []).map((type) => (
+                      <label key={type} className="radio-label">
+                        <input
+                          type="radio"
+                          name="hold_type_reaching"
+                          value={type}
+                          checked={holdTypeReaching === type}
+                          onChange={() => setHoldTypeReaching(type)}
+                        />
+                        {formatLabel(type)}
+                      </label>
+                    ))}
+                  </div>
+                </div>
 
-            <div className="form-field">
-              <label className="form-label">Hold Type (Non-Reaching Hand)</label>
-              <div className="radio-group">
-                {(config.hold_types ?? []).map((type) => (
-                  <label key={type} className="radio-label">
-                    <input
-                      type="radio"
-                      name="hold_type_non_reaching"
-                      value={type}
-                      checked={holdTypeNonReaching === type}
-                      onChange={() => setHoldTypeNonReaching(type)}
-                    />
-                    {formatLabel(type)}
+                <div className="form-field">
+                  <label className="form-label">
+                    {moveTags.includes('foot_move')
+                      ? 'Hold Type (Right Hand)'
+                      : 'Hold Type (Non-Reaching Hand)'}
                   </label>
-                ))}
-              </div>
-            </div>
+                  <div className="radio-group">
+                    {(config.hold_types ?? []).map((type) => (
+                      <label key={type} className="radio-label">
+                        <input
+                          type="radio"
+                          name="hold_type_non_reaching"
+                          value={type}
+                          checked={holdTypeNonReaching === type}
+                          onChange={() => setHoldTypeNonReaching(type)}
+                        />
+                        {formatLabel(type)}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
 
             <div className="form-field">
               <label className="form-label">Hold Quality (multi-select)</label>
@@ -446,13 +509,94 @@ function MoveForm() {
                     key={tag}
                     type="button"
                     onClick={() => toggleMoveTag(tag)}
-                    className={`tag-btn ${moveTags.includes(tag) ? 'active' : ''}`}
+                    className={`tag-btn ${moveTags.includes(tag) ? 'active' : ''} ${
+                      // Disable no_feet_on when no_hands is selected (and vice versa)
+                      (tag === 'no_feet_on' && moveTags.includes('no_hands')) ||
+                      (tag === 'no_hands' && moveTags.includes('no_feet_on'))
+                        ? 'disabled-mutual'
+                        : ''
+                    }`}
+                    disabled={
+                      (tag === 'no_feet_on' && moveTags.includes('no_hands')) ||
+                      (tag === 'no_hands' && moveTags.includes('no_feet_on'))
+                    }
+                    title={
+                      tag === 'deadpoint'
+                        ? 'Dynamic reach where at least one hand stays in contact'
+                        : tag === 'dyno'
+                          ? 'Dynamic move where all points of contact leave the wall'
+                          : tag === 'foot_move'
+                            ? 'Hands stay on their holds; feet do the work'
+                            : tag === 'no_hands'
+                              ? 'Hands are entirely off the wall'
+                              : undefined
+                    }
                   >
                     {formatLabel(tag)}
                   </button>
                 ))}
               </div>
             </div>
+
+            {/* Timing - always visible */}
+            <div className="form-field">
+              <label className="form-label">Timing (optional)</label>
+              <div className="radio-group">
+                <label className="radio-label">
+                  <input
+                    type="radio"
+                    name="timing"
+                    value=""
+                    checked={timing === ''}
+                    onChange={() => setTiming('')}
+                  />
+                  None
+                </label>
+                {(config.timings ?? []).map((t) => (
+                  <label key={t} className="radio-label">
+                    <input
+                      type="radio"
+                      name="timing"
+                      value={t}
+                      checked={timing === t}
+                      onChange={() => setTiming(t)}
+                    />
+                    {formatLabel(t)}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* Dyno Style - only shown when dyno tag is selected */}
+            {moveTags.includes('dyno') && (
+              <div className="form-field">
+                <label className="form-label">Dyno Style</label>
+                <div className="radio-group">
+                  <label className="radio-label">
+                    <input
+                      type="radio"
+                      name="dyno_style"
+                      value=""
+                      checked={dynoStyle === ''}
+                      onChange={() => setDynoStyle('')}
+                    />
+                    None
+                  </label>
+                  {(config.dyno_styles ?? []).map((ds) => (
+                    <label key={ds} className="radio-label">
+                      <input
+                        type="radio"
+                        name="dyno_style"
+                        value={ds}
+                        checked={dynoStyle === ds}
+                        onChange={() => setDynoStyle(ds)}
+                      />
+                      {formatLabel(ds)}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="form-field">
               <label className="form-label">Form Quality</label>

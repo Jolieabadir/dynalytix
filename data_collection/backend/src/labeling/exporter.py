@@ -46,6 +46,8 @@ class Exporter:
                     'approach': move.approach,
                     'size': move.size,
                     'move_tags': '|'.join(move.move_tags) if move.move_tags else '',
+                    'timing': move.timing or '',
+                    'dyno_style': move.dyno_style or '',
                     'form_quality': move.form_quality,
                     'effort_level': move.effort_level,
                     # Lens 1: Environment
@@ -96,7 +98,8 @@ class Exporter:
                 # Move identification
                 'move_id',
                 # Lens 2: Strategy
-                'approach', 'size', 'move_tags', 'form_quality', 'effort_level',
+                'approach', 'size', 'move_tags', 'timing', 'dyno_style',
+                'form_quality', 'effort_level',
                 # Lens 1: Environment
                 'wall_angle', 'hold_type_reaching', 'hold_type_non_reaching', 'hold_quality',
                 # Lens 3: Outcome
@@ -120,6 +123,8 @@ class Exporter:
                 row['approach'] = labels.get('approach', '')
                 row['size'] = labels.get('size', '')
                 row['move_tags'] = labels.get('move_tags', '')
+                row['timing'] = labels.get('timing', '')
+                row['dyno_style'] = labels.get('dyno_style', '')
                 row['form_quality'] = labels.get('form_quality', '')
                 row['effort_level'] = labels.get('effort_level', '')
 

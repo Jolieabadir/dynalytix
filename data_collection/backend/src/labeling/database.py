@@ -2,7 +2,7 @@
 Database layer for labeling system.
 
 Handles all SQLite operations. Models know nothing about the database.
-Schema version 2: Three-lens model (Environment / Strategy / Outcome)
+Schema version 3: Three-lens model with extended taxonomy (timing, dyno_style)
 """
 import sqlite3
 import json
@@ -13,7 +13,7 @@ from contextlib import contextmanager
 
 from .models import Video, Move, Environment, Outcome, FrameTag
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class Database:
@@ -123,6 +123,8 @@ class Database:
                 approach TEXT NOT NULL,
                 size TEXT NOT NULL,
                 move_tags TEXT NOT NULL,
+                timing TEXT,
+                dyno_style TEXT,
                 form_quality INTEGER NOT NULL,
                 effort_level INTEGER NOT NULL,
                 contextual_data TEXT NOT NULL,
@@ -263,10 +265,10 @@ class Database:
             cursor.execute('''
                 INSERT INTO moves (
                     video_id, frame_start, frame_end, timestamp_start_ms, timestamp_end_ms,
-                    approach, size, move_tags, form_quality, effort_level,
+                    approach, size, move_tags, timing, dyno_style, form_quality, effort_level,
                     contextual_data, tags, description, labeled_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 move.video_id,
                 move.frame_start,
@@ -276,6 +278,8 @@ class Database:
                 move.approach,
                 move.size,
                 json.dumps(move.move_tags),
+                move.timing,
+                move.dyno_style,
                 move.form_quality,
                 move.effort_level,
                 json.dumps(move.contextual_data),
@@ -324,6 +328,8 @@ class Database:
                     approach = ?,
                     size = ?,
                     move_tags = ?,
+                    timing = ?,
+                    dyno_style = ?,
                     form_quality = ?,
                     effort_level = ?,
                     contextual_data = ?,
@@ -338,6 +344,8 @@ class Database:
                 move.approach,
                 move.size,
                 json.dumps(move.move_tags),
+                move.timing,
+                move.dyno_style,
                 move.form_quality,
                 move.effort_level,
                 json.dumps(move.contextual_data),
@@ -581,6 +589,8 @@ class Database:
             approach=row['approach'],
             size=row['size'],
             move_tags=json.loads(row['move_tags']),
+            timing=row['timing'],
+            dyno_style=row['dyno_style'],
             form_quality=row['form_quality'],
             effort_level=row['effort_level'],
             contextual_data=json.loads(row['contextual_data']),

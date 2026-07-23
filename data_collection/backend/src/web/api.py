@@ -19,7 +19,7 @@ import subprocess
 from ..labeling.database import Database
 from ..labeling.models import (
     Video, Move, Environment, Outcome, FrameTag,
-    APPROACHES, SIZES, MOVE_TAGS,
+    APPROACHES, SIZES, MOVE_TAGS, TIMINGS, DYNO_STYLES,
     WALL_ANGLES, HOLD_TYPES, HOLD_QUALITIES,
     RESULTS, REACH_DETAILS, CONFIDENCE_LEVELS,
     TAG_TYPES, BODY_PARTS, SIDES, TRACTION_SOURCES
@@ -88,6 +88,8 @@ class MoveCreate(BaseModel):
     approach: str  # static | dynamic | coordination
     size: str  # small | medium | large
     move_tags: List[str] = []  # multi-select from MOVE_TAGS
+    timing: Optional[str] = None  # simultaneous | sequential | alternating
+    dyno_style: Optional[str] = None  # double_clutch | paddle | single_arm_catch
     form_quality: int = Field(ge=1, le=5, default=3)
     effort_level: int = Field(ge=0, le=10, default=5)
     contextual_data: dict = {}
@@ -104,6 +106,8 @@ class MoveUpdate(BaseModel):
     approach: Optional[str] = None
     size: Optional[str] = None
     move_tags: Optional[List[str]] = None
+    timing: Optional[str] = None
+    dyno_style: Optional[str] = None
     form_quality: Optional[int] = Field(None, ge=1, le=5)
     effort_level: Optional[int] = Field(None, ge=0, le=10)
     contextual_data: Optional[dict] = None
@@ -122,6 +126,8 @@ class MoveResponse(BaseModel):
     approach: str
     size: str
     move_tags: List[str]
+    timing: Optional[str]
+    dyno_style: Optional[str]
     form_quality: int
     effort_level: int
     contextual_data: dict
@@ -137,8 +143,8 @@ class EnvironmentCreate(BaseModel):
     """Schema for creating an environment record."""
     move_id: int
     wall_angle: str  # slab | vertical | gentle_overhang | steep
-    hold_type_reaching: str  # horizontal_edge | gaston | side_pull | undercling
-    hold_type_non_reaching: str  # horizontal_edge | gaston | side_pull | undercling
+    hold_type_reaching: Optional[str] = None  # nullable for no_hands moves
+    hold_type_non_reaching: Optional[str] = None  # nullable for no_hands moves
     hold_quality: List[str] = []  # multi-select: incut | sloped | small
 
 
@@ -229,6 +235,8 @@ class ConfigResponse(BaseModel):
     approaches: List[str]
     sizes: List[str]
     move_tags: List[str]
+    timings: List[str]
+    dyno_styles: List[str]
     # Lens 1: Environment
     wall_angles: List[str]
     hold_types: List[str]
@@ -324,6 +332,8 @@ def move_to_response(move: Move) -> MoveResponse:
         approach=move.approach,
         size=move.size,
         move_tags=move.move_tags,
+        timing=move.timing,
+        dyno_style=move.dyno_style,
         form_quality=move.form_quality,
         effort_level=move.effort_level,
         contextual_data=move.contextual_data,
@@ -392,6 +402,8 @@ async def get_config():
         approaches=APPROACHES,
         sizes=SIZES,
         move_tags=MOVE_TAGS,
+        timings=TIMINGS,
+        dyno_styles=DYNO_STYLES,
         # Lens 1: Environment
         wall_angles=WALL_ANGLES,
         hold_types=HOLD_TYPES,
@@ -631,6 +643,20 @@ async def create_move(move_data: MoveCreate):
                 detail=f"Invalid move tag: {tag}. Must be one of: {MOVE_TAGS}"
             )
 
+    # Validate timing if provided
+    if move_data.timing is not None and move_data.timing not in TIMINGS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid timing: {move_data.timing}. Must be one of: {TIMINGS}"
+        )
+
+    # Validate dyno_style if provided (no dependency check - store what's sent)
+    if move_data.dyno_style is not None and move_data.dyno_style not in DYNO_STYLES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid dyno_style: {move_data.dyno_style}. Must be one of: {DYNO_STYLES}"
+        )
+
     # Create move
     move = Move(
         video_id=move_data.video_id,
@@ -641,6 +667,8 @@ async def create_move(move_data: MoveCreate):
         approach=move_data.approach,
         size=move_data.size,
         move_tags=move_data.move_tags,
+        timing=move_data.timing,
+        dyno_style=move_data.dyno_style,
         form_quality=move_data.form_quality,
         effort_level=move_data.effort_level,
         contextual_data=move_data.contextual_data,
@@ -714,6 +742,20 @@ async def update_move(move_id: int, move_data: MoveUpdate):
                     detail=f"Invalid move tag: {tag}"
                 )
         move.move_tags = move_data.move_tags
+    if move_data.timing is not None:
+        if move_data.timing not in TIMINGS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid timing: {move_data.timing}"
+            )
+        move.timing = move_data.timing
+    if move_data.dyno_style is not None:
+        if move_data.dyno_style not in DYNO_STYLES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid dyno_style: {move_data.dyno_style}"
+            )
+        move.dyno_style = move_data.dyno_style
     if move_data.frame_start is not None:
         move.frame_start = move_data.frame_start
     if move_data.frame_end is not None:
@@ -778,15 +820,15 @@ async def create_environment(env_data: EnvironmentCreate):
             detail=f"Invalid wall_angle: {env_data.wall_angle}. Must be one of: {WALL_ANGLES}"
         )
 
-    # Validate hold_type_reaching
-    if env_data.hold_type_reaching not in HOLD_TYPES:
+    # Validate hold_type_reaching (nullable for no_hands moves)
+    if env_data.hold_type_reaching and env_data.hold_type_reaching not in HOLD_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid hold_type_reaching: {env_data.hold_type_reaching}. Must be one of: {HOLD_TYPES}"
         )
 
-    # Validate hold_type_non_reaching
-    if env_data.hold_type_non_reaching not in HOLD_TYPES:
+    # Validate hold_type_non_reaching (nullable for no_hands moves)
+    if env_data.hold_type_non_reaching and env_data.hold_type_non_reaching not in HOLD_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid hold_type_non_reaching: {env_data.hold_type_non_reaching}. Must be one of: {HOLD_TYPES}"
@@ -804,8 +846,8 @@ async def create_environment(env_data: EnvironmentCreate):
     env = Environment(
         move_id=env_data.move_id,
         wall_angle=env_data.wall_angle,
-        hold_type_reaching=env_data.hold_type_reaching,
-        hold_type_non_reaching=env_data.hold_type_non_reaching,
+        hold_type_reaching=env_data.hold_type_reaching or '',
+        hold_type_non_reaching=env_data.hold_type_non_reaching or '',
         hold_quality=env_data.hold_quality
     )
 
@@ -854,14 +896,16 @@ async def update_environment(env_id: int, env_data: EnvironmentUpdate):
             )
         env.wall_angle = env_data.wall_angle
     if env_data.hold_type_reaching is not None:
-        if env_data.hold_type_reaching not in HOLD_TYPES:
+        # Allow empty string (for no_hands moves) or valid hold type
+        if env_data.hold_type_reaching and env_data.hold_type_reaching not in HOLD_TYPES:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid hold_type_reaching: {env_data.hold_type_reaching}"
             )
         env.hold_type_reaching = env_data.hold_type_reaching
     if env_data.hold_type_non_reaching is not None:
-        if env_data.hold_type_non_reaching not in HOLD_TYPES:
+        # Allow empty string (for no_hands moves) or valid hold type
+        if env_data.hold_type_non_reaching and env_data.hold_type_non_reaching not in HOLD_TYPES:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid hold_type_non_reaching: {env_data.hold_type_non_reaching}"

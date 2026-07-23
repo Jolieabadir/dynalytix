@@ -57,6 +57,8 @@ class Move:
     approach: str = ""  # static | dynamic | coordination
     size: str = ""  # small | medium | large
     move_tags: list[str] = field(default_factory=list)  # multi-select from MOVE_TAGS
+    timing: Optional[str] = None  # simultaneous | sequential | alternating
+    dyno_style: Optional[str] = None  # double_clutch | paddle | single_arm_catch (only when dyno tag)
 
     # Quality metrics (unchanged)
     form_quality: int = 3  # 1-5
@@ -216,7 +218,15 @@ MOVE_TAGS = [
     'heel_hook',
     'toe_hook',
     'no_feet_on',
+    'deadpoint',
+    'dyno',
+    'foot_move',
+    'no_hands',
 ]
+
+TIMINGS = ['simultaneous', 'sequential', 'alternating']
+
+DYNO_STYLES = ['double_clutch', 'paddle', 'single_arm_catch']
 
 # =============================================================================
 # LENS 1: ENVIRONMENT CONSTANTS
@@ -224,7 +234,7 @@ MOVE_TAGS = [
 
 WALL_ANGLES = ['slab', 'vertical', 'gentle_overhang', 'steep']
 
-HOLD_TYPES = ['horizontal_edge', 'gaston', 'side_pull', 'undercling']
+HOLD_TYPES = ['horizontal_edge', 'gaston', 'side_pull', 'undercling', 'jug', 'pinch']
 
 HOLD_QUALITIES = ['incut', 'sloped', 'small']
 
