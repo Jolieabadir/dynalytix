@@ -1,36 +1,48 @@
 /**
  * TaggingMode component.
- * 
+ *
  * Frame tagging interface for adding sensation tags within a move.
+ * All taxonomy (tag types, body parts, sides, traction sources) comes from /api/config.
+ * Supports multiple tags on the same frame.
  */
 import { useRef, useEffect, useState } from 'react';
 import useStore from '../store/useStore';
-import { getFrameTags, createFrameTag, deleteFrameTag } from '../api/client';
+import {
+  getFrameTags,
+  createFrameTag,
+  deleteFrameTag,
+  getConfig,
+} from '../api/client';
 import { exportVideo } from '../api/ExportService';
 import ThankYouModal from './ThankYouModal';
 import DoneButton from './DoneButton';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
-// Tag type definitions with colors
-const TAG_TYPES = [
-  { id: 'sharp_pain', label: 'Sharp Pain', color: '#ef4444', emoji: '🔴' },
-  { id: 'dull_pain', label: 'Dull Pain', color: '#f97316', emoji: '🟠' },
-  { id: 'pop', label: 'Pop', color: '#a855f7', emoji: '🟣' },
-  { id: 'unstable', label: 'Unstable', color: '#eab308', emoji: '🟡' },
-  { id: 'stretch_awkward', label: 'Stretch/Awkward', color: '#ec4899', emoji: '🩷' },
-  { id: 'strong_controlled', label: 'Strong/Controlled', color: '#22c55e', emoji: '🟢' },
-  { id: 'weak', label: 'Weak', color: '#6b7280', emoji: '⚫' },
-  { id: 'pumped', label: 'Pumped', color: '#3b82f6', emoji: '🔵' },
-  { id: 'fatigue', label: 'Fatigue', color: '#92400e', emoji: '🟤' },
-];
+// Colors for tag types (visual distinction only, not taxonomy)
+const TAG_COLORS = {
+  sharp_pain: '#ef4444',
+  dull_pain: '#f97316',
+  audible_pop: '#a855f7',
+  unstable: '#eab308',
+  stretch: '#ec4899',
+  strong: '#22c55e',
+  weak: '#6b7280',
+  pumped: '#3b82f6',
+  fatigue: '#92400e',
+};
 
-// Body parts list - removed Finger (not tracked by MediaPipe)
-const BODY_PARTS = [
-  { group: 'Left Side', parts: ['Left Shoulder', 'Left Elbow', 'Left Wrist', 'Left Hip', 'Left Knee', 'Left Ankle'] },
-  { group: 'Right Side', parts: ['Right Shoulder', 'Right Elbow', 'Right Wrist', 'Right Hip', 'Right Knee', 'Right Ankle'] },
-  { group: 'Core/Back', parts: ['Lower Back', 'Upper Back', 'Core', 'Neck'] },
-];
+const TAG_EMOJIS = {
+  sharp_pain: '🔴',
+  dull_pain: '🟠',
+  audible_pop: '🟣',
+  unstable: '🟡',
+  stretch: '🩷',
+  strong: '🟢',
+  weak: '⚫',
+  pumped: '🔵',
+  fatigue: '🟤',
+};
 
 function TaggingMode() {
   const videoRef = useRef(null);
@@ -48,10 +60,14 @@ function TaggingMode() {
     setCurrentMove,
   } = useStore();
 
+  const [config, setConfigState] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [selectedTagType, setSelectedTagType] = useState(null);
-  const [selectedBodyPart, setSelectedBodyPart] = useState('');
+  const [selectedLocations, setSelectedLocations] = useState([]);
   const [intensity, setIntensity] = useState(5);
+  const [side, setSide] = useState('');
+  const [tractionSource, setTractionSource] = useState('');
+  const [tractionDirection, setTractionDirection] = useState('');
   const [note, setNote] = useState('');
   const [showTagForm, setShowTagForm] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -61,11 +77,24 @@ function TaggingMode() {
 
   const fps = currentVideo?.fps || 30;
 
+  // Load config
+  useEffect(() => {
+    const loadConfig = async () => {
+      try {
+        const configData = await getConfig();
+        setConfigState(configData);
+      } catch (err) {
+        console.error('Failed to load config:', err);
+      }
+    };
+    loadConfig();
+  }, []);
+
   // Load existing frame tags when component mounts
   useEffect(() => {
     const loadTags = async () => {
       if (!currentMove) return;
-      
+
       try {
         const tags = await getFrameTags(currentMove.id);
         setFrameTags(tags);
@@ -73,7 +102,7 @@ function TaggingMode() {
         console.error('Failed to load frame tags:', err);
       }
     };
-    
+
     loadTags();
   }, [currentMove, setFrameTags]);
 
@@ -93,26 +122,26 @@ function TaggingMode() {
     const updateFrame = () => {
       const time = videoRef.current.currentTime;
       const frame = Math.round(time * fps);
-      
+
       // Clamp to move boundaries
       if (currentMove) {
         const clampedFrame = Math.max(
           currentMove.frame_start,
           Math.min(frame, currentMove.frame_end)
         );
-        
+
         // If we've gone past the end, loop back
         if (frame > currentMove.frame_end) {
           videoRef.current.currentTime = currentMove.frame_start / fps;
         }
-        
+
         setCurrentFrame(clampedFrame);
       }
     };
 
     const video = videoRef.current;
     video.addEventListener('timeupdate', updateFrame);
-    
+
     return () => {
       video.removeEventListener('timeupdate', updateFrame);
     };
@@ -120,8 +149,11 @@ function TaggingMode() {
 
   const seekToFrame = (frame) => {
     if (!videoRef.current || !currentMove) return;
-    
-    const clampedFrame = Math.max(currentMove.frame_start, Math.min(frame, currentMove.frame_end));
+
+    const clampedFrame = Math.max(
+      currentMove.frame_start,
+      Math.min(frame, currentMove.frame_end)
+    );
     const time = clampedFrame / fps;
     videoRef.current.currentTime = time;
     setCurrentFrame(clampedFrame);
@@ -129,7 +161,7 @@ function TaggingMode() {
 
   const togglePlay = () => {
     if (!videoRef.current) return;
-    
+
     if (isPlaying) {
       videoRef.current.pause();
     } else {
@@ -138,14 +170,17 @@ function TaggingMode() {
     setIsPlaying(!isPlaying);
   };
 
-  const handleTagButtonClick = (tagType) => {
-    setSelectedTagType(tagType);
+  const handleTagButtonClick = (tagTypeId) => {
+    setSelectedTagType(tagTypeId);
     setShowTagForm(true);
-    setSelectedBodyPart('');
+    setSelectedLocations([]);
     setIntensity(5);
+    setSide('');
+    setTractionSource('');
+    setTractionDirection('');
     setNote('');
     setError(null);
-    
+
     // Pause video when tagging
     if (videoRef.current && isPlaying) {
       videoRef.current.pause();
@@ -153,9 +188,17 @@ function TaggingMode() {
     }
   };
 
+  const toggleLocation = (location) => {
+    setSelectedLocations((prev) =>
+      prev.includes(location)
+        ? prev.filter((l) => l !== location)
+        : [...prev, location]
+    );
+  };
+
   const handleSaveTag = async () => {
-    if (!selectedBodyPart) {
-      setError('Please select a body part');
+    if (selectedLocations.length === 0) {
+      setError('Please select at least one body part');
       return;
     }
 
@@ -167,20 +210,26 @@ function TaggingMode() {
         move_id: currentMove.id,
         frame_number: currentFrame,
         timestamp_ms: (currentFrame / fps) * 1000,
-        tag_type: selectedTagType.id,
+        tag_type: selectedTagType,
         level: intensity,
-        locations: [selectedBodyPart],
+        locations: selectedLocations,
+        side: side || null,
+        traction_source: tractionSource || null,
+        traction_direction: tractionDirection || null,
         note: note.trim(),
       };
 
       const newTag = await createFrameTag(tagData);
       addFrameTag(newTag);
-      
-      // Reset form
-      setShowTagForm(false);
+
+      // Reset form but keep it open for another tag
       setSelectedTagType(null);
-      setSelectedBodyPart('');
+      setShowTagForm(false);
+      setSelectedLocations([]);
       setIntensity(5);
+      setSide('');
+      setTractionSource('');
+      setTractionDirection('');
       setNote('');
     } catch (err) {
       console.error('Failed to create tag:', err);
@@ -213,7 +262,7 @@ function TaggingMode() {
   const handleDone = async () => {
     setExporting(true);
     try {
-      await exportVideo(currentVideo.id, true);  // true = delete video after export
+      await exportVideo(currentVideo.id, true); // true = delete video after export
       setShowThankYou(true);
     } catch (err) {
       console.error('Export failed:', err);
@@ -224,21 +273,47 @@ function TaggingMode() {
     }
   };
 
-  const formatMoveType = (type) => {
-    return type
+  const formatLabel = (str) => {
+    return str
       .split('_')
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
       .join(' ');
   };
 
   const getTagColor = (tagType) => {
-    const tag = TAG_TYPES.find(t => t.id === tagType);
-    return tag?.color || '#888';
+    return TAG_COLORS[tagType] || '#888';
+  };
+
+  const getTagEmoji = (tagType) => {
+    return TAG_EMOJIS[tagType] || '⚪';
   };
 
   const getTagLabel = (tagType) => {
-    const tag = TAG_TYPES.find(t => t.id === tagType);
-    return tag?.label || tagType;
+    if (!config?.tag_types) return formatLabel(tagType);
+    return config.tag_types[tagType] || formatLabel(tagType);
+  };
+
+  // Group body parts for display
+  const groupBodyParts = (bodyParts) => {
+    if (!bodyParts) return [];
+
+    const groups = {
+      'Left Side': [],
+      'Right Side': [],
+      'Core/Back': [],
+    };
+
+    bodyParts.forEach((part) => {
+      if (part.startsWith('left_')) {
+        groups['Left Side'].push(part);
+      } else if (part.startsWith('right_')) {
+        groups['Right Side'].push(part);
+      } else {
+        groups['Core/Back'].push(part);
+      }
+    });
+
+    return Object.entries(groups).filter(([, parts]) => parts.length > 0);
   };
 
   if (!currentMove || !currentVideo) {
@@ -250,8 +325,17 @@ function TaggingMode() {
     );
   }
 
+  if (!config) {
+    return <div className="tagging-mode">Loading configuration...</div>;
+  }
+
   const moveFrameCount = currentMove.frame_end - currentMove.frame_start;
   const currentMoveFrame = currentFrame - currentMove.frame_start;
+
+  // Get tags for current frame (may be multiple)
+  const tagsOnCurrentFrame = frameTags.filter(
+    (t) => t.frame_number === currentFrame
+  );
 
   return (
     <div className="tagging-mode">
@@ -265,7 +349,12 @@ function TaggingMode() {
           {exporting && <span className="exporting-text">Exporting...</span>}
         </div>
         <div className="move-info">
-          <h2>Tagging: {formatMoveType(currentMove.move_type)}</h2>
+          <h2>
+            Tagging: {formatLabel(currentMove.approach)} ·{' '}
+            {formatLabel(currentMove.size)}
+            {currentMove.move_tags?.length > 0 &&
+              ` · ${currentMove.move_tags.map(formatLabel).join(', ')}`}
+          </h2>
           <span className="frame-range">
             Frames {currentMove.frame_start} - {currentMove.frame_end}
           </span>
@@ -278,7 +367,9 @@ function TaggingMode() {
           <div className="video-container">
             <video
               ref={videoRef}
-              src={videoBlobUrl || `${API_BASE_URL}/videos/${currentVideo.filename}`}
+              src={
+                videoBlobUrl || `${API_BASE_URL}/videos/${currentVideo.filename}`
+              }
               loop
             />
           </div>
@@ -297,8 +388,16 @@ function TaggingMode() {
           {/* Frame Info */}
           <div className="frame-info">
             <span>Frame: {currentFrame}</span>
-            <span>Move Frame: {currentMoveFrame} / {moveFrameCount}</span>
+            <span>
+              Move Frame: {currentMoveFrame} / {moveFrameCount}
+            </span>
             <span>({(currentFrame / fps).toFixed(2)}s)</span>
+            {tagsOnCurrentFrame.length > 0 && (
+              <span className="tags-on-frame">
+                {tagsOnCurrentFrame.length} tag
+                {tagsOnCurrentFrame.length !== 1 ? 's' : ''} on this frame
+              </span>
+            )}
           </div>
 
           {/* Timeline with tag markers */}
@@ -313,7 +412,9 @@ function TaggingMode() {
             />
             {/* Tag markers */}
             {frameTags.map((tag) => {
-              const position = ((tag.frame_number - currentMove.frame_start) / moveFrameCount) * 100;
+              const position =
+                ((tag.frame_number - currentMove.frame_start) / moveFrameCount) *
+                100;
               return (
                 <div
                   key={tag.id}
@@ -333,17 +434,17 @@ function TaggingMode() {
         <div className="tagging-controls-section">
           <h3>Add Tag at Frame {currentFrame}</h3>
 
-          {/* Tag Type Buttons */}
+          {/* Tag Type Buttons - from config */}
           <div className="tag-buttons-grid">
-            {TAG_TYPES.map((tag) => (
+            {Object.entries(config.tag_types).map(([id, label]) => (
               <button
-                key={tag.id}
-                className={`tag-button ${selectedTagType?.id === tag.id ? 'selected' : ''}`}
-                style={{ '--tag-color': tag.color }}
-                onClick={() => handleTagButtonClick(tag)}
+                key={id}
+                className={`tag-button ${selectedTagType === id ? 'selected' : ''}`}
+                style={{ '--tag-color': getTagColor(id) }}
+                onClick={() => handleTagButtonClick(id)}
               >
-                <span className="tag-emoji">{tag.emoji}</span>
-                <span className="tag-label">{tag.label}</span>
+                <span className="tag-emoji">{getTagEmoji(id)}</span>
+                <span className="tag-label">{label}</span>
               </button>
             ))}
           </div>
@@ -354,30 +455,103 @@ function TaggingMode() {
               <div className="tag-form-header">
                 <span
                   className="selected-tag-badge"
-                  style={{ backgroundColor: selectedTagType.color }}
+                  style={{ backgroundColor: getTagColor(selectedTagType) }}
                 >
-                  {selectedTagType.emoji} {selectedTagType.label}
+                  {getTagEmoji(selectedTagType)} {getTagLabel(selectedTagType)}
                 </span>
                 <span className="at-frame">at Frame {currentFrame}</span>
               </div>
 
-              {/* Body Part Select */}
+              {/* Body Part Multi-Select - from config */}
               <div className="form-group">
-                <label>Body Part</label>
-                <select
-                  value={selectedBodyPart}
-                  onChange={(e) => setSelectedBodyPart(e.target.value)}
-                  className="body-part-select"
-                >
-                  <option value="">Select body part...</option>
-                  {BODY_PARTS.map((group) => (
-                    <optgroup key={group.group} label={group.group}>
-                      {group.parts.map((part) => (
-                        <option key={part} value={part}>{part}</option>
+                <label>Body Parts (select all that apply)</label>
+                <div className="body-parts-grid">
+                  {groupBodyParts(config.body_parts).map(([group, parts]) => (
+                    <div key={group} className="body-part-group">
+                      <div className="group-label">{group}</div>
+                      {parts.map((part) => (
+                        <label key={part} className="body-part-checkbox">
+                          <input
+                            type="checkbox"
+                            checked={selectedLocations.includes(part)}
+                            onChange={() => toggleLocation(part)}
+                          />
+                          {formatLabel(part)}
+                        </label>
                       ))}
-                    </optgroup>
+                    </div>
                   ))}
-                </select>
+                </div>
+              </div>
+
+              {/* Side - from config */}
+              <div className="form-group">
+                <label>Side (optional)</label>
+                <div className="radio-group-inline">
+                  <label className="radio-label">
+                    <input
+                      type="radio"
+                      name="side"
+                      value=""
+                      checked={side === ''}
+                      onChange={() => setSide('')}
+                    />
+                    None
+                  </label>
+                  {config.sides.map((s) => (
+                    <label key={s} className="radio-label">
+                      <input
+                        type="radio"
+                        name="side"
+                        value={s}
+                        checked={side === s}
+                        onChange={() => setSide(s)}
+                      />
+                      {formatLabel(s)}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* Traction Source - from config */}
+              <div className="form-group">
+                <label>Traction Source (optional)</label>
+                <div className="radio-group-inline">
+                  <label className="radio-label">
+                    <input
+                      type="radio"
+                      name="traction_source"
+                      value=""
+                      checked={tractionSource === ''}
+                      onChange={() => setTractionSource('')}
+                    />
+                    None
+                  </label>
+                  {config.traction_sources.map((ts) => (
+                    <label key={ts} className="radio-label">
+                      <input
+                        type="radio"
+                        name="traction_source"
+                        value={ts}
+                        checked={tractionSource === ts}
+                        onChange={() => setTractionSource(ts)}
+                      />
+                      {formatLabel(ts)}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* Traction Direction - free text */}
+              <div className="form-group">
+                <label>Traction Direction (optional)</label>
+                <input
+                  type="text"
+                  value={tractionDirection}
+                  onChange={(e) => setTractionDirection(e.target.value)}
+                  placeholder="e.g., internal rotation, lateral..."
+                  className="text-input"
+                />
               </div>
 
               {/* Intensity Slider */}
@@ -385,7 +559,7 @@ function TaggingMode() {
                 <label>Intensity: {intensity}/10</label>
                 <input
                   type="range"
-                  min="1"
+                  min="0"
                   max="10"
                   value={intensity}
                   onChange={(e) => setIntensity(parseInt(e.target.value))}
@@ -427,7 +601,7 @@ function TaggingMode() {
                 <button
                   onClick={handleSaveTag}
                   className="save-btn"
-                  disabled={loading || !selectedBodyPart}
+                  disabled={loading || selectedLocations.length === 0}
                 >
                   {loading ? 'Saving...' : 'Save Tag'}
                 </button>
@@ -439,11 +613,16 @@ function TaggingMode() {
           <div className="existing-tags">
             <h4>Tags on this Move ({frameTags.length})</h4>
             {frameTags.length === 0 ? (
-              <p className="no-tags">No tags yet. Click a tag button above to add one.</p>
+              <p className="no-tags">
+                No tags yet. Click a tag button above to add one.
+              </p>
             ) : (
               <div className="tags-list">
                 {frameTags.map((tag) => (
-                  <div key={tag.id} className="tag-item">
+                  <div
+                    key={tag.id}
+                    className={`tag-item ${tag.frame_number === currentFrame ? 'current-frame' : ''}`}
+                  >
                     <div
                       className="tag-color-dot"
                       style={{ backgroundColor: getTagColor(tag.tag_type) }}
@@ -454,9 +633,22 @@ function TaggingMode() {
                         <span className="tag-frame">Frame {tag.frame_number}</span>
                       </div>
                       <div className="tag-meta">
-                        <span>{tag.locations?.join(', ')}</span>
+                        <span>{tag.locations?.map(formatLabel).join(', ')}</span>
                         <span className="tag-level">Level: {tag.level}/10</span>
+                        {tag.side && (
+                          <span className="tag-side">{formatLabel(tag.side)}</span>
+                        )}
+                        {tag.traction_source && (
+                          <span className="tag-traction">
+                            {formatLabel(tag.traction_source)}
+                          </span>
+                        )}
                       </div>
+                      {tag.traction_direction && (
+                        <div className="tag-traction-dir">
+                          Direction: {tag.traction_direction}
+                        </div>
+                      )}
                       {tag.note && <div className="tag-note">{tag.note}</div>}
                     </div>
                     <button

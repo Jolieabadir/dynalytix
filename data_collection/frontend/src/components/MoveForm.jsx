@@ -1,13 +1,31 @@
 /**
  * MoveForm component.
- * 
- * Two-step form for creating/editing moves:
- * 1. Select move type
- * 2. Contextual questions + technique modifiers + quality/effort/tags
+ *
+ * Three-lens labeling flow:
+ * - Lens 1: Environment (wall angle, hold types, hold quality)
+ * - Lens 2: Strategy (approach, size, move tags, form quality, effort)
+ * - Lens 3: Outcome (result, reach detail, foot cut, confidence)
+ *
+ * All taxonomy comes from /api/config - no hardcoded values.
  */
 import { useState, useEffect } from 'react';
 import useStore from '../store/useStore';
-import { createMove, getConfig } from '../api/client';
+import {
+  createMove,
+  createEnvironment,
+  createOutcome,
+  getConfig,
+  deleteMove,
+} from '../api/client';
+
+// Form quality anchor text
+const FORM_QUALITY_LABELS = {
+  1: 'Failed',
+  2: 'Clear compensation',
+  3: 'Acceptable',
+  4: 'Efficient/repeatable',
+  5: 'Excellent, repeatable under greater demand',
+};
 
 function MoveForm() {
   const {
@@ -18,19 +36,32 @@ function MoveForm() {
     setShowMoveForm,
     clearMoveSelection,
     addMove,
+    previousEnvironment,
+    setPreviousEnvironment,
   } = useStore();
 
-  const [step, setStep] = useState(1);
-  const [config, setConfig] = useState(null);
-  
-  // Form state
-  const [moveType, setMoveType] = useState('');
-  const [contextualData, setContextualData] = useState({});
-  const [techniqueModifiers, setTechniqueModifiers] = useState([]);
+  const [config, setConfigState] = useState(null);
+
+  // Lens 1: Environment
+  const [wallAngle, setWallAngle] = useState('');
+  const [holdTypeReaching, setHoldTypeReaching] = useState('');
+  const [holdTypeNonReaching, setHoldTypeNonReaching] = useState('');
+  const [holdQuality, setHoldQuality] = useState([]);
+
+  // Lens 2: Strategy
+  const [approach, setApproach] = useState('');
+  const [size, setSize] = useState('');
+  const [moveTags, setMoveTags] = useState([]);
   const [formQuality, setFormQuality] = useState(3);
   const [effortLevel, setEffortLevel] = useState(5);
-  const [tags, setTags] = useState([]);
   const [description, setDescription] = useState('');
+
+  // Lens 3: Outcome
+  const [result, setResult] = useState('');
+  const [reachDetail, setReachDetail] = useState('');
+  const [footCut, setFootCut] = useState(false);
+  const [confidence, setConfidence] = useState('');
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -39,7 +70,7 @@ function MoveForm() {
     const loadConfig = async () => {
       try {
         const configData = await getConfig();
-        setConfig(configData);
+        setConfigState(configData);
       } catch (err) {
         console.error('Failed to load config:', err);
         setError('Failed to load form configuration');
@@ -50,103 +81,146 @@ function MoveForm() {
     }
   }, [showMoveForm, config]);
 
-  // Reset form when opened
+  // Reset form when opened, prefill environment from previous move
   useEffect(() => {
     if (showMoveForm) {
-      setStep(1);
-      setMoveType('');
-      setContextualData({});
-      setTechniqueModifiers([]);
+      // Lens 1: Prefill from previous move's environment
+      setWallAngle(previousEnvironment.wall_angle || '');
+      setHoldTypeReaching(previousEnvironment.hold_type_reaching || '');
+      setHoldTypeNonReaching(previousEnvironment.hold_type_non_reaching || '');
+      setHoldQuality(previousEnvironment.hold_quality || []);
+
+      // Lens 2: Reset to defaults
+      setApproach('');
+      setSize('');
+      setMoveTags([]);
       setFormQuality(3);
       setEffortLevel(5);
-      setTags([]);
       setDescription('');
+
+      // Lens 3: Reset to defaults
+      setResult('');
+      setReachDetail('');
+      setFootCut(false);
+      setConfidence('');
+
       setError(null);
     }
-  }, [showMoveForm]);
+  }, [showMoveForm, previousEnvironment]);
 
   const handleClose = () => {
     setShowMoveForm(false);
   };
 
-  const handleNext = () => {
-    if (!moveType) {
-      setError('Please select a move type');
-      return;
-    }
-    setStep(2);
-    setError(null);
-  };
-
-  const handleBack = () => {
-    setStep(1);
-    setError(null);
-  };
-
-  const handleContextualChange = (field, value) => {
-    setContextualData(prev => ({
-      ...prev,
-      [field]: value
-    }));
-  };
-
-  const handleMultiSelectToggle = (field, option) => {
-    const current = contextualData[field] || [];
-    const updated = current.includes(option)
-      ? current.filter(o => o !== option)
-      : [...current, option];
-    handleContextualChange(field, updated);
-  };
-
-  const toggleTechniqueModifier = (modifierId) => {
-    setTechniqueModifiers(prev =>
-      prev.includes(modifierId)
-        ? prev.filter(m => m !== modifierId)
-        : [...prev, modifierId]
+  const toggleMoveTag = (tag) => {
+    setMoveTags((prev) =>
+      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
     );
   };
 
-  const toggleTag = (tag) => {
-    setTags(prev =>
-      prev.includes(tag)
-        ? prev.filter(t => t !== tag)
-        : [...prev, tag]
+  const toggleHoldQuality = (quality) => {
+    setHoldQuality((prev) =>
+      prev.includes(quality)
+        ? prev.filter((q) => q !== quality)
+        : [...prev, quality]
     );
   };
 
   const handleSubmit = async () => {
+    // Validation
     if (!currentVideo || moveStart === null || moveEnd === null) {
       setError('Invalid move boundaries');
+      return;
+    }
+
+    // Lens 1 validation
+    if (!wallAngle || !holdTypeReaching || !holdTypeNonReaching) {
+      setError('Please complete all Environment fields');
+      return;
+    }
+
+    // Lens 2 validation
+    if (!approach || !size) {
+      setError('Please select Approach and Size');
+      return;
+    }
+
+    // Lens 3 validation
+    if (!result || !reachDetail || !confidence) {
+      setError('Please complete all Outcome fields');
       return;
     }
 
     setLoading(true);
     setError(null);
 
+    let createdMove = null;
+
     try {
       const fps = currentVideo.fps;
+
+      // Step 1: Create the move (Lens 2: Strategy)
       const moveData = {
         video_id: currentVideo.id,
         frame_start: moveStart,
         frame_end: moveEnd,
         timestamp_start_ms: (moveStart / fps) * 1000,
         timestamp_end_ms: (moveEnd / fps) * 1000,
-        move_type: moveType,
+        approach: approach,
+        size: size,
+        move_tags: moveTags,
         form_quality: formQuality,
         effort_level: effortLevel,
-        contextual_data: contextualData,
-        technique_modifiers: techniqueModifiers,
-        tags: tags,
+        tags: [],
         description: description,
       };
 
-      const createdMove = await createMove(moveData);
+      createdMove = await createMove(moveData);
+
+      // Step 2: Create the environment (Lens 1)
+      const envData = {
+        move_id: createdMove.id,
+        wall_angle: wallAngle,
+        hold_type_reaching: holdTypeReaching,
+        hold_type_non_reaching: holdTypeNonReaching,
+        hold_quality: holdQuality,
+      };
+
+      await createEnvironment(envData);
+
+      // Step 3: Create the outcome (Lens 3)
+      const outcomeData = {
+        move_id: createdMove.id,
+        result: result,
+        reach_detail: reachDetail,
+        foot_cut: footCut,
+        confidence: confidence,
+      };
+
+      await createOutcome(outcomeData);
+
+      // Save environment for prefilling next move
+      setPreviousEnvironment(envData);
+
+      // Success - add to list and close
       addMove(createdMove);
       clearMoveSelection();
       setShowMoveForm(false);
     } catch (err) {
       console.error('Failed to create move:', err);
-      setError(err.response?.data?.detail || 'Failed to create move');
+
+      // Rollback: if move was created but env/outcome failed, delete the move
+      if (createdMove) {
+        try {
+          await deleteMove(createdMove.id);
+        } catch (rollbackErr) {
+          console.error('Rollback failed:', rollbackErr);
+        }
+      }
+
+      setError(
+        err.response?.data?.detail || 'Failed to create move. Please try again.'
+      );
     } finally {
       setLoading(false);
     }
@@ -155,291 +229,303 @@ function MoveForm() {
   if (!showMoveForm) return null;
   if (!config) return <div className="move-form-loading">Loading...</div>;
 
-  const currentQuestions = moveType ? config.move_type_questions[moveType] : null;
-
-  return (
-    <div className="move-form-overlay">
-      <div className="move-form-modal">
-        <div className="move-form-header">
-          <h2>
-            {step === 1 ? 'Select Move Type' : `Define ${formatMoveType(moveType)}`}
-          </h2>
-          <button onClick={handleClose} className="close-btn">✕</button>
-        </div>
-
-        <div className="move-form-content">
-          {error && (
-            <div className="error-message">{error}</div>
-          )}
-
-          {step === 1 && (
-            <Step1SelectType
-              moveTypes={config.move_types}
-              moveType={moveType}
-              setMoveType={setMoveType}
-              moveStart={moveStart}
-              moveEnd={moveEnd}
-              fps={currentVideo?.fps || 30}
-            />
-          )}
-
-          {step === 2 && (
-            <Step2Details
-              moveType={moveType}
-              questions={currentQuestions}
-              contextualData={contextualData}
-              onContextualChange={handleContextualChange}
-              onMultiSelectToggle={handleMultiSelectToggle}
-              techniqueModifiers={techniqueModifiers}
-              availableModifiers={config.technique_modifiers || []}
-              toggleTechniqueModifier={toggleTechniqueModifier}
-              formQuality={formQuality}
-              setFormQuality={setFormQuality}
-              effortLevel={effortLevel}
-              setEffortLevel={setEffortLevel}
-              tags={tags}
-              toggleTag={toggleTag}
-              description={description}
-              setDescription={setDescription}
-            />
-          )}
-        </div>
-
-        <div className="move-form-footer">
-          {step === 1 ? (
-            <>
-              <button onClick={handleClose} className="btn-secondary">
-                Cancel
-              </button>
-              <button onClick={handleNext} className="btn-primary">
-                Next →
-              </button>
-            </>
-          ) : (
-            <>
-              <button onClick={handleBack} className="btn-secondary">
-                ← Back
-              </button>
-              <button 
-                onClick={handleSubmit} 
-                className="btn-primary"
-                disabled={loading}
-              >
-                {loading ? 'Saving...' : 'Save Move'}
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Step 1: Select move type
-function Step1SelectType({ moveTypes, moveType, setMoveType, moveStart, moveEnd, fps }) {
-  const duration = moveEnd && moveStart ? ((moveEnd - moveStart) / fps).toFixed(2) : 0;
+  const fps = currentVideo?.fps || 30;
+  const duration =
+    moveEnd && moveStart ? ((moveEnd - moveStart) / fps).toFixed(2) : 0;
   const frameCount = moveEnd && moveStart ? moveEnd - moveStart : 0;
 
   return (
-    <div className="step-1">
-      <div className="move-info">
-        <p>Frames: {moveStart} - {moveEnd} ({frameCount} frames, {duration}s)</p>
-      </div>
-
-      <label className="form-label">Move Type</label>
-      <select
-        value={moveType}
-        onChange={(e) => setMoveType(e.target.value)}
-        className="move-type-select"
-      >
-        <option value="">Select move type...</option>
-        {moveTypes.map(type => (
-          <option key={type} value={type}>
-            {formatMoveType(type)}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-// Step 2: Contextual questions + technique modifiers + quality/effort/tags
-function Step2Details({
-  moveType,
-  questions,
-  contextualData,
-  onContextualChange,
-  onMultiSelectToggle,
-  techniqueModifiers,
-  availableModifiers,
-  toggleTechniqueModifier,
-  formQuality,
-  setFormQuality,
-  effortLevel,
-  setEffortLevel,
-  tags,
-  toggleTag,
-  description,
-  setDescription,
-}) {
-  const commonTags = [
-    'tweaky_feeling',
-    'flash_pump',
-    'good_technique',
-    'controlled'
-  ];
-
-  return (
-    <div className="step-2">
-      {/* Contextual Questions */}
-      {questions && Object.entries(questions).map(([fieldKey, fieldConfig]) => (
-        <div key={fieldKey} className="form-field">
-          <label className="form-label">{fieldConfig.question}</label>
-          
-          {fieldConfig.multi_select ? (
-            // Multi-select: checkboxes
-            <div className="checkbox-group">
-              {fieldConfig.options.map(option => (
-                <label key={option} className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={(contextualData[fieldKey] || []).includes(option)}
-                    onChange={() => onMultiSelectToggle(fieldKey, option)}
-                  />
-                  {formatOption(option)}
-                </label>
-              ))}
-            </div>
-          ) : (
-            // Single select: radio buttons
-            <div className="radio-group">
-              {fieldConfig.options.map(option => (
-                <label key={option} className="radio-label">
-                  <input
-                    type="radio"
-                    name={fieldKey}
-                    value={option}
-                    checked={contextualData[fieldKey] === option}
-                    onChange={() => onContextualChange(fieldKey, option)}
-                  />
-                  {formatOption(option)}
-                </label>
-              ))}
-            </div>
-          )}
+    <div className="move-form-overlay">
+      <div className="move-form-modal move-form-three-lens">
+        <div className="move-form-header">
+          <h2>Label Move</h2>
+          <button onClick={handleClose} className="close-btn">
+            ✕
+          </button>
         </div>
-      ))}
 
-      {/* Technique Modifiers - applicable to ALL move types */}
-      {availableModifiers && availableModifiers.length > 0 && (
-        <div className="form-field">
-          <label className="form-label">Technique Modifiers (optional)</label>
-          <div className="tags-group">
-            {availableModifiers.map(modifier => (
-              <button
-                key={modifier.id}
-                type="button"
-                onClick={() => toggleTechniqueModifier(modifier.id)}
-                className={`tag-btn ${techniqueModifiers.includes(modifier.id) ? 'active' : ''}`}
-                title={modifier.description}
-              >
-                {modifier.label}
-              </button>
-            ))}
+        <div className="move-form-content">
+          {/* Move Info */}
+          <div className="move-info">
+            <p>
+              Frames: {moveStart} - {moveEnd} ({frameCount} frames, {duration}s)
+            </p>
+          </div>
+
+          {error && <div className="error-message">{error}</div>}
+
+          {/* Lens 1: Environment */}
+          <div className="lens-section">
+            <h3 className="lens-title">🏔️ Environment</h3>
+
+            <div className="form-field">
+              <label className="form-label">Wall Angle</label>
+              <div className="radio-group">
+                {config.wall_angles.map((angle) => (
+                  <label key={angle} className="radio-label">
+                    <input
+                      type="radio"
+                      name="wall_angle"
+                      value={angle}
+                      checked={wallAngle === angle}
+                      onChange={() => setWallAngle(angle)}
+                    />
+                    {formatLabel(angle)}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="form-field">
+              <label className="form-label">Hold Type (Reaching Hand)</label>
+              <div className="radio-group">
+                {config.hold_types.map((type) => (
+                  <label key={type} className="radio-label">
+                    <input
+                      type="radio"
+                      name="hold_type_reaching"
+                      value={type}
+                      checked={holdTypeReaching === type}
+                      onChange={() => setHoldTypeReaching(type)}
+                    />
+                    {formatLabel(type)}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="form-field">
+              <label className="form-label">Hold Type (Non-Reaching Hand)</label>
+              <div className="radio-group">
+                {config.hold_types.map((type) => (
+                  <label key={type} className="radio-label">
+                    <input
+                      type="radio"
+                      name="hold_type_non_reaching"
+                      value={type}
+                      checked={holdTypeNonReaching === type}
+                      onChange={() => setHoldTypeNonReaching(type)}
+                    />
+                    {formatLabel(type)}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="form-field">
+              <label className="form-label">Hold Quality (multi-select)</label>
+              <div className="checkbox-group">
+                {config.hold_qualities.map((quality) => (
+                  <label key={quality} className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={holdQuality.includes(quality)}
+                      onChange={() => toggleHoldQuality(quality)}
+                    />
+                    {formatLabel(quality)}
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Lens 2: Strategy */}
+          <div className="lens-section">
+            <h3 className="lens-title">🎯 Strategy</h3>
+
+            <div className="form-field">
+              <label className="form-label">Approach</label>
+              <div className="radio-group">
+                {config.approaches.map((a) => (
+                  <label key={a} className="radio-label">
+                    <input
+                      type="radio"
+                      name="approach"
+                      value={a}
+                      checked={approach === a}
+                      onChange={() => setApproach(a)}
+                    />
+                    {formatLabel(a)}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="form-field">
+              <label className="form-label">Size</label>
+              <div className="radio-group">
+                {config.sizes.map((s) => (
+                  <label key={s} className="radio-label">
+                    <input
+                      type="radio"
+                      name="size"
+                      value={s}
+                      checked={size === s}
+                      onChange={() => setSize(s)}
+                    />
+                    {formatLabel(s)}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="form-field">
+              <label className="form-label">Move Tags (multi-select)</label>
+              <div className="tags-group">
+                {config.move_tags.map((tag) => (
+                  <button
+                    key={tag}
+                    type="button"
+                    onClick={() => toggleMoveTag(tag)}
+                    className={`tag-btn ${moveTags.includes(tag) ? 'active' : ''}`}
+                  >
+                    {formatLabel(tag)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="form-field">
+              <label className="form-label">Form Quality</label>
+              <div className="quality-buttons">
+                {[1, 2, 3, 4, 5].map((q) => (
+                  <button
+                    key={q}
+                    type="button"
+                    onClick={() => setFormQuality(q)}
+                    className={`quality-btn ${formQuality === q ? 'active' : ''}`}
+                    title={FORM_QUALITY_LABELS[q]}
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+              <div className="quality-description">
+                {FORM_QUALITY_LABELS[formQuality]}
+              </div>
+            </div>
+
+            <div className="form-field">
+              <label className="form-label">Effort Level: {effortLevel}/10</label>
+              <input
+                type="range"
+                min="0"
+                max="10"
+                value={effortLevel}
+                onChange={(e) => setEffortLevel(Number(e.target.value))}
+                className="effort-slider"
+              />
+              <div className="effort-labels">
+                <span>Easy</span>
+                <span>Max Effort</span>
+              </div>
+            </div>
+
+            <div className="form-field">
+              <label className="form-label">Description (optional)</label>
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value.slice(0, 500))}
+                placeholder="Add notes about this move..."
+                className="description-textarea"
+                rows="2"
+              />
+            </div>
+          </div>
+
+          {/* Lens 3: Outcome */}
+          <div className="lens-section">
+            <h3 className="lens-title">📊 Outcome</h3>
+
+            <div className="form-field">
+              <label className="form-label">Result</label>
+              <div className="radio-group">
+                {config.results.map((r) => (
+                  <label key={r} className="radio-label">
+                    <input
+                      type="radio"
+                      name="result"
+                      value={r}
+                      checked={result === r}
+                      onChange={() => setResult(r)}
+                    />
+                    {formatLabel(r)}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="form-field">
+              <label className="form-label">Reach Detail</label>
+              <div className="radio-group">
+                {config.reach_details.map((rd) => (
+                  <label key={rd} className="radio-label">
+                    <input
+                      type="radio"
+                      name="reach_detail"
+                      value={rd}
+                      checked={reachDetail === rd}
+                      onChange={() => setReachDetail(rd)}
+                    />
+                    {formatLabel(rd)}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="form-field">
+              <label className="checkbox-label foot-cut-label">
+                <input
+                  type="checkbox"
+                  checked={footCut}
+                  onChange={(e) => setFootCut(e.target.checked)}
+                />
+                Foot Cut (feet came off during move)
+              </label>
+            </div>
+
+            <div className="form-field">
+              <label className="form-label">Confidence</label>
+              <div className="radio-group">
+                {config.confidence_levels.map((c) => (
+                  <label key={c} className="radio-label">
+                    <input
+                      type="radio"
+                      name="confidence"
+                      value={c}
+                      checked={confidence === c}
+                      onChange={() => setConfidence(c)}
+                    />
+                    {formatLabel(c)}
+                  </label>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
-      )}
 
-      {/* Form Quality */}
-      <div className="form-field">
-        <label className="form-label">Form Quality</label>
-        <div className="quality-buttons">
-          {[1, 2, 3, 4, 5].map(q => (
-            <button
-              key={q}
-              type="button"
-              onClick={() => setFormQuality(q)}
-              className={`quality-btn ${formQuality === q ? 'active' : ''}`}
-            >
-              {q}
-            </button>
-          ))}
+        <div className="move-form-footer">
+          <button onClick={handleClose} className="btn-secondary">
+            Cancel
+          </button>
+          <button
+            onClick={handleSubmit}
+            className="btn-primary"
+            disabled={loading}
+          >
+            {loading ? 'Saving...' : 'Save Move'}
+          </button>
         </div>
-        <div className="quality-labels">
-          <span>Poor</span>
-          <span>Perfect</span>
-        </div>
-      </div>
-
-      {/* Effort Level */}
-      <div className="form-field">
-        <label className="form-label">Effort Level: {effortLevel}/10</label>
-        <input
-          type="range"
-          min="0"
-          max="10"
-          value={effortLevel}
-          onChange={(e) => setEffortLevel(Number(e.target.value))}
-          className="effort-slider"
-        />
-        <div className="effort-labels">
-          <span>Easy</span>
-          <span>Max Effort</span>
-        </div>
-      </div>
-
-      {/* Tags */}
-      <div className="form-field">
-        <label className="form-label">Tags (optional)</label>
-        <div className="tags-group">
-          {commonTags.map(tag => (
-            <button
-              key={tag}
-              type="button"
-              onClick={() => toggleTag(tag)}
-              className={`tag-btn ${tags.includes(tag) ? 'active' : ''}`}
-            >
-              {formatTag(tag)}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Description */}
-      <div className="form-field">
-        <label className="form-label">Description (optional)</label>
-        <textarea
-          value={description}
-          onChange={(e) => setDescription(e.target.value.slice(0, 500))}
-          placeholder="Add notes about this move..."
-          className="description-textarea"
-          rows="3"
-        />
-        <div className="char-count">{description.length}/500</div>
       </div>
     </div>
   );
 }
 
-// Helper functions for formatting
-function formatMoveType(type) {
-  return type
+// Helper function for formatting labels
+function formatLabel(str) {
+  return str
     .split('_')
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
-}
-
-function formatOption(option) {
-  return option
-    .split('_')
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
-}
-
-function formatTag(tag) {
-  return tag
-    .split('_')
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ');
 }
 

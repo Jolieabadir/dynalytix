@@ -1,7 +1,8 @@
 /**
  * API client for communicating with the backend.
- * 
+ *
  * All API calls go through this module for easy maintenance.
+ * Updated for three-lens schema: Environment / Strategy / Outcome
  */
 import axios from 'axios';
 
@@ -26,7 +27,7 @@ export const getConfig = async () => {
 export const uploadVideo = async (file) => {
   const formData = new FormData();
   formData.append('file', file);
-  
+
   const response = await api.post('/api/videos/upload', formData, {
     headers: {
       'Content-Type': 'multipart/form-data',
@@ -69,7 +70,7 @@ export const downloadExport = async (videoId) => {
   const response = await api.get(`/api/videos/${videoId}/export/download`, {
     responseType: 'blob',
   });
-  
+
   // Create download link
   const url = window.URL.createObjectURL(new Blob([response.data]));
   const link = document.createElement('a');
@@ -81,7 +82,7 @@ export const downloadExport = async (videoId) => {
   window.URL.revokeObjectURL(url);
 };
 
-// ==================== MOVES ====================
+// ==================== MOVES (Lens 2: Strategy) ====================
 
 export const createMove = async (moveData) => {
   const response = await api.post('/api/moves', moveData);
@@ -107,7 +108,55 @@ export const deleteMove = async (moveId) => {
   await api.delete(`/api/moves/${moveId}`);
 };
 
-// ==================== FRAME TAGS ====================
+// ==================== ENVIRONMENTS (Lens 1) ====================
+
+export const createEnvironment = async (envData) => {
+  const response = await api.post('/api/environments', envData);
+  return response.data;
+};
+
+export const getEnvironmentForMove = async (moveId) => {
+  try {
+    const response = await api.get(`/api/moves/${moveId}/environment`);
+    return response.data;
+  } catch (err) {
+    if (err.response?.status === 404) {
+      return null; // No environment yet
+    }
+    throw err;
+  }
+};
+
+export const updateEnvironment = async (envId, envData) => {
+  const response = await api.put(`/api/environments/${envId}`, envData);
+  return response.data;
+};
+
+// ==================== OUTCOMES (Lens 3) ====================
+
+export const createOutcome = async (outcomeData) => {
+  const response = await api.post('/api/outcomes', outcomeData);
+  return response.data;
+};
+
+export const getOutcomeForMove = async (moveId) => {
+  try {
+    const response = await api.get(`/api/moves/${moveId}/outcome`);
+    return response.data;
+  } catch (err) {
+    if (err.response?.status === 404) {
+      return null; // No outcome yet
+    }
+    throw err;
+  }
+};
+
+export const updateOutcome = async (outcomeId, outcomeData) => {
+  const response = await api.put(`/api/outcomes/${outcomeId}`, outcomeData);
+  return response.data;
+};
+
+// ==================== FRAME TAGS (Sensation) ====================
 
 export const createFrameTag = async (tagData) => {
   const response = await api.post('/api/frame-tags', tagData);
