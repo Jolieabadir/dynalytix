@@ -27,6 +27,19 @@ const FORM_QUALITY_LABELS = {
   5: 'Excellent, repeatable under greater demand',
 };
 
+// Required config keys for this component
+const REQUIRED_CONFIG_KEYS = [
+  'wall_angles',
+  'hold_types',
+  'hold_qualities',
+  'approaches',
+  'sizes',
+  'move_tags',
+  'results',
+  'reach_details',
+  'confidence_levels',
+];
+
 function MoveForm() {
   const {
     currentVideo,
@@ -41,6 +54,7 @@ function MoveForm() {
   } = useStore();
 
   const [config, setConfigState] = useState(null);
+  const [configError, setConfigError] = useState(null);
 
   // Lens 1: Environment
   const [wallAngle, setWallAngle] = useState('');
@@ -65,15 +79,32 @@ function MoveForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  // Validate config has all required keys
+  const validateConfig = (configData) => {
+    if (!configData || typeof configData !== 'object') {
+      return { valid: false, missing: ['Config is null or not an object'] };
+    }
+    const missing = REQUIRED_CONFIG_KEYS.filter(
+      (key) => !configData[key] || !Array.isArray(configData[key])
+    );
+    return { valid: missing.length === 0, missing };
+  };
+
   // Load configuration
   useEffect(() => {
     const loadConfig = async () => {
       try {
+        setConfigError(null);
         const configData = await getConfig();
+        const validation = validateConfig(configData);
+        if (!validation.valid) {
+          setConfigError(`Missing config keys: ${validation.missing.join(', ')}`);
+          return;
+        }
         setConfigState(configData);
       } catch (err) {
         console.error('Failed to load config:', err);
-        setError('Failed to load form configuration');
+        setConfigError(`Failed to load configuration: ${err.message}`);
       }
     };
     if (showMoveForm && !config) {
@@ -227,7 +258,45 @@ function MoveForm() {
   };
 
   if (!showMoveForm) return null;
-  if (!config) return <div className="move-form-loading">Loading...</div>;
+
+  // Show loading state while config loads
+  if (!config && !configError) {
+    return (
+      <div className="move-form-overlay">
+        <div className="move-form-modal">
+          <div className="move-form-loading">Loading configuration...</div>
+        </div>
+      </div>
+    );
+  }
+
+  // Show error state if config failed to load
+  if (configError) {
+    return (
+      <div className="move-form-overlay">
+        <div className="move-form-modal">
+          <div className="move-form-header">
+            <h2>Configuration Error</h2>
+            <button onClick={handleClose} className="close-btn">
+              ✕
+            </button>
+          </div>
+          <div className="move-form-content">
+            <div className="error-message config-error">
+              <p><strong>Failed to load form configuration.</strong></p>
+              <p>{configError}</p>
+              <p>Please ensure the backend API is running and accessible.</p>
+            </div>
+          </div>
+          <div className="move-form-footer">
+            <button onClick={handleClose} className="btn-secondary">
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const fps = currentVideo?.fps || 30;
   const duration =
@@ -261,7 +330,7 @@ function MoveForm() {
             <div className="form-field">
               <label className="form-label">Wall Angle</label>
               <div className="radio-group">
-                {config.wall_angles.map((angle) => (
+                {(config.wall_angles ?? []).map((angle) => (
                   <label key={angle} className="radio-label">
                     <input
                       type="radio"
@@ -279,7 +348,7 @@ function MoveForm() {
             <div className="form-field">
               <label className="form-label">Hold Type (Reaching Hand)</label>
               <div className="radio-group">
-                {config.hold_types.map((type) => (
+                {(config.hold_types ?? []).map((type) => (
                   <label key={type} className="radio-label">
                     <input
                       type="radio"
@@ -297,7 +366,7 @@ function MoveForm() {
             <div className="form-field">
               <label className="form-label">Hold Type (Non-Reaching Hand)</label>
               <div className="radio-group">
-                {config.hold_types.map((type) => (
+                {(config.hold_types ?? []).map((type) => (
                   <label key={type} className="radio-label">
                     <input
                       type="radio"
@@ -315,7 +384,7 @@ function MoveForm() {
             <div className="form-field">
               <label className="form-label">Hold Quality (multi-select)</label>
               <div className="checkbox-group">
-                {config.hold_qualities.map((quality) => (
+                {(config.hold_qualities ?? []).map((quality) => (
                   <label key={quality} className="checkbox-label">
                     <input
                       type="checkbox"
@@ -336,7 +405,7 @@ function MoveForm() {
             <div className="form-field">
               <label className="form-label">Approach</label>
               <div className="radio-group">
-                {config.approaches.map((a) => (
+                {(config.approaches ?? []).map((a) => (
                   <label key={a} className="radio-label">
                     <input
                       type="radio"
@@ -354,7 +423,7 @@ function MoveForm() {
             <div className="form-field">
               <label className="form-label">Size</label>
               <div className="radio-group">
-                {config.sizes.map((s) => (
+                {(config.sizes ?? []).map((s) => (
                   <label key={s} className="radio-label">
                     <input
                       type="radio"
@@ -372,7 +441,7 @@ function MoveForm() {
             <div className="form-field">
               <label className="form-label">Move Tags (multi-select)</label>
               <div className="tags-group">
-                {config.move_tags.map((tag) => (
+                {(config.move_tags ?? []).map((tag) => (
                   <button
                     key={tag}
                     type="button"
@@ -440,7 +509,7 @@ function MoveForm() {
             <div className="form-field">
               <label className="form-label">Result</label>
               <div className="radio-group">
-                {config.results.map((r) => (
+                {(config.results ?? []).map((r) => (
                   <label key={r} className="radio-label">
                     <input
                       type="radio"
@@ -458,7 +527,7 @@ function MoveForm() {
             <div className="form-field">
               <label className="form-label">Reach Detail</label>
               <div className="radio-group">
-                {config.reach_details.map((rd) => (
+                {(config.reach_details ?? []).map((rd) => (
                   <label key={rd} className="radio-label">
                     <input
                       type="radio"
@@ -487,7 +556,7 @@ function MoveForm() {
             <div className="form-field">
               <label className="form-label">Confidence</label>
               <div className="radio-group">
-                {config.confidence_levels.map((c) => (
+                {(config.confidence_levels ?? []).map((c) => (
                   <label key={c} className="radio-label">
                     <input
                       type="radio"

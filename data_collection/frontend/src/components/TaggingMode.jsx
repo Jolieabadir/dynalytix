@@ -44,6 +44,30 @@ const TAG_EMOJIS = {
   fatigue: '🟤',
 };
 
+// Required config keys for this component
+const REQUIRED_CONFIG_KEYS = [
+  'tag_types',
+  'body_parts',
+  'sides',
+  'traction_sources',
+];
+
+// Validate config has all required keys
+const validateConfig = (configData) => {
+  if (!configData || typeof configData !== 'object') {
+    return { valid: false, missing: ['Config is null or not an object'] };
+  }
+  const missing = REQUIRED_CONFIG_KEYS.filter((key) => {
+    const value = configData[key];
+    // tag_types is an object, others are arrays
+    if (key === 'tag_types') {
+      return !value || typeof value !== 'object';
+    }
+    return !value || !Array.isArray(value);
+  });
+  return { valid: missing.length === 0, missing };
+};
+
 function TaggingMode() {
   const videoRef = useRef(null);
   const {
@@ -74,6 +98,7 @@ function TaggingMode() {
   const [error, setError] = useState(null);
   const [showThankYou, setShowThankYou] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [configError, setConfigError] = useState(null);
 
   const fps = currentVideo?.fps || 30;
 
@@ -82,9 +107,15 @@ function TaggingMode() {
     const loadConfig = async () => {
       try {
         const configData = await getConfig();
+        const validation = validateConfig(configData);
+        if (!validation.valid) {
+          setConfigError(`Missing required config keys: ${validation.missing.join(', ')}`);
+          return;
+        }
         setConfigState(configData);
       } catch (err) {
         console.error('Failed to load config:', err);
+        setConfigError(`Failed to load config: ${err.message}`);
       }
     };
     loadConfig();
@@ -325,6 +356,21 @@ function TaggingMode() {
     );
   }
 
+  if (configError) {
+    return (
+      <div className="tagging-mode">
+        <div className="config-error-container">
+          <h3>Configuration Error</h3>
+          <p className="error-message">{configError}</p>
+          <p>Please ensure the backend API is running and accessible.</p>
+          <button onClick={handleNextMove} className="back-btn">
+            Back to Define Mode
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (!config) {
     return <div className="tagging-mode">Loading configuration...</div>;
   }
@@ -436,7 +482,7 @@ function TaggingMode() {
 
           {/* Tag Type Buttons - from config */}
           <div className="tag-buttons-grid">
-            {Object.entries(config.tag_types).map(([id, label]) => (
+            {Object.entries(config.tag_types ?? {}).map(([id, label]) => (
               <button
                 key={id}
                 className={`tag-button ${selectedTagType === id ? 'selected' : ''}`}
@@ -466,7 +512,7 @@ function TaggingMode() {
               <div className="form-group">
                 <label>Body Parts (select all that apply)</label>
                 <div className="body-parts-grid">
-                  {groupBodyParts(config.body_parts).map(([group, parts]) => (
+                  {groupBodyParts(config.body_parts ?? []).map(([group, parts]) => (
                     <div key={group} className="body-part-group">
                       <div className="group-label">{group}</div>
                       {parts.map((part) => (
@@ -498,7 +544,7 @@ function TaggingMode() {
                     />
                     None
                   </label>
-                  {config.sides.map((s) => (
+                  {(config.sides ?? []).map((s) => (
                     <label key={s} className="radio-label">
                       <input
                         type="radio"
@@ -527,7 +573,7 @@ function TaggingMode() {
                     />
                     None
                   </label>
-                  {config.traction_sources.map((ts) => (
+                  {(config.traction_sources ?? []).map((ts) => (
                     <label key={ts} className="radio-label">
                       <input
                         type="radio"
