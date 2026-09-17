@@ -8,10 +8,11 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "npm run test:math && npm run test:ui",
+    "test": "npm run test:math && npm run test:extractor && npm run test:ui",
     "make-test-videos": "bash scripts/make_test_video.sh",
     "make-golden": "node scripts/make_golden.mjs",
     "test:math": "node --test scripts/test_pose_math.mjs",
+    "test:extractor": "node --test scripts/test_pose_extractor.mjs",
     "test:ui": "vitest run"
   },
   "dependencies": {

@@ -27,7 +27,7 @@ import {
   buildRows,
   framesToCSV,
   csvHeaders,
-} from './poseMath';
+} from './poseMath.js';
 
 // Pinned to the version in package-lock.json. The WASM glue and the JS wrapper
 // must agree, and `@latest` also defeats CDN caching between uploads.
@@ -137,6 +137,92 @@ export function getDelegate() {
   return landmarkerDelegate;
 }
 
+/**
+ * Throw the current landmarker away and build a fresh one.
+ *
+ * Used only by the INVALID_ARGUMENT recovery path in processCanvas. The
+ * timestamp clock below deliberately keeps counting across the swap: any
+ * strictly increasing sequence satisfies a new instance, and continuing is
+ * simpler than proving the old instance is really gone.
+ */
+export async function resetPoseLandmarker() {
+  const dying = landmarkerPromise;
+  landmarkerPromise = null;
+  landmarkerDelegate = null;
+  if (dying) {
+    try {
+      (await dying).close();
+    } catch {
+      /* already unusable — that is why we are here */
+    }
+  }
+  return getPoseLandmarker();
+}
+
+// ==================== DETECT TIMESTAMP CLOCK ====================
+
+/**
+ * MediaPipe's VIDEO running mode requires strictly increasing timestamps per
+ * PoseLandmarker instance, for that instance's whole lifetime. Ours is a module
+ * singleton shared by every extraction on the page, so the clock has to be a
+ * module singleton too. A per-extractor counter restarts at 0 on the second
+ * upload of a session and the landmarker rejects the packet with
+ * "Packet timestamp mismatch on stream norm_rect ... received 0".
+ *
+ * This clock is internal to inference and must never reach the CSV. The
+ * exported timestamp_ms comes from frame_number / fps in buildRows, and the
+ * velocity math takes mediaTime — both restart at 0 for every video, which is
+ * the contract. Only detectForVideo sees these numbers.
+ */
+let lastTimestampMs = -1;
+
+/**
+ * Open a run. Returns the base every frame in the run is offset from, chosen
+ * to sit above every timestamp already issued to the singleton.
+ */
+export function beginDetectRun() {
+  return lastTimestampMs + 1;
+}
+
+/**
+ * The timestamp for one frame: the run's base plus the frame's own media time.
+ *
+ * Media time alone would collide across runs; base + media time keeps each run
+ * ordered internally and above every earlier run. The clamp covers the case
+ * media time cannot: a duplicate frame callback after a pause/resume presents
+ * the same mediaTime twice, and the second call would otherwise repeat a
+ * timestamp rather than exceed it.
+ */
+export function nextDetectTimestamp(base, mediaTimeMs) {
+  let ts = base + Math.round(mediaTimeMs);
+  if (ts <= lastTimestampMs) ts = lastTimestampMs + 1;
+  lastTimestampMs = ts;
+  return ts;
+}
+
+/** Test seam: forget every timestamp issued so far. */
+export function _resetDetectClock() {
+  lastTimestampMs = -1;
+}
+
+/** Test seam: the last timestamp handed to detectForVideo. */
+export function _detectClockValue() {
+  return lastTimestampMs;
+}
+
+/**
+ * Does this error mean MediaPipe rejected the packet rather than that
+ * inference genuinely failed? Those are the ones worth a fresh instance.
+ */
+export function isInvalidArgumentError(error) {
+  const message = String(error?.message ?? error ?? '');
+  return (
+    message.includes('INVALID_ARGUMENT') ||
+    message.includes('Packet timestamp mismatch') ||
+    message.includes('timestamp mismatch')
+  );
+}
+
 // ==================== EXTRACTOR ====================
 
 export class PoseExtractor {
@@ -147,8 +233,8 @@ export class PoseExtractor {
     this.cancelled = false;
     this._cleanup = null;
     this._onCancel = null;
-    // detectForVideo requires strictly increasing timestamps across a session.
-    this._lastDetectTimestamp = -1;
+    // Offset for this run against the module-level clock. See beginDetectRun.
+    this._detectBase = null;
   }
 
   async initialize() {
@@ -164,14 +250,28 @@ export class PoseExtractor {
    * stores pixels at source resolution, so denormalizing against the downscaled
    * canvas would silently shrink every coordinate.
    */
-  processCanvas(canvas, timestampMs, videoWidth, videoHeight) {
+  async processCanvas(canvas, timestampMs, videoWidth, videoHeight) {
     if (!this.poseLandmarker) return null;
 
-    // Strictly increasing, or MediaPipe rejects the call.
-    const ts = Math.max(timestampMs, this._lastDetectTimestamp + 0.001);
-    this._lastDetectTimestamp = ts;
+    // A run that never went through extractFromFile still needs a base.
+    if (this._detectBase === null) this._detectBase = beginDetectRun();
 
-    const detection = this.poseLandmarker.detectForVideo(canvas, ts);
+    // Internal to inference only — `timestampMs` below is the media time, and
+    // that is what the CSV and the velocity math are built from.
+    const ts = nextDetectTimestamp(this._detectBase, timestampMs);
+
+    let detection;
+    try {
+      detection = this.poseLandmarker.detectForVideo(canvas, ts);
+    } catch (error) {
+      if (!isInvalidArgumentError(error)) throw error;
+      // One bad packet should not cost the whole extraction. Swap in a fresh
+      // landmarker and give this frame a second chance; a repeat throw stands.
+      console.warn('[PoseExtractor] landmarker rejected a packet, recreating:', error);
+      this.poseLandmarker = await resetPoseLandmarker();
+      const retryTs = nextDetectTimestamp(this._detectBase, timestampMs);
+      detection = this.poseLandmarker.detectForVideo(canvas, retryTs);
+    }
 
     if (!detection.landmarks || detection.landmarks.length === 0) {
       return null;
@@ -213,7 +313,7 @@ export class PoseExtractor {
 
     this.previousCom = null;
     this.previousTimestampMs = null;
-    this._lastDetectTimestamp = -1;
+    this._detectBase = beginDetectRun();
     this.cancelled = false;
 
     const objectUrl = URL.createObjectURL(file);
@@ -304,7 +404,22 @@ export class PoseExtractor {
         rejectDone = reject;
       });
 
-      this._onCancel = () => rejectDone(new ExtractionCancelledError());
+      // requestVideoFrameCallback fires one more time after a pause more often
+      // than not, and cancelVideoFrameCallback cannot retract a callback the
+      // browser has already scheduled. Once the run is settled this flag is the
+      // thing that keeps a late frame away from detectForVideo — feeding the
+      // singleton a packet from a finished run is exactly how its clock breaks.
+      let loopStopped = false;
+      const finishOk = () => {
+        loopStopped = true;
+        resolveDone();
+      };
+      const finishErr = (error) => {
+        loopStopped = true;
+        rejectDone(error);
+      };
+
+      this._onCancel = () => finishErr(new ExtractionCancelledError());
 
       let pausedForHidden = false;
       onVisibilityChange = () => {
@@ -325,15 +440,15 @@ export class PoseExtractor {
       document.addEventListener('visibilitychange', onVisibilityChange);
 
       video.addEventListener('error', () => {
-        rejectDone(new DecodeUnsupportedError());
+        finishErr(new DecodeUnsupportedError());
       });
 
       video.addEventListener('ended', () => {
-        resolveDone();
+        finishOk();
       });
 
       const onFrame = async (_now, metadata) => {
-        if (this.cancelled) return;
+        if (this.cancelled || loopStopped) return;
 
         try {
           video.pause();
@@ -354,8 +469,17 @@ export class PoseExtractor {
             }
           }
 
+          // Re-checked immediately before inference: cancel() can land while
+          // the fps bookkeeping above runs.
+          if (this.cancelled || loopStopped) return;
+
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const result = this.processCanvas(canvas, mediaTime * 1000, videoWidth, videoHeight);
+          const result = await this.processCanvas(
+            canvas,
+            mediaTime * 1000,
+            videoWidth,
+            videoHeight
+          );
           samples.push({ mediaTime, result });
 
           if (onProgress) {
@@ -368,12 +492,12 @@ export class PoseExtractor {
             });
           }
 
-          if (this.cancelled) return;
+          if (this.cancelled || loopStopped) return;
 
           // Past the last frame the 'ended' event may never arrive if the
           // decoder stops presenting; treat reaching the end as done.
           if (video.ended) {
-            resolveDone();
+            finishOk();
             return;
           }
 
@@ -382,7 +506,7 @@ export class PoseExtractor {
             await video.play().catch(() => {});
           }
         } catch (err) {
-          rejectDone(err);
+          finishErr(err);
         }
       };
 
@@ -394,7 +518,7 @@ export class PoseExtractor {
       // A file the browser accepts but cannot actually decode never presents a
       // frame. Nothing else detects that case.
       const firstFrameTimer = setTimeout(() => {
-        if (!sawFirstFrame) rejectDone(new DecodeUnsupportedError());
+        if (!sawFirstFrame) finishErr(new DecodeUnsupportedError());
       }, FIRST_FRAME_TIMEOUT_MS);
 
       try {
