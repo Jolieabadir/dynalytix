@@ -5,9 +5,12 @@
  * /api/health now requires a bearer token, so without this the app 401s on its
  * very first call and sits on a loading screen forever.
  *
- * Deliberately minimal: email and password, one toggle between sign in and
- * sign up, and errors in plain language. Labelers are a handful of known
- * people, not the public.
+ * One card, one form. Sign in and create account are the same fields, so they
+ * are the same form with a text toggle rather than two tabs. Email
+ * confirmation is off in the Supabase project, so a successful sign-up returns
+ * a session and the auth listener in App swaps this screen for the app with no
+ * interstitial in between — the confirmation notice below is the fallback for
+ * the day that setting changes back.
  */
 import { useState } from 'react';
 import { signIn, signUp, isAuthConfigured } from '../api/auth';
@@ -21,6 +24,13 @@ function AuthGate() {
   const [busy, setBusy] = useState(false);
 
   const configured = isAuthConfigured();
+  const signingUp = mode === 'signup';
+
+  const toggleMode = () => {
+    setMode(signingUp ? 'signin' : 'signup');
+    setError(null);
+    setNotice(null);
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -31,24 +41,23 @@ function AuthGate() {
       setError('Enter both an email address and a password.');
       return;
     }
-    if (mode === 'signup' && password.length < 6) {
+    if (signingUp && password.length < 6) {
       setError('Choose a password of at least 6 characters.');
       return;
     }
 
     setBusy(true);
     try {
-      if (mode === 'signup') {
+      if (signingUp) {
         const { needsConfirmation } = await signUp(email.trim(), password);
         if (needsConfirmation) {
-          setNotice(
-            'Account created. Check your email for a confirmation link, then sign in.'
-          );
+          // Only reachable if email confirmation is switched back on.
+          setNotice('Account created. Check your email to confirm it, then sign in.');
           setMode('signin');
           setPassword('');
         }
-        // With confirmation off, Supabase returns a session and the auth
-        // listener in App swaps this screen out on its own.
+        // Otherwise Supabase returns a session and the auth listener in App
+        // swaps this screen out on its own.
       } else {
         await signIn(email.trim(), password);
       }
@@ -62,83 +71,64 @@ function AuthGate() {
   return (
     <div className="auth-gate">
       <div className="auth-card">
-        <h1>Dynalytix</h1>
-        <p className="auth-subtitle">Climbing Movement Data Collection</p>
+        <h1 className="auth-title">Dynalytix</h1>
+        <p className="auth-subtitle">Climbing movement labeling.</p>
 
         {!configured && (
-          <div className="error-message">
+          <p className="auth-error" role="alert">
             Sign-in is not configured in this build — VITE_SUPABASE_URL and
-            VITE_SUPABASE_ANON_KEY are missing. The app cannot reach the API
-            without them.
-          </div>
+            VITE_SUPABASE_ANON_KEY are missing.
+          </p>
         )}
 
-        <div className="auth-tabs" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={mode === 'signin'}
-            className={`auth-tab ${mode === 'signin' ? 'active' : ''}`}
-            onClick={() => { setMode('signin'); setError(null); }}
-          >
-            Sign in
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={mode === 'signup'}
-            className={`auth-tab ${mode === 'signup' ? 'active' : ''}`}
-            onClick={() => { setMode('signup'); setError(null); }}
-          >
-            Sign up
-          </button>
-        </div>
-
         <form onSubmit={handleSubmit} className="auth-form">
-          <label className="auth-label" htmlFor="auth-email">
-            Email
-          </label>
-          <input
-            id="auth-email"
-            type="email"
-            autoComplete="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            disabled={busy || !configured}
-            className="auth-input"
-          />
+          <div className="auth-field">
+            <label className="auth-label" htmlFor="auth-email">Email</label>
+            <input
+              id="auth-email"
+              type="email"
+              autoFocus
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              disabled={busy || !configured}
+              className="auth-input"
+            />
+          </div>
 
-          <label className="auth-label" htmlFor="auth-password">
-            Password
-          </label>
-          <input
-            id="auth-password"
-            type="password"
-            autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            disabled={busy || !configured}
-            className="auth-input"
-          />
-
-          {error && <div className="error-message">{error}</div>}
-          {notice && <div className="notice-message">{notice}</div>}
+          <div className="auth-field">
+            <label className="auth-label" htmlFor="auth-password">Password</label>
+            <input
+              id="auth-password"
+              type="password"
+              autoComplete={signingUp ? 'new-password' : 'current-password'}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={busy || !configured}
+              className="auth-input"
+            />
+          </div>
 
           <button
             type="submit"
-            className="btn-primary auth-submit"
+            className="auth-submit"
             disabled={busy || !configured}
           >
+            {busy && <span className="auth-spinner" aria-hidden="true" />}
             {busy
-              ? mode === 'signup' ? 'Creating account…' : 'Signing in…'
-              : mode === 'signup' ? 'Create account' : 'Sign in'}
+              ? signingUp ? 'Creating account…' : 'Signing in…'
+              : signingUp ? 'Create account' : 'Sign in'}
           </button>
+
+          {error && <p className="auth-error" role="alert">{error}</p>}
+          {notice && <p className="auth-notice" role="status">{notice}</p>}
         </form>
 
-        <p className="auth-footnote">
-          {mode === 'signin'
-            ? 'No account yet? Choose Sign up above.'
-            : 'Already have an account? Choose Sign in above.'}
+        <p className="auth-toggle-line">
+          {signingUp ? 'Already have an account? ' : 'No account yet? '}
+          <button type="button" className="auth-toggle" onClick={toggleMode} disabled={busy}>
+            {signingUp ? 'Sign in instead' : 'Create one'}
+          </button>
         </p>
       </div>
     </div>

@@ -59,6 +59,16 @@
   --warning-soft: rgba(196, 167, 125, 0.15);
   --error: #c9a0a0;
   --error-soft: rgba(201, 160, 160, 0.15);
+
+  /* AA-safe text/CTA shades of the colours above. The pastels are lovely as
+     fills but fail WCAG AA as text (--primary is 3.6:1 on white, --error is
+     2.1:1 on --error-soft), so each one gets a darkened sibling in the same
+     hue for anything a person has to read. */
+  --primary-deep: #86616b;
+  --primary-deeper: #6f5058;
+  --error-strong: #8c4a4a;
+  --gradient-button-strong: linear-gradient(135deg, #866a73 0%, #86616b 50%, #6f6480 100%);
+  --gradient-button-strong-hover: linear-gradient(135deg, #75585f 0%, #6f5058 50%, #5d5369 100%);
   
   /* Typography - Elegant but readable */
   --font-display: 'Playfair Display', Georgia, serif;
@@ -1685,55 +1695,191 @@ body {
    ========================================================================== */
 
 /* ---------- Auth gate ---------- */
+/* One centred card in the app's own palette. Every colour pairing here is
+   checked against WCAG AA (4.5:1 for text, 3:1 for the focus ring). */
 .auth-gate {
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 2rem 1rem;
+  padding: var(--space-xl) var(--space-md);
 }
+
 .auth-card {
   width: 100%;
-  max-width: 380px;
-  background: #1e293b;
-  border: 1px solid #334155;
-  border-radius: 12px;
-  padding: 2rem;
+  max-width: 400px;
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-2xl);
 }
-.auth-card h1 { margin: 0 0 0.25rem; font-size: 1.75rem; }
-.auth-subtitle { margin: 0 0 1.5rem; color: #94a3b8; font-size: 0.9rem; }
-.auth-tabs { display: flex; gap: 0.5rem; margin-bottom: 1.25rem; }
-.auth-tab {
-  flex: 1;
-  padding: 0.5rem;
-  background: transparent;
-  border: 1px solid #334155;
-  border-radius: 6px;
-  color: #94a3b8;
+
+/* Solid rather than the header's gradient-clipped text: the gradient's
+   lightest stop is 2.4:1 on this card, which fails AA even at display size. */
+.auth-title {
+  font-family: var(--font-display);
+  font-size: 2rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);          /* 14.2:1 on white */
+  margin: 0;
+}
+
+.auth-subtitle {
+  color: var(--text-secondary);        /* 9.3:1 on white */
+  font-size: 0.9rem;
+  margin: var(--space-xs) 0 var(--space-xl);
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.auth-field {
+  display: flex;
+  flex-direction: column;
+}
+
+.auth-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-xs);
+}
+
+.auth-input {
+  width: 100%;
+  padding: var(--space-md);
+  background: var(--bg-warm);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 1rem;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.auth-input:focus {
+  border-color: var(--primary-deep);   /* 5.3:1 on white, clears the 3:1 focus rule */
+  outline: none;
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+
+.auth-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* The app's primary button, deepened until white text clears 4.5:1 — the
+   stock --gradient-button only manages 2.8:1 under white. */
+.auth-submit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  width: 100%;
+  margin-top: var(--space-sm);
+  padding: var(--space-md) var(--space-xl);
+  border: none;
+  border-radius: var(--radius-lg);
+  background: var(--gradient-button-strong);
+  color: #fff;
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--shadow-soft);
+  transition: all var(--transition-normal);
+}
+
+.auth-submit:hover:not(:disabled) {
+  background: var(--gradient-button-strong-hover);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-medium);
+}
+
+.auth-submit:focus-visible {
+  outline: 2px solid var(--primary-deeper);
+  outline-offset: 2px;
+}
+
+.auth-submit:disabled {
+  opacity: 0.75;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.auth-spinner {
+  width: 1em;
+  height: 1em;
+  border: 2px solid rgba(255, 255, 255, 0.45);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+.auth-error,
+.auth-notice {
+  margin: 0;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  font-size: 0.875rem;
+  text-align: left;
+}
+
+.auth-error {
+  background: var(--error-soft);
+  border: 1px solid var(--error);
+  color: var(--error-strong);           /* 5.9:1 on --error-soft over white */
+}
+
+.auth-notice {
+  background: var(--success-soft);
+  border: 1px solid var(--success);
+  color: var(--text-secondary);         /* 8.2:1 on --success-soft over white */
+}
+
+.auth-toggle-line {
+  margin: var(--space-lg) 0 0;
+  text-align: center;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.auth-toggle {
+  padding: 0;
+  background: none;
+  border: none;
+  font: inherit;
+  font-weight: 600;
+  color: var(--primary-deep);           /* 5.3:1 on white */
+  text-decoration: underline;
+  text-underline-offset: 2px;
   cursor: pointer;
 }
-.auth-tab.active { background: #2563eb; border-color: #2563eb; color: #fff; }
-.auth-form { display: flex; flex-direction: column; }
-.auth-label { font-size: 0.8rem; color: #94a3b8; margin-bottom: 0.25rem; }
-.auth-input {
-  padding: 0.6rem;
-  margin-bottom: 1rem;
-  background: #0f172a;
-  border: 1px solid #334155;
-  border-radius: 6px;
-  color: #e2e8f0;
-  font-size: 0.95rem;
+
+.auth-toggle:hover:not(:disabled) {
+  color: var(--primary-deeper);
 }
-.auth-submit { margin-top: 0.5rem; width: 100%; }
-.auth-footnote { margin-top: 1rem; font-size: 0.8rem; color: #64748b; text-align: center; }
-.notice-message {
-  background: #064e3b;
-  border: 1px solid #059669;
-  color: #d1fae5;
-  padding: 0.6rem;
-  border-radius: 6px;
-  font-size: 0.85rem;
-  margin-bottom: 0.75rem;
+
+.auth-toggle:focus-visible {
+  outline: 2px solid var(--primary-deep);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.auth-toggle:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-spinner { animation-duration: 2s; }
+  .auth-submit:hover:not(:disabled) { transform: none; }
 }
 
 /* ---------- Header account ---------- */

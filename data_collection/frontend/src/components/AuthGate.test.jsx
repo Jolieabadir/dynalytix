@@ -50,7 +50,7 @@ describe('AuthGate', () => {
     const user = userEvent.setup();
     render(<AuthGate />);
 
-    await user.click(screen.getByRole('tab', { name: 'Sign up' }));
+    await user.click(screen.getByRole('button', { name: 'Create one' }));
     await user.type(screen.getByLabelText('Email'), 'new@dynalytix.test');
     await user.type(screen.getByLabelText('Password'), 'hunter2hunter2');
     await user.click(screen.getByRole('button', { name: 'Create account' }));
@@ -76,7 +76,7 @@ describe('AuthGate', () => {
     const user = userEvent.setup();
     render(<AuthGate />);
 
-    await user.click(screen.getByRole('tab', { name: 'Sign up' }));
+    await user.click(screen.getByRole('button', { name: 'Create one' }));
     await user.type(screen.getByLabelText('Email'), 'new@dynalytix.test');
     await user.type(screen.getByLabelText('Password'), 'abc');
     await user.click(screen.getByRole('button', { name: 'Create account' }));
@@ -108,14 +108,62 @@ describe('AuthGate', () => {
     const user = userEvent.setup();
     render(<AuthGate />);
 
-    await user.click(screen.getByRole('tab', { name: 'Sign up' }));
+    await user.click(screen.getByRole('button', { name: 'Create one' }));
     await user.type(screen.getByLabelText('Email'), 'new@dynalytix.test');
     await user.type(screen.getByLabelText('Password'), 'hunter2hunter2');
     await user.click(screen.getByRole('button', { name: 'Create account' }));
 
     expect(
-      await screen.findByText(/Check your email for a confirmation link/i)
+      await screen.findByText(/Check your email to confirm it/i)
     ).toBeInTheDocument();
+  });
+
+  it('toggles to create-account and back with the text link, not tabs', async () => {
+    const user = userEvent.setup();
+    render(<AuthGate />);
+
+    expect(screen.queryAllByRole('tab')).toHaveLength(0);
+
+    await user.click(screen.getByRole('button', { name: 'Create one' }));
+    expect(screen.getByRole('button', { name: 'Create account' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Password')).toHaveAttribute('autocomplete', 'new-password');
+
+    await user.click(screen.getByRole('button', { name: 'Sign in instead' }));
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Password')).toHaveAttribute('autocomplete', 'current-password');
+  });
+
+  it('autofocuses the email field and submits on Enter', async () => {
+    const user = userEvent.setup();
+    render(<AuthGate />);
+
+    expect(screen.getByLabelText('Email')).toHaveFocus();
+
+    await user.keyboard('labeler@dynalytix.test');
+    await user.click(screen.getByLabelText('Password'));
+    await user.keyboard('hunter2hunter2{Enter}');
+
+    await waitFor(() =>
+      expect(signIn).toHaveBeenCalledWith('labeler@dynalytix.test', 'hunter2hunter2')
+    );
+  });
+
+  it('disables the button and shows a spinner while the request is in flight', async () => {
+    let release;
+    vi.mocked(signIn).mockReturnValue(new Promise((resolve) => { release = resolve; }));
+    const user = userEvent.setup();
+    const { container } = render(<AuthGate />);
+
+    await user.type(screen.getByLabelText('Email'), 'a@b.test');
+    await user.type(screen.getByLabelText('Password'), 'hunter2hunter2');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    const submitting = await screen.findByRole('button', { name: /Signing in/ });
+    expect(submitting).toBeDisabled();
+    expect(container.querySelector('.auth-spinner')).toBeInTheDocument();
+
+    release({ access_token: 'tok' });
+    await waitFor(() => expect(submitting).not.toBeDisabled());
   });
 
   it('says so, and disables the form, when auth is not configured in the build', () => {
