@@ -47,6 +47,18 @@ from pathlib import Path
 
 import modal
 
+# `Request` must be resolvable at module scope: FastAPI evaluates the
+# `enqueue` parameter annotations against this module's globals when Modal
+# builds the endpoint's app inside the container (where fastapi is installed).
+# A bare string annotation with no `Request` name in scope made FastAPI treat
+# `request` as a required *query* parameter and 422 every POST. On a laptop
+# without fastapi the annotation degrades to None, which is harmless: the
+# endpoint only ever runs in the container.
+try:
+    from fastapi import Request
+except ImportError:  # pragma: no cover - local tooling without fastapi
+    Request = None  # type: ignore[assignment,misc]
+
 APP_NAME = 'dynalytix-pose'
 SECRET_NAME = 'dynalytix-worker'
 SECRET_HEADER = 'X-Webhook-Secret'
@@ -225,7 +237,7 @@ def extract_pose(video_id: int, user_id: str, r2_key: str) -> dict:
 
 @app.function(image=image, secrets=[secret], timeout=30)
 @modal.fastapi_endpoint(method='POST')
-def enqueue(body: dict, request: 'Request'):  # noqa: F821 - FastAPI resolves the annotation
+def enqueue(body: dict, request: Request):
     """Backend -> worker hand-off. Secret-protected; returns at once."""
     from fastapi import HTTPException
 
