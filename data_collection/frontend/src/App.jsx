@@ -83,11 +83,17 @@ function App() {
       .catch(() => active && setAuthChecked(true));
 
     const unsubscribe = onAuthChange((s) => {
-      setSession(s);
       if (!s) {
-        // Expired or signed out elsewhere: the next sign-in re-runs the gate.
+        // Expired or signed out elsewhere. Clear everything video-scoped the
+        // same way the sign-out button does, so a different user signing in
+        // on this tab never inherits the previous user's moves, holds,
+        // labels, profile or queue. The next sign-in re-runs the gate.
+        resetForSignOut();
+        setConfig(null);
         setProfileState('loading');
         setLanded(false);
+      } else {
+        setSession(s);
       }
       setAuthChecked(true);
     });
@@ -96,7 +102,7 @@ function App() {
       active = false;
       unsubscribe();
     };
-  }, [setSession]);
+  }, [setSession, resetForSignOut, setConfig]);
 
   // Config needs the token, so it waits for the session.
   useEffect(() => {

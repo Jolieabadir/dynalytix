@@ -5,7 +5,7 @@
  * Dataset B flow with no Admin tab — exactly the app as it was.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 vi.mock('./api/auth', () => ({
@@ -53,7 +53,7 @@ vi.mock('./components/TaggingMode', () => ({ default: () => <div /> }));
 
 import App from './App';
 import useStore from './store/useStore';
-import { getSession } from './api/auth';
+import { getSession, onAuthChange } from './api/auth';
 import { getConfig, getMyProfile, getMyAssignments, createMyProfile } from './api/client';
 
 const SESSION = { access_token: 'tok', user: { id: 'u1', email: 'labeler@dynalytix.test' } };
@@ -128,5 +128,55 @@ describe('App — landing and admin', () => {
 
     await waitFor(() => expect(useStore.getState().view).toBe('admin'));
     expect(await screen.findByRole('heading', { name: 'Admin' })).toBeInTheDocument();
+  });
+});
+
+describe('App — dead session clears the previous user', () => {
+  it('resets video-scoped state and the profile when onAuthChange reports no session', async () => {
+    let authCallback;
+    vi.mocked(onAuthChange).mockImplementation((cb) => {
+      authCallback = cb;
+      return () => {};
+    });
+    render(<App />);
+    expect(await screen.findByText('Upload Climbing Video')).toBeInTheDocument();
+    expect(useStore.getState().profile).toEqual(PROFILE);
+
+    // User A had a video open with moves, holds and labels in the store.
+    useStore.setState({
+      currentVideo: { id: 7, filename: 'a.mp4' },
+      moves: [{ id: 1, video_id: 7 }],
+      holds: [{ id: 3, video_id: 7 }],
+      frameTags: [{ id: 9, move_id: 1 }],
+      assignments: [{ assignment: { id: 1 }, video: { id: 7 } }],
+      currentAssignment: { id: 1 },
+      view: 'queue',
+    });
+
+    // The session dies (expired, or signed out in another tab).
+    act(() => authCallback(null));
+
+    await waitFor(() => expect(useStore.getState().session).toBeNull());
+    const state = useStore.getState();
+    expect(state.currentVideo).toBeNull();
+    expect(state.moves).toEqual([]);
+    expect(state.holds).toEqual([]);
+    expect(state.frameTags).toEqual([]);
+    expect(state.assignments).toEqual([]);
+    expect(state.currentAssignment).toBeNull();
+    expect(state.profile).toBeNull();
+    expect(state.config).toBeNull();
+    expect(state.view).toBe('videos');
+    expect(screen.queryByText('Upload Climbing Video')).not.toBeInTheDocument();
+
+    // User B signs in on the same tab: the gate runs again for B, with a clean store.
+    const PROFILE_B = { user_id: 'u2', display_name: 'Other', tier: 'open', is_admin: false };
+    vi.mocked(getMyProfile).mockResolvedValue(PROFILE_B);
+    act(() => authCallback({ access_token: 'tok2', user: { id: 'u2', email: 'b@dynalytix.test' } }));
+
+    await waitFor(() => expect(useStore.getState().profile).toEqual(PROFILE_B));
+    expect(useStore.getState().moves).toEqual([]);
+    expect(useStore.getState().holds).toEqual([]);
+    expect(useStore.getState().currentVideo).toBeNull();
   });
 });
