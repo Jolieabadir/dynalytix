@@ -215,6 +215,12 @@ class UploadUrlResponse(BaseModel):
     expires_in: int
 
 
+class PlaybackUrlResponse(BaseModel):
+    """A presigned GET URL for the original video, for in-browser playback."""
+    url: str
+    expires_in: int
+
+
 class ConfirmUploadRequest(BaseModel):
     """Schema for confirming a completed direct upload."""
     key: Optional[str] = None
@@ -1071,6 +1077,30 @@ async def get_video_csv(video_id: int, user_id: str = Depends(get_current_user_i
         download_filename=f'{video.filename}.csv',
     )
     return RedirectResponse(url=url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+
+@app.get("/api/videos/{video_id}/video-url", response_model=PlaybackUrlResponse)
+async def get_video_playback_url(video_id: int, user_id: str = Depends(get_current_user_id)):
+    """Presigned GET URL for the original video. Owner, rater or admin.
+
+    A rater never had the file in their browser, so without this the rating
+    view has nothing to play. Returned as JSON rather than a redirect so the
+    client can drop it straight into a <video src>. 404 when the original was
+    never uploaded (the pose CSV is registered separately and may exist alone).
+    """
+    video = _require_video_access(video_id, user_id).video
+    if not video.r2_video_key:
+        raise _not_found("No original video stored for this video")
+
+    expires_in = 3600
+    try:
+        url = r2.presigned_get_url(video.r2_video_key, expires_in=expires_in)
+    except r2.R2NotConfigured as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f'Object storage unavailable: {exc}',
+        )
+    return PlaybackUrlResponse(url=url, expires_in=expires_in)
 
 
 @app.post("/api/videos/{video_id}/export", response_model=ExportResponse)

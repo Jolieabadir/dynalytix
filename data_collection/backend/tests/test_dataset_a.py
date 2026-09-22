@@ -648,3 +648,28 @@ def test_admin_metadata_update(client, admin):
     assert client.put(f'/api/admin/videos/{video["id"]}/metadata', json={'dataset': 'Z'},
                       headers=auth(admin)).status_code == 400
     assert client.put('/api/admin/videos/999999/metadata', json={}, headers=auth(admin)).status_code == 404
+
+
+# ==================== PLAYBACK URL (frontend follow-up) ====================
+
+def test_playback_url_for_owner_rater_admin_and_404_otherwise(client, fake_r2, admin, rater_a, rater_b):
+    """A rater never had the file in their browser: the rating view needs a URL."""
+    video, _, _ = prepped_video(client, admin)
+    assign(client, admin, video['id'], rater_a)
+
+    # Nothing uploaded yet: 404 even for the owner.
+    assert client.get(f'/api/videos/{video["id"]}/video-url', headers=auth(admin)).status_code == 404
+
+    key = f'videos/{admin}/{video["id"]}/prep.mp4'
+    res = client.post(f'/api/videos/{video["id"]}/confirm-upload', json={'key': key}, headers=auth(admin))
+    assert res.status_code == 200, res.text
+
+    for user in (admin, rater_a):
+        res = client.get(f'/api/videos/{video["id"]}/video-url', headers=auth(user))
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body['url'].startswith('http') and key in body['url']
+        assert body['expires_in'] > 0
+
+    # Unassigned rater: indistinguishable from missing.
+    assert client.get(f'/api/videos/{video["id"]}/video-url', headers=auth(rater_b)).status_code == 404

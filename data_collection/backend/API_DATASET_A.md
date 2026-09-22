@@ -83,6 +83,14 @@ another rater has one.
 
 ## New endpoints
 
+### `GET /api/videos/{id}/video-url` → 200 `{ "url": "<presigned GET>", "expires_in": 3600 }`
+Owner, assigned rater or admin (404 otherwise, and 404 when no original
+video was ever uploaded — the pose CSV can exist alone). Added by the
+frontend half: a rater never had the file in their browser, so the rating
+view (and an owner reloading a video) plays from this URL. JSON, not a
+redirect, so it drops straight into `<video src>`. 503 if R2 is not
+configured.
+
 ### `DELETE /api/environments/{id}` · `DELETE /api/outcomes/{id}`
 Delete the caller's own row. 204; 404 if not theirs; 403 under the same
 write rules as PUT.
