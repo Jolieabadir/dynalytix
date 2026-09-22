@@ -12,13 +12,17 @@
  *
  * A drag under a few pixels is treated as a click, so a slightly shaky click on
  * a box deletes it rather than leaving a sliver of a new hold behind.
+ *
+ * `readOnly` (the rating view, or an owner on a locked video) keeps the boxes
+ * visible and pickable but removes drawing and deleting entirely: the holds
+ * are the canonical set and only the admin changes it.
  */
 import { useRef, useState } from 'react';
 
 /** Smallest box worth keeping, as a fraction of the frame. */
 const MIN_BOX = 0.01;
 
-function HoldOverlay({ holds, pickSlot, onCreate, onDelete, onPick, disabled }) {
+function HoldOverlay({ holds, pickSlot, onCreate, onDelete, onPick, disabled, readOnly = false }) {
   const surfaceRef = useRef(null);
   const [draft, setDraft] = useState(null);
   const dragStart = useRef(null);
@@ -34,7 +38,7 @@ function HoldOverlay({ holds, pickSlot, onCreate, onDelete, onPick, disabled }) 
   };
 
   const handlePointerDown = (e) => {
-    if (disabled || picking) return;
+    if (disabled || picking || readOnly) return;
     // Only start a drag on the surface itself, never on top of a box.
     if (e.target !== surfaceRef.current) return;
 
@@ -74,13 +78,16 @@ function HoldOverlay({ holds, pickSlot, onCreate, onDelete, onPick, disabled }) 
       onPick(hold);
       return;
     }
+    if (readOnly) return;
     onDelete(hold);
   };
 
   return (
     <div
       ref={surfaceRef}
-      className={`hold-overlay ${picking ? 'picking' : ''} ${disabled ? 'disabled' : ''}`}
+      className={`hold-overlay ${picking ? 'picking' : ''} ${disabled ? 'disabled' : ''} ${
+        readOnly ? 'readonly' : ''
+      }`}
       data-testid="hold-overlay"
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
@@ -101,10 +108,16 @@ function HoldOverlay({ holds, pickSlot, onCreate, onDelete, onPick, disabled }) 
           title={
             picking
               ? `Assign hold #${hold.id} to this slot`
-              : `Hold #${hold.id} (${hold.source}) — click to delete`
+              : readOnly
+                ? `Hold #${hold.id} (${hold.source})`
+                : `Hold #${hold.id} (${hold.source}) — click to delete`
           }
           aria-label={
-            picking ? `Assign hold ${hold.id}` : `Delete hold ${hold.id}`
+            picking
+              ? `Assign hold ${hold.id}`
+              : readOnly
+                ? `Hold ${hold.id}`
+                : `Delete hold ${hold.id}`
           }
           onClick={(e) => handleBoxClick(e, hold)}
         />
