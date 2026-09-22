@@ -464,7 +464,7 @@ class ProfileCreate(BaseModel):
     only an admin sets those."""
     display_name: str = Field(min_length=1, max_length=120)
     years_climbing: Optional[int] = Field(default=None, ge=0, le=100)
-    coaching_cert: Optional[str] = None
+    bio: Optional[str] = Field(default=None, max_length=1000)
     highest_grade: Optional[str] = None
     research_background: bool = False
 
@@ -475,7 +475,7 @@ class ProfileResponse(BaseModel):
     display_name: str
     tier: str
     years_climbing: Optional[int]
-    coaching_cert: Optional[str]
+    bio: Optional[str]
     highest_grade: Optional[str]
     research_background: bool
     validation_note: Optional[str]
@@ -488,7 +488,7 @@ class ProfileUpdate(BaseModel):
     optional; tier / validation_note / is_admin are admin-only and absent."""
     display_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
     years_climbing: Optional[int] = Field(default=None, ge=0, le=100)
-    coaching_cert: Optional[str] = None
+    bio: Optional[str] = Field(default=None, max_length=1000)
     highest_grade: Optional[str] = None
     research_background: Optional[bool] = None
 
@@ -630,7 +630,7 @@ def profile_to_response(profile: RaterProfile) -> ProfileResponse:
         display_name=profile.display_name,
         tier=profile.tier,
         years_climbing=profile.years_climbing,
-        coaching_cert=profile.coaching_cert,
+        bio=profile.bio,
         highest_grade=profile.highest_grade,
         research_background=profile.research_background,
         validation_note=profile.validation_note,
@@ -1836,7 +1836,7 @@ async def create_my_profile(
         display_name=payload.display_name.strip(),
         tier='open',
         years_climbing=payload.years_climbing,
-        coaching_cert=(payload.coaching_cert or '').strip() or None,
+        bio=(payload.bio or '').strip() or None,
         highest_grade=(payload.highest_grade or '').strip() or None,
         research_background=payload.research_background,
         is_admin=False,
@@ -1866,7 +1866,7 @@ async def update_my_profile(
     if fields.get('display_name') is not None:
         fields['display_name'] = fields['display_name'].strip()
     # "" clears an optional text field; the db layer stores None.
-    for key in ('coaching_cert', 'highest_grade'):
+    for key in ('bio', 'highest_grade'):
         if fields.get(key) is not None:
             fields[key] = fields[key].strip()
     updated = db.update_rater_profile_self(user_id, **fields)

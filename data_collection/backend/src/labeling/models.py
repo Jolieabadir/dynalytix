@@ -333,7 +333,7 @@ class RaterProfile:
     display_name: str = ""
     tier: str = "open"  # validated | open
     years_climbing: Optional[int] = None
-    coaching_cert: Optional[str] = None
+    bio: Optional[str] = None  # free text, optional, <= 1000 chars
     highest_grade: Optional[str] = None
     research_background: bool = False
     validation_note: Optional[str] = None

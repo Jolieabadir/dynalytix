@@ -13,7 +13,7 @@ function ProfileGate({ onCreated, onSignOut, email }) {
   const [displayName, setDisplayName] = useState('');
   const [yearsClimbing, setYearsClimbing] = useState('');
   const [highestGrade, setHighestGrade] = useState('');
-  const [coachingCert, setCoachingCert] = useState('');
+  const [bio, setBio] = useState('');
   const [researchBackground, setResearchBackground] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -38,7 +38,7 @@ function ProfileGate({ onCreated, onSignOut, email }) {
         display_name: name,
         years_climbing: years,
         highest_grade: highestGrade.trim() || null,
-        coaching_cert: coachingCert.trim() || null,
+        bio: bio.trim() || null,
         research_background: researchBackground,
       });
       onCreated(profile);
@@ -115,14 +115,17 @@ function ProfileGate({ onCreated, onSignOut, email }) {
           </div>
 
           <div className="auth-field">
-            <label className="auth-label" htmlFor="profile-cert">
-              Coaching certification <span className="optional-flag">(optional)</span>
+            <label className="auth-label" htmlFor="profile-bio">
+              Bio <span className="optional-flag">(optional)</span>
             </label>
-            <input
-              id="profile-cert"
-              className="auth-input"
-              value={coachingCert}
-              onChange={(e) => setCoachingCert(e.target.value)}
+            <textarea
+              id="profile-bio"
+              className="auth-input auth-textarea"
+              rows={3}
+              maxLength={1000}
+              placeholder="A sentence or two about your climbing / coaching background"
+              value={bio}
+              onChange={(e) => setBio(e.target.value)}
               disabled={busy}
             />
           </div>

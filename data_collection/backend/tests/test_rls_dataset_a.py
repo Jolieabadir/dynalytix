@@ -159,6 +159,8 @@ def test_validated_rater_can_rename_but_not_promote_themself(world):
     rater = as_(world, 'rater_a')  # tier = validated, validation_note set
     assert rater.count("UPDATE rater_profiles SET display_name = 'A. Rater' WHERE user_id = %s",
                        (world['rater_a'],)) == 1
+    assert rater.count("UPDATE rater_profiles SET bio = 'Coach.' WHERE user_id = %s",
+                       (world['rater_a'],)) == 1
     assert rater.error("UPDATE rater_profiles SET tier = 'open' WHERE user_id = %s",
                        (world['rater_a'],)) is psycopg.errors.InsufficientPrivilege
     assert rater.error("UPDATE rater_profiles SET is_admin = true WHERE user_id = %s",
@@ -170,6 +172,7 @@ def test_validated_rater_can_rename_but_not_promote_themself(world):
                        (world['rater_b'],)) == 0
     profile = world['db'].get_rater_profile(world['rater_a'])
     assert profile.display_name == 'A. Rater' and profile.tier == 'validated' and not profile.is_admin
+    assert profile.bio == 'Coach.'
     # They only see themself (admin sees everyone).
     assert [r['user_id'] for r in rater.rows('SELECT user_id FROM rater_profiles')] == [uuid.UUID(world['rater_a'])]
     assert len(as_(world, 'admin').rows('SELECT user_id FROM rater_profiles')) == 5
@@ -178,10 +181,11 @@ def test_validated_rater_can_rename_but_not_promote_themself(world):
 def test_self_insert_uses_defaults_and_cannot_name_privileged_columns(world):
     newcomer = str(uuid.uuid4())
     me = As(world['dsn'], newcomer)
-    assert me.count("INSERT INTO rater_profiles (user_id, display_name) VALUES (%s, 'New')",
+    assert me.count("INSERT INTO rater_profiles (user_id, display_name, bio) VALUES (%s, 'New', 'Hi')",
                     (newcomer,)) == 1
     profile = world['db'].get_rater_profile(newcomer)
     assert profile.tier == 'open' and profile.is_admin is False and profile.validation_note is None
+    assert profile.bio == 'Hi'
 
     another = str(uuid.uuid4())
     other = As(world['dsn'], another)

@@ -1773,6 +1773,19 @@ body {
   cursor: not-allowed;
 }
 
+.auth-textarea {
+  resize: vertical;
+  min-height: 4.5rem;
+  line-height: 1.4;
+}
+
+.admin-rater-bio {
+  max-width: 28ch;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* The app's primary button, deepened until white text clears 4.5:1 — the
    stock --gradient-button only manages 2.8:1 under white. */
 .auth-submit {

@@ -1490,6 +1490,17 @@ Prerequisites: migration pushed (`supabase migration list` clean), backend deplo
 8. **Raters panel.** Set A to `validated` with a note → *Save*; A's header badge reads *validated* after their next sign-in.
 9. **Close.** Admin → *Close* the video → rater B (not done) sees "This video is closed to rating" and cannot save. *Reopen* → `draft` again; the owner can edit structure.
 
+### 13.7 Profile: bio replaces coaching_cert (branch `feat/rater-bio`)
+
+`ProfileGate.jsx` swaps the *Coaching certification* input for an optional
+multi-line *Bio (optional)* textarea (`maxLength` 1000, placeholder "A sentence
+or two about your climbing / coaching background"), sent as `bio` (trimmed,
+`null` when blank). `AdminView.jsx` raters panel shows the bio as an
+ellipsised sub-line under the background cell (full text on hover) instead of
+the cert. Tests updated (`ProfileGate.test.jsx`, new AdminView bio case);
+vitest 129/129, build green. Needs backend §10.8 and its migration
+`20260922150000_rater_bio.sql` pushed.
+
 ## 14. Server-side pose extraction (runbook-w1-worker)
 
 Branch `feat/server-pose-worker`, together with backend REPORT §11 and

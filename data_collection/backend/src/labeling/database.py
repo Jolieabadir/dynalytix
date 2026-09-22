@@ -165,6 +165,15 @@ class Database:
                 raise FileNotFoundError('No migrations found under supabase/migrations/')
 
         with self.get_connection() as conn:
+            if sql_path is None:
+                # The v3 base drops and recreates the labeling tables, so a
+                # full replay starts clean for those; the Dataset A tables are
+                # CREATE TABLE IF NOT EXISTS and a later migration reshapes
+                # rater_profiles (20260922150000 drops coaching_cert, which
+                # the Dataset A column GRANT still names). Drop them too so
+                # the replay is always from scratch. Test-only, see above.
+                conn.execute('DROP TABLE IF EXISTS public.video_assignments CASCADE')
+                conn.execute('DROP TABLE IF EXISTS public.rater_profiles CASCADE')
             for path in paths:
                 conn.execute(path.read_text())
 
@@ -1066,7 +1075,7 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO rater_profiles (
-                    user_id, display_name, tier, years_climbing, coaching_cert,
+                    user_id, display_name, tier, years_climbing, bio,
                     highest_grade, research_background, validation_note, is_admin, created_at
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -1076,7 +1085,7 @@ class Database:
                 profile.display_name,
                 profile.tier or 'open',
                 profile.years_climbing,
-                profile.coaching_cert,
+                profile.bio,
                 profile.highest_grade,
                 profile.research_background,
                 profile.validation_note,
@@ -1128,13 +1137,13 @@ class Database:
         list: those are update_rater_profile (admin) only. An empty string on
         a nullable text field clears it.
         """
-        allowed = ('display_name', 'years_climbing', 'coaching_cert',
+        allowed = ('display_name', 'years_climbing', 'bio',
                    'highest_grade', 'research_background')
         updates = {}
         for key, value in fields.items():
             if key not in allowed or value is None:
                 continue
-            if key in ('coaching_cert', 'highest_grade') and value == '':
+            if key in ('bio', 'highest_grade') and value == '':
                 value = None
             updates[key] = value
         if not updates:
@@ -1368,7 +1377,7 @@ class Database:
             display_name=row['display_name'],
             tier=row['tier'],
             years_climbing=row['years_climbing'],
-            coaching_cert=row['coaching_cert'],
+            bio=row['bio'],
             highest_grade=row['highest_grade'],
             research_background=bool(row['research_background']),
             validation_note=row['validation_note'],

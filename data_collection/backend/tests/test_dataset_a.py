@@ -171,7 +171,7 @@ def test_profile_self_update_cannot_touch_admin_fields(client):
 
     res = client.put(
         '/api/me/profile',
-        json={'display_name': 'Renamed', 'years_climbing': 9, 'coaching_cert': '',
+        json={'display_name': 'Renamed', 'years_climbing': 9, 'bio': '',
               'tier': 'validated', 'is_admin': True, 'validation_note': 'me'},
         headers=auth(user),
     )
@@ -179,10 +179,33 @@ def test_profile_self_update_cannot_touch_admin_fields(client):
     body = res.json()
     assert body['display_name'] == 'Renamed'
     assert body['years_climbing'] == 9
-    assert body['coaching_cert'] is None
+    assert body['bio'] is None
     assert body['tier'] == 'open'
     assert body['is_admin'] is False
     assert body['validation_note'] is None
+
+
+def test_profile_bio_round_trip_and_length_limit(client):
+    user = str(uuid.uuid4())
+    res = client.post(
+        '/api/me/profile',
+        json={'display_name': 'Bio Person', 'bio': '  Coach for 10 years, V8 boulderer.  '},
+        headers=auth(user),
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()['bio'] == 'Coach for 10 years, V8 boulderer.'
+    assert 'coaching_cert' not in res.json()
+    assert client.get('/api/me/profile', headers=auth(user)).json()['bio'] == 'Coach for 10 years, V8 boulderer.'
+
+    res = client.put('/api/me/profile', json={'bio': 'Shorter.'}, headers=auth(user))
+    assert res.status_code == 200 and res.json()['bio'] == 'Shorter.'
+    # Exactly 1000 chars is fine; 1001 is a 422.
+    assert client.put('/api/me/profile', json={'bio': 'x' * 1000}, headers=auth(user)).status_code == 200
+    assert client.put('/api/me/profile', json={'bio': 'x' * 1001}, headers=auth(user)).status_code == 422
+    assert client.post('/api/me/profile', json={'display_name': 'Y', 'bio': 'x' * 1001},
+                       headers=auth(str(uuid.uuid4()))).status_code == 422
+    # "" clears it.
+    assert client.put('/api/me/profile', json={'bio': ''}, headers=auth(user)).json()['bio'] is None
 
 
 def test_config_exposes_taxonomy_version(client, rater_a):
