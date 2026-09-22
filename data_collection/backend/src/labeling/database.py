@@ -7,9 +7,10 @@ nothing about the database. Raw SQL throughout - no ORM.
 Schema version 3: per-user scoping, holds with normalized bounding boxes,
 slot-based environments, R2 object keys instead of local paths.
 
-DDL lives in supabase/migrations/*_schema_v3.sql, which is the single source of
-truth. This module never creates tables outside of apply_schema_sql(), which
-exists so tests can build a fresh schema without the Supabase CLI.
+DDL lives in supabase/migrations/*.sql (the v3 base plus additive migrations,
+applied in filename order), which is the single source of truth. This module
+never creates tables outside of apply_schema_sql(), which exists so tests can
+build a fresh schema without the Supabase CLI.
 """
 import os
 from pathlib import Path
@@ -22,7 +23,10 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
-from .models import Video, Hold, Move, Environment, Outcome, FrameTag, HOLD_SLOTS
+from .models import (
+    Video, Hold, Move, Environment, Outcome, FrameTag,
+    RaterProfile, VideoAssignment, HOLD_SLOTS,
+)
 
 SCHEMA_VERSION = 3
 
@@ -38,6 +42,13 @@ class Database:
     Every read, update and delete is scoped by user_id so one climber can never
     reach another's rows even if they guess an id. Create takes the user_id off
     the model instance.
+
+    Dataset A (runbook W1) adds a second family of accessors suffixed ``_any``
+    that are NOT scoped by user. They exist for two callers only: the admin
+    role, and the API's access check (``_require_video_access``) once it has
+    already established that the caller is the owner, an assigned rater or an
+    admin of the video in question. Never reach for an ``_any`` method before
+    that check has run.
 
     Usage:
         db = Database()            # reads DATABASE_URL from the environment
@@ -167,9 +178,13 @@ class Database:
                 INSERT INTO videos (
                     user_id, filename, fps, total_frames, duration_ms,
                     width, height,
-                    r2_video_key, r2_pose_csv_key, r2_export_key, uploaded_at
+                    r2_video_key, r2_pose_csv_key, r2_export_key, uploaded_at,
+                    dataset, prep_status,
+                    route_grade, wall_type, climber_experience,
+                    climber_height_cm, climber_ape_index_cm, camera_angle, gym, notes
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             ''', (
                 video.user_id,
@@ -183,8 +198,106 @@ class Database:
                 video.r2_pose_csv_key,
                 video.r2_export_key,
                 video.uploaded_at or datetime.now(timezone.utc),
+                video.dataset or 'B',
+                video.prep_status or 'draft',
+                video.route_grade,
+                video.wall_type,
+                video.climber_experience,
+                video.climber_height_cm,
+                video.climber_ape_index_cm,
+                video.camera_angle,
+                video.gym,
+                video.notes,
             ))
             return cursor.fetchone()['id']
+
+    # Prep-pass fields an admin may set through update_video_fields().
+    VIDEO_PREP_FIELDS = (
+        'dataset', 'prep_status',
+        'route_grade', 'wall_type', 'climber_experience',
+        'climber_height_cm', 'climber_ape_index_cm', 'camera_angle', 'gym', 'notes',
+    )
+
+    def get_video_any(self, video_id: int) -> Optional[Video]:
+        """Get a video by ID regardless of owner. Admin / post-access-check only."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM videos WHERE id = %s', (video_id,))
+            row = cursor.fetchone()
+            return self._row_to_video(row) if row else None
+
+    def list_videos_admin(self) -> List[dict]:
+        """Every video with its assignment count, newest first. Admin only.
+
+        Returns dicts: {'video': Video, 'assignment_count': int,
+        'done_count': int} so the admin view can show progress without a
+        request per video.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT v.*,
+                       COUNT(a.id)                                   AS assignment_count,
+                       COUNT(a.id) FILTER (WHERE a.status = 'done') AS done_count
+                FROM videos v
+                LEFT JOIN video_assignments a ON a.video_id = v.id
+                GROUP BY v.id
+                ORDER BY v.uploaded_at DESC
+            ''')
+            return [
+                {
+                    'video': self._row_to_video(row),
+                    'assignment_count': int(row['assignment_count']),
+                    'done_count': int(row['done_count']),
+                }
+                for row in cursor.fetchall()
+            ]
+
+    def update_video_fields(self, video_id: int, **fields) -> Optional[Video]:
+        """Set prep-pass fields on any video. Admin only. Returns the row, or None.
+
+        Only VIDEO_PREP_FIELDS may change; a None value is a no-op for that
+        field (nullable metadata is cleared by passing an empty string, which
+        is stored as NULL).
+        """
+        updates = {}
+        for key, value in fields.items():
+            if key not in self.VIDEO_PREP_FIELDS or value is None:
+                continue
+            if isinstance(value, str) and value == '' and key not in ('dataset', 'prep_status'):
+                value = None
+            updates[key] = value
+        if not updates:
+            return self.get_video_any(video_id)
+
+        assignments = ', '.join(f'{k} = %s' for k in updates)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'UPDATE videos SET {assignments} WHERE id = %s RETURNING *',
+                (*updates.values(), video_id)
+            )
+            row = cursor.fetchone()
+            return self._row_to_video(row) if row else None
+
+    def get_videos_for_export(
+        self,
+        video_id: Optional[int] = None,
+        dataset: Optional[str] = None,
+    ) -> List[Video]:
+        """Videos across every owner, for the admin exports."""
+        clauses, params = [], []
+        if video_id is not None:
+            clauses.append('id = %s')
+            params.append(video_id)
+        if dataset:
+            clauses.append('dataset = %s')
+            params.append(dataset)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ''
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f'SELECT * FROM videos {where} ORDER BY id', tuple(params))
+            return [self._row_to_video(row) for row in cursor.fetchall()]
 
     def get_video(self, video_id: int, user_id: str) -> Optional[Video]:
         """Get one of this user's videos by ID."""
@@ -320,6 +433,46 @@ class Database:
             row = cursor.fetchone()
             return self._row_to_hold(row) if row else None
 
+    def get_hold_any(self, hold_id: int) -> Optional[Hold]:
+        """Get a hold by ID regardless of creator. Post-access-check only."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM holds WHERE id = %s', (hold_id,))
+            row = cursor.fetchone()
+            return self._row_to_hold(row) if row else None
+
+    def get_holds_for_video_any(self, video_id: int) -> List[Hold]:
+        """Every hold on a video, whoever drew it. Post-access-check only."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM holds WHERE video_id = %s ORDER BY id', (video_id,)
+            )
+            return [self._row_to_hold(row) for row in cursor.fetchall()]
+
+    def update_hold_any(self, hold_id: int, **fields) -> Optional[Hold]:
+        """update_hold without the user filter. Admin only."""
+        allowed = ('bbox_x', 'bbox_y', 'bbox_w', 'bbox_h', 'source')
+        updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
+        if not updates:
+            return self.get_hold_any(hold_id)
+        assignments = ', '.join(f'{k} = %s' for k in updates)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'UPDATE holds SET {assignments} WHERE id = %s RETURNING *',
+                (*updates.values(), hold_id)
+            )
+            row = cursor.fetchone()
+            return self._row_to_hold(row) if row else None
+
+    def delete_hold_any(self, hold_id: int) -> bool:
+        """delete_hold without the user filter. Admin only."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM holds WHERE id = %s', (hold_id,))
+            return cursor.rowcount > 0
+
     def get_hold(self, hold_id: int, user_id: str) -> Optional[Hold]:
         """Get one of this user's holds by ID."""
         with self.get_connection() as conn:
@@ -383,6 +536,63 @@ class Database:
                 move.labeled_at or datetime.now(timezone.utc),
             ))
             return cursor.fetchone()['id']
+
+    def get_move_any(self, move_id: int) -> Optional[Move]:
+        """Get a move by ID regardless of creator. Post-access-check only."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM moves WHERE id = %s', (move_id,))
+            row = cursor.fetchone()
+            return self._row_to_move(row) if row else None
+
+    def get_moves_for_video_any(self, video_id: int) -> List[Move]:
+        """The canonical move list of a video, whoever created it.
+
+        Ordered by frame_start, then id, which is also the order that defines
+        move_index in the long export.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM moves WHERE video_id = %s ORDER BY frame_start, id',
+                (video_id,)
+            )
+            return [self._row_to_move(row) for row in cursor.fetchall()]
+
+    def update_move_any(self, move: Move) -> bool:
+        """update_move without the user filter. Admin only."""
+        if not move.id:
+            return False
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE moves SET
+                    frame_start = %s, frame_end = %s,
+                    timestamp_start_ms = %s, timestamp_end_ms = %s,
+                    approach = %s, move_tags = %s, size = %s,
+                    form_quality = %s, effort_level = %s,
+                    confidence = %s, description = %s
+                WHERE id = %s
+            ''', (
+                move.frame_start, move.frame_end,
+                move.timestamp_start_ms, move.timestamp_end_ms,
+                move.approach, Jsonb(move.move_tags), move.size,
+                move.form_quality, move.effort_level,
+                move.confidence, move.description,
+                move.id,
+            ))
+            return cursor.rowcount > 0
+
+    def delete_move_any(self, move_id: int) -> bool:
+        """delete_move without the user filter. Admin only.
+
+        Every rater's environment / outcome / frame_tag rows on the move go
+        with it (FKs are ON DELETE CASCADE from moves).
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM moves WHERE id = %s', (move_id,))
+            return cursor.rowcount > 0
 
     def get_move(self, move_id: int, user_id: str) -> Optional[Move]:
         """Get one of this user's moves by ID."""
@@ -480,9 +690,10 @@ class Database:
                     start_left_hold_id, start_left_hold_type, start_left_hold_quality,
                     start_right_hold_id, start_right_hold_type, start_right_hold_quality,
                     end_hold_id, end_hold_type, end_hold_quality,
-                    foot_hold_id, foot_hold_type, foot_hold_quality
+                    foot_hold_id, foot_hold_type, foot_hold_quality,
+                    taxonomy_version, is_gold
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             ''', (
                 env.move_id,
@@ -500,8 +711,19 @@ class Database:
                 env.foot_hold_id,
                 env.foot_hold_type,
                 Jsonb(env.foot_hold_quality),
+                env.taxonomy_version,
+                env.is_gold,
             ))
             return cursor.fetchone()['id']
+
+    def get_environments_for_move_all(self, move_id: int) -> List[Environment]:
+        """Every rater's environment on a move. Admin export only."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM environments WHERE move_id = %s ORDER BY user_id', (move_id,)
+            )
+            return [self._row_to_environment(row) for row in cursor.fetchall()]
 
     def get_environment(self, env_id: int, user_id: str) -> Optional[Environment]:
         """Get an environment by ID."""
@@ -546,7 +768,8 @@ class Database:
                     end_hold_quality = %s,
                     foot_hold_id = %s,
                     foot_hold_type = %s,
-                    foot_hold_quality = %s
+                    foot_hold_quality = %s,
+                    taxonomy_version = %s
                 WHERE id = %s AND user_id = %s
             ''', (
                 env.wall_angle,
@@ -562,6 +785,7 @@ class Database:
                 env.foot_hold_id,
                 env.foot_hold_type,
                 Jsonb(env.foot_hold_quality),
+                env.taxonomy_version,
                 env.id,
                 env.user_id,
             ))
@@ -584,8 +808,11 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO outcomes (move_id, user_id, result, reach_detail, confidence)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO outcomes (
+                    move_id, user_id, result, reach_detail, confidence,
+                    taxonomy_version, is_gold
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             ''', (
                 outcome.move_id,
@@ -593,8 +820,19 @@ class Database:
                 outcome.result,
                 outcome.reach_detail,
                 outcome.confidence,
+                outcome.taxonomy_version,
+                outcome.is_gold,
             ))
             return cursor.fetchone()['id']
+
+    def get_outcomes_for_move_all(self, move_id: int) -> List[Outcome]:
+        """Every rater's outcome on a move. Admin export only."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM outcomes WHERE move_id = %s ORDER BY user_id', (move_id,)
+            )
+            return [self._row_to_outcome(row) for row in cursor.fetchall()]
 
     def get_outcome(self, outcome_id: int, user_id: str) -> Optional[Outcome]:
         """Get an outcome by ID."""
@@ -629,12 +867,14 @@ class Database:
                 UPDATE outcomes SET
                     result = %s,
                     reach_detail = %s,
-                    confidence = %s
+                    confidence = %s,
+                    taxonomy_version = %s
                 WHERE id = %s AND user_id = %s
             ''', (
                 outcome.result,
                 outcome.reach_detail,
                 outcome.confidence,
+                outcome.taxonomy_version,
                 outcome.id,
                 outcome.user_id,
             ))
@@ -659,9 +899,10 @@ class Database:
             cursor.execute('''
                 INSERT INTO frame_tags (
                     move_id, user_id, frame_number, timestamp_ms,
-                    tag_type, side, level, locations, note, tagged_at
+                    tag_type, side, level, locations, note, tagged_at,
+                    taxonomy_version, is_gold
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             ''', (
                 tag.move_id,
@@ -674,8 +915,20 @@ class Database:
                 Jsonb(tag.locations),
                 tag.note,
                 tag.tagged_at or datetime.now(timezone.utc),
+                tag.taxonomy_version,
+                tag.is_gold,
             ))
             return cursor.fetchone()['id']
+
+    def get_frame_tags_for_move_all(self, move_id: int) -> List[FrameTag]:
+        """Every rater's frame tags on a move. Admin export only."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM frame_tags WHERE move_id = %s ORDER BY user_id, frame_number, id',
+                (move_id,)
+            )
+            return [self._row_to_frame_tag(row) for row in cursor.fetchall()]
 
     def get_frame_tag(self, tag_id: int, user_id: str) -> Optional[FrameTag]:
         """Get a frame tag by ID."""
@@ -709,6 +962,154 @@ class Database:
             )
             return cursor.rowcount > 0
 
+    # ==================== RATER PROFILE OPERATIONS ====================
+
+    def create_rater_profile(self, profile: RaterProfile) -> RaterProfile:
+        """Insert a profile. Raises psycopg UniqueViolation if one exists."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO rater_profiles (
+                    user_id, display_name, tier, years_climbing, coaching_cert,
+                    highest_grade, research_background, validation_note, is_admin, created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING *
+            ''', (
+                profile.user_id,
+                profile.display_name,
+                profile.tier or 'open',
+                profile.years_climbing,
+                profile.coaching_cert,
+                profile.highest_grade,
+                profile.research_background,
+                profile.validation_note,
+                profile.is_admin,
+                profile.created_at or datetime.now(timezone.utc),
+            ))
+            return self._row_to_rater_profile(cursor.fetchone())
+
+    def get_rater_profile(self, user_id: str) -> Optional[RaterProfile]:
+        """Get a user's profile, or None if they have not created one."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM rater_profiles WHERE user_id = %s', (user_id,))
+            row = cursor.fetchone()
+            return self._row_to_rater_profile(row) if row else None
+
+    def is_admin(self, user_id: str) -> bool:
+        """True when the user's profile carries the admin flag."""
+        profile = self.get_rater_profile(user_id)
+        return bool(profile and profile.is_admin)
+
+    def list_rater_profiles(self) -> List[RaterProfile]:
+        """Every profile, oldest first. Admin only."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM rater_profiles ORDER BY created_at, user_id')
+            return [self._row_to_rater_profile(row) for row in cursor.fetchall()]
+
+    def update_rater_profile(self, user_id: str, **fields) -> Optional[RaterProfile]:
+        """Set admin-controlled fields on a profile. Returns the row, or None."""
+        allowed = ('tier', 'validation_note', 'is_admin', 'display_name')
+        updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
+        if not updates:
+            return self.get_rater_profile(user_id)
+        assignments = ', '.join(f'{k} = %s' for k in updates)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'UPDATE rater_profiles SET {assignments} WHERE user_id = %s RETURNING *',
+                (*updates.values(), user_id)
+            )
+            row = cursor.fetchone()
+            return self._row_to_rater_profile(row) if row else None
+
+    # ==================== ASSIGNMENT OPERATIONS ====================
+
+    def create_assignment(self, assignment: VideoAssignment) -> VideoAssignment:
+        """Insert an assignment. Raises UniqueViolation on (video, rater) repeat."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO video_assignments (video_id, rater_user_id, cohort, status, assigned_at)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING *
+            ''', (
+                assignment.video_id,
+                assignment.rater_user_id,
+                assignment.cohort,
+                assignment.status or 'assigned',
+                assignment.assigned_at or datetime.now(timezone.utc),
+            ))
+            return self._row_to_assignment(cursor.fetchone())
+
+    def get_assignment(self, assignment_id: int) -> Optional[VideoAssignment]:
+        """Get an assignment by ID (unscoped; callers check rater_user_id)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM video_assignments WHERE id = %s', (assignment_id,))
+            row = cursor.fetchone()
+            return self._row_to_assignment(row) if row else None
+
+    def get_assignment_for(self, video_id: int, rater_user_id: str) -> Optional[VideoAssignment]:
+        """The rater's assignment on a video, if any."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM video_assignments WHERE video_id = %s AND rater_user_id = %s',
+                (video_id, rater_user_id)
+            )
+            row = cursor.fetchone()
+            return self._row_to_assignment(row) if row else None
+
+    def list_assignments(self, video_id: Optional[int] = None) -> List[VideoAssignment]:
+        """Assignments, optionally for one video. Admin only."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if video_id is None:
+                cursor.execute('SELECT * FROM video_assignments ORDER BY video_id, id')
+            else:
+                cursor.execute(
+                    'SELECT * FROM video_assignments WHERE video_id = %s ORDER BY id',
+                    (video_id,)
+                )
+            return [self._row_to_assignment(row) for row in cursor.fetchall()]
+
+    def list_assignments_for_rater(self, rater_user_id: str) -> List[VideoAssignment]:
+        """The rater's queue, oldest assignment first."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM video_assignments WHERE rater_user_id = %s ORDER BY assigned_at, id',
+                (rater_user_id,)
+            )
+            return [self._row_to_assignment(row) for row in cursor.fetchall()]
+
+    def set_assignment_status(
+        self,
+        assignment_id: int,
+        status: str,
+        completed_at: Optional[datetime] = None,
+    ) -> Optional[VideoAssignment]:
+        """Move an assignment to a new status. Returns the row, or None."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE video_assignments SET status = %s, completed_at = %s '
+                'WHERE id = %s RETURNING *',
+                (status, completed_at, assignment_id)
+            )
+            row = cursor.fetchone()
+            return self._row_to_assignment(row) if row else None
+
+    def delete_assignment(self, assignment_id: int) -> bool:
+        """Delete an assignment. The rater's label rows are kept."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM video_assignments WHERE id = %s', (assignment_id,))
+            return cursor.rowcount > 0
+
     # ==================== HELPER METHODS ====================
 
     @staticmethod
@@ -729,6 +1130,18 @@ class Database:
             r2_pose_csv_key=row['r2_pose_csv_key'],
             r2_export_key=row['r2_export_key'],
             uploaded_at=row['uploaded_at'],
+            # Dataset A columns; .get so a database without that migration
+            # reads back as the Dataset B defaults.
+            dataset=row.get('dataset') or 'B',
+            prep_status=row.get('prep_status') or 'draft',
+            route_grade=row.get('route_grade'),
+            wall_type=row.get('wall_type'),
+            climber_experience=row.get('climber_experience'),
+            climber_height_cm=row.get('climber_height_cm'),
+            climber_ape_index_cm=row.get('climber_ape_index_cm'),
+            camera_angle=row.get('camera_angle'),
+            gym=row.get('gym'),
+            notes=row.get('notes'),
         )
 
     @staticmethod
@@ -780,6 +1193,8 @@ class Database:
             kwargs[f'{slot}_hold_id'] = row[f'{slot}_hold_id']
             kwargs[f'{slot}_hold_type'] = row[f'{slot}_hold_type']
             kwargs[f'{slot}_hold_quality'] = row[f'{slot}_hold_quality'] or []
+        kwargs['taxonomy_version'] = row.get('taxonomy_version') or ''
+        kwargs['is_gold'] = bool(row.get('is_gold'))
         return Environment(**kwargs)
 
     @staticmethod
@@ -792,6 +1207,8 @@ class Database:
             result=row['result'],
             reach_detail=row['reach_detail'],
             confidence=row['confidence'] or '',
+            taxonomy_version=row.get('taxonomy_version') or '',
+            is_gold=bool(row.get('is_gold')),
         )
 
     @staticmethod
@@ -809,4 +1226,35 @@ class Database:
             locations=row['locations'] or [],
             note=row['note'] or '',
             tagged_at=row['tagged_at'],
+            taxonomy_version=row.get('taxonomy_version') or '',
+            is_gold=bool(row.get('is_gold')),
+        )
+
+    @staticmethod
+    def _row_to_rater_profile(row: dict) -> RaterProfile:
+        """Convert database row to RaterProfile object."""
+        return RaterProfile(
+            user_id=str(row['user_id']),
+            display_name=row['display_name'],
+            tier=row['tier'],
+            years_climbing=row['years_climbing'],
+            coaching_cert=row['coaching_cert'],
+            highest_grade=row['highest_grade'],
+            research_background=bool(row['research_background']),
+            validation_note=row['validation_note'],
+            is_admin=bool(row['is_admin']),
+            created_at=row['created_at'],
+        )
+
+    @staticmethod
+    def _row_to_assignment(row: dict) -> VideoAssignment:
+        """Convert database row to VideoAssignment object."""
+        return VideoAssignment(
+            id=row['id'],
+            video_id=row['video_id'],
+            rater_user_id=str(row['rater_user_id']),
+            cohort=row['cohort'],
+            status=row['status'],
+            assigned_at=row['assigned_at'],
+            completed_at=row['completed_at'],
         )

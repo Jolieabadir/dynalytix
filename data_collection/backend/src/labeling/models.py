@@ -13,6 +13,29 @@ from datetime import datetime
 from typing import Optional
 
 
+# =============================================================================
+# TAXONOMY VERSION
+# =============================================================================
+#
+# Stamped into every environment / outcome / frame_tag row at write time and
+# exposed as `version` by /api/config, so an export can say which taxonomy a
+# label was produced under. Bump it whenever a list below changes meaning.
+# Rows written before the column existed were backfilled to '3.0.0'.
+
+TAXONOMY_VERSION = "3.1.0"
+
+# =============================================================================
+# DATASET A / B CONSTANTS
+# =============================================================================
+
+DATASETS = ['A', 'B']
+PREP_STATUSES = ['draft', 'ready', 'closed']
+LOCKED_PREP_STATUSES = ['ready', 'closed']
+ASSIGNMENT_COHORTS = ['validated', 'overlap']
+ASSIGNMENT_STATUSES = ['assigned', 'in_progress', 'done']
+RATER_TIERS = ['validated', 'open']
+
+
 @dataclass
 class Video:
     """Represents an uploaded video with metadata.
@@ -36,6 +59,24 @@ class Video:
     r2_pose_csv_key: Optional[str] = None
     r2_export_key: Optional[str] = None
     uploaded_at: Optional[datetime] = None
+
+    # Dataset A / B split. ``user_id`` above is the owner / prepper
+    # (owner_user_id semantics): the uploader on B, the admin who prepped on A.
+    dataset: str = "B"  # A | B
+    prep_status: str = "draft"  # draft | ready | closed
+    # Prep-pass metadata, all optional.
+    route_grade: Optional[str] = None
+    wall_type: Optional[str] = None
+    climber_experience: Optional[str] = None
+    climber_height_cm: Optional[int] = None
+    climber_ape_index_cm: Optional[int] = None
+    camera_angle: Optional[str] = None
+    gym: Optional[str] = None
+    notes: Optional[str] = None
+
+    def is_locked(self) -> bool:
+        """True once holds and canonical moves may no longer change."""
+        return self.prep_status in LOCKED_PREP_STATUSES
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -171,6 +212,11 @@ class Environment:
     foot_hold_type: Optional[str] = None
     foot_hold_quality: list[str] = field(default_factory=list)
 
+    # Taxonomy the row was labeled under; stamped by the API on every write.
+    taxonomy_version: str = TAXONOMY_VERSION
+    # Adjudicated / gold-standard row (set later, outside the rating pass).
+    is_gold: bool = False
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         return asdict(self)
@@ -196,6 +242,9 @@ class Outcome:
     result: str = ""  # success | fall
     reach_detail: str = ""  # reached_controlled | reached_not_controlled | didnt_reach
     confidence: str = ""  # low | med | high
+
+    taxonomy_version: str = TAXONOMY_VERSION
+    is_gold: bool = False
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -237,6 +286,8 @@ class FrameTag:
 
     # Metadata
     tagged_at: Optional[datetime] = None
+    taxonomy_version: str = TAXONOMY_VERSION
+    is_gold: bool = False
 
     def is_sensation_tag(self) -> bool:
         """Check if this is a sensation tag (pain/instability/weakness)."""
@@ -255,6 +306,58 @@ class FrameTag:
         if 'tagged_at' in data and isinstance(data['tagged_at'], str):
             data['tagged_at'] = datetime.fromisoformat(data['tagged_at'])
         return cls(**data)
+
+
+@dataclass
+class RaterProfile:
+    """Who a labeler is, collected once at first sign-in.
+
+    ``tier``/``validation_note``/``is_admin`` are set by an admin, never by the
+    rater themself. ``is_admin`` doubles as the admin flag for the whole app.
+    """
+
+    user_id: str = ""
+    display_name: str = ""
+    tier: str = "open"  # validated | open
+    years_climbing: Optional[int] = None
+    coaching_cert: Optional[str] = None
+    highest_grade: Optional[str] = None
+    research_background: bool = False
+    validation_note: Optional[str] = None
+    is_admin: bool = False
+    created_at: Optional[datetime] = None
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        data = asdict(self)
+        if self.created_at:
+            data['created_at'] = self.created_at.isoformat()
+        return data
+
+
+@dataclass
+class VideoAssignment:
+    """One rater's assignment to rate one Dataset A video."""
+
+    id: Optional[int] = None
+    video_id: int = 0
+    rater_user_id: str = ""
+    cohort: str = "validated"  # validated | overlap
+    status: str = "assigned"  # assigned | in_progress | done
+    assigned_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+    def is_open(self) -> bool:
+        """True while the rater may still write labels under it."""
+        return self.status in ('assigned', 'in_progress')
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        data = asdict(self)
+        for key in ('assigned_at', 'completed_at'):
+            if getattr(self, key):
+                data[key] = getattr(self, key).isoformat()
+        return data
 
 
 # =============================================================================

@@ -1,9 +1,9 @@
 """
 Shared pytest fixtures.
 
-The suite runs against a real Postgres. It applies the v3 migration, which
-DROPS AND RECREATES the labeling tables - point TEST_DATABASE_URL at a
-throwaway database, never at production.
+The suite runs against a real Postgres. It applies every migration under
+supabase/migrations in order; the v3 base DROPS AND RECREATES the labeling
+tables - point TEST_DATABASE_URL at a throwaway database, never at production.
 
 R2 is exercised against the real bucket when credentials are present and
 working; otherwise an in-memory fake stands in.
@@ -61,7 +61,8 @@ def clean_db(db):
     """Truncate every data table so each test starts empty."""
     with db.get_connection() as conn:
         conn.execute(
-            'TRUNCATE frame_tags, outcomes, environments, moves, holds, videos '
+            'TRUNCATE frame_tags, outcomes, environments, moves, holds, videos, '
+            'video_assignments, rater_profiles '
             'RESTART IDENTITY CASCADE'
         )
     return db
