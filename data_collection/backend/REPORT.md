@@ -1700,3 +1700,56 @@ iOS Safari evicts a backgrounded page. A single presigned `PUT` of a 300 MB phon
 ### Manual steps for Jolie
 
 None on the backend. No migration to push; `supabase migration list` is unchanged by this branch.
+
+---
+
+## 13. Destructive-schema guard (follow-up, shipped with W3)
+
+Not from a runbook. Found while auditing `feat/rater-bio` and folded into the W3 branch rather than shipped on its own.
+
+### The hazard
+
+`Database.apply_schema_sql()` drops and recreates the labeling tables. Migration `20260922150000_rater_bio.sql` needed a clean replay after dropping `coaching_cert`, so that helper also gained:
+
+```python
+conn.execute('DROP TABLE IF EXISTS public.video_assignments CASCADE')
+conn.execute('DROP TABLE IF EXISTS public.rater_profiles CASCADE')
+```
+
+Correct for its purpose, and marked "test-only" in a comment. But *nothing enforced it*, and `tests/conftest.py` read:
+
+```python
+return os.environ.get('TEST_DATABASE_URL') or os.environ.get('DATABASE_URL') or ''
+```
+
+So `pytest` run with production's `DATABASE_URL` in the environment — the variable the real API uses, and the one sitting in `backend/.env` — would drop and recreate the labeling tables **plus rater identities and the entire Paper A assignment structure**. The blast radius grew with that migration: before it, `rater_profiles` and `video_assignments` survived.
+
+The only thing standing in the way was a line under **Never** in `MAILBOX.md`. `scripts/setup_test_db.sh` does refuse hosted-looking *database names*, but the conftest fallback bypasses it entirely.
+
+A comment is not a safeguard.
+
+### The guard
+
+Two layers, both test-path only — no production code calls `apply_schema_sql`.
+
+1. **At the destructive site.** `_refuse_destructive_dsn(dsn, operation)` raises `DestructiveSchemaRefused` when the DSN contains a managed-provider marker (`supabase.co`, `pooler.supabase`, `railway.app`, `rds.amazonaws`, `neon.tech`, …). `apply_schema_sql` calls it first, before any connection is used. The message names what would be destroyed and points at `setup_test_db.sh`.
+2. **At the fallback.** `_dsn()` still takes `TEST_DATABASE_URL` at its word — setting it *is* the statement that the database is disposable — but no longer accepts a hosted `DATABASE_URL`. That is reported as "no test database configured", so the DB tests skip instead of running somewhere they shouldn't.
+
+`DYNALYTIX_ALLOW_DESTRUCTIVE_SCHEMA=1` is the deliberate way through, for rebuilding a staging database on purpose. It must be exactly `1`; a truthy-looking `yes` does not count, and there is a test saying so.
+
+Local DSNs are untouched, so the normal path never sees any of this.
+
+### Demonstrated, not asserted
+
+| Command | Before | After |
+|---|---|---|
+| `TEST_DATABASE_URL=<scratch> pytest` | 163 passed | **176 passed** (13 guard tests) |
+| `DATABASE_URL=<hosted> pytest` (no `TEST_DATABASE_URL`) | would connect and **drop tables** | **22 passed, 154 skipped** |
+
+### Tests
+
+`tests/test_destructive_guard.py`, 13 tests, none of which need a database — the refusal happens before a connection is used, which is the point. Covers three hosted shapes, two local shapes, the opt-in and a near-miss opt-in, an empty/None DSN, and all four `_dsn()` resolution cases including the one that matters: a hosted `DATABASE_URL` must not become the test database.
+
+### Manual steps for Jolie
+
+None. If you ever *do* want to rebuild a hosted database from the migrations, set `DYNALYTIX_ALLOW_DESTRUCTIVE_SCHEMA=1` for that one command.

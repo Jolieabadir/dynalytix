@@ -38,6 +38,16 @@ The Dynalytix Mailbox (Notion database, collection `ef1f46c1-2b9e-4499-a24a-4e8f
 |---|---|---|---|---|---|
 | `runbook-w1-backend.md` | W1 | Backend | `feat/dataset-a-assignments` | Runbook — Dataset A: prep/rating split, rater assignments, validated-rater profiles, admin + long-format IRR export | ingested 2026-09-22 |
 | `runbook-w1-worker.md` | W1 | Worker | `feat/server-pose-worker` | Runbook — Server-side async pose extraction on Modal (replace browser extractor) | ingested 2026-09-22 |
-| `runbook-w3-mobile.md` | W3 (was W2) | Mobile | `feat/mobile-first-labeling` | Runbook — iPhone-first labeling UI (Safari survival, touch frame nav, stepped forms, tap-to-place holds, PWA) | ingested 2026-09-22; gated on both W1 runbooks |
+| `runbook-w3-mobile.md` | W3 (was W2) | Mobile | `feat/mobile-first-labeling` | Runbook — iPhone-first labeling UI (Safari survival, touch frame nav, stepped forms, tap-to-place holds, PWA) | ingested 2026-09-22; **executed 2026-09-22**, branch built and tested against `0a4bcfc`, staged for cutover |
 
 Priority-change applied at ingest (2026-09-17 entry, Lane INT): the iPhone-first UI moved W2 → W3 and now gates on both W1 runbooks. W1 is two parallel lanes; the Dataset A (Backend) runbook has priority if only one session runs.
+
+## Out-of-band changes
+
+Work that reached `main` **without** a Mailbox entry or a runbook file, recorded here so the repo's own history matches production. Rule 5 says that if it isn't in a runbook on main it doesn't exist; these did exist, so the record is the honest correction rather than a precedent.
+
+| Change | Branch | Merged | Mailbox entry | Notes |
+|---|---|---|---|---|
+| Rater profile: optional `bio` replaces `coaching_cert` | `feat/rater-bio` | `0a4bcfc` (2026-09-22) | **none** | Migration `20260922150000_rater_bio.sql` applied to production. Work itself is tested and documented (backend REPORT §10.8, frontend §13.7); `coaching_cert` held no data in any row when it was dropped. What was missing was the paper trail, not the care. |
+
+If one of these should have an entry after the fact, create it in Notion as Type: Note with Status: Executed and the merge hash in Ingest Commit — from chat, never from a session (rule 11).
