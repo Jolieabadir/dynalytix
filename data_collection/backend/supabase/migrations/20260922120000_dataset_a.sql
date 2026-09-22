@@ -125,10 +125,24 @@ ALTER TABLE public.frame_tags
 -- only user writing to their own moves, so one-per-move still holds there.
 -- ---------------------------------------------------------------------------
 ALTER TABLE public.environments DROP CONSTRAINT IF EXISTS environments_move_id_key;
-ALTER TABLE public.environments ADD CONSTRAINT environments_move_user_key UNIQUE (move_id, user_id);
+ALTER TABLE public.outcomes     DROP CONSTRAINT IF EXISTS outcomes_move_id_key;
 
-ALTER TABLE public.outcomes DROP CONSTRAINT IF EXISTS outcomes_move_id_key;
-ALTER TABLE public.outcomes ADD CONSTRAINT outcomes_move_user_key UNIQUE (move_id, user_id);
+-- ADD CONSTRAINT has no IF NOT EXISTS; guard it so a manual re-run is a no-op.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'environments_move_user_key'
+    ) THEN
+        ALTER TABLE public.environments
+            ADD CONSTRAINT environments_move_user_key UNIQUE (move_id, user_id);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'outcomes_move_user_key'
+    ) THEN
+        ALTER TABLE public.outcomes
+            ADD CONSTRAINT outcomes_move_user_key UNIQUE (move_id, user_id);
+    END IF;
+END $$;
 
 -- =============================================================================
 -- Row Level Security
@@ -202,6 +216,21 @@ CREATE POLICY videos_update ON public.videos FOR UPDATE
     WITH CHECK (auth.uid() = user_id OR public.is_admin());
 CREATE POLICY videos_delete ON public.videos FOR DELETE
     USING (auth.uid() = user_id OR public.is_admin());
+
+-- dataset and prep_status are set only by the API's admin routes (whose DB
+-- role bypasses RLS and is not `authenticated`). Column privileges compose
+-- with RLS, but a column-level REVOKE is a no-op while the role still holds
+-- the table-level UPDATE Supabase grants by default; so drop the table-level
+-- privilege and grant back exactly the columns a signed-in user may change.
+-- Neither the frontend nor the API updates videos through PostgREST, so this
+-- narrows nothing that is in use.
+REVOKE UPDATE ON public.videos FROM authenticated, anon;
+GRANT UPDATE (
+    filename, fps, total_frames, duration_ms, width, height,
+    r2_video_key, r2_pose_csv_key, r2_export_key,
+    route_grade, wall_type, climber_experience, climber_height_cm,
+    climber_ape_index_cm, camera_angle, gym, notes
+) ON public.videos TO authenticated;
 
 -- holds: readable by whoever can read the video; writable by the owner while
 -- the video is a draft, or by an admin at any time.
@@ -279,9 +308,12 @@ CREATE POLICY frame_tags_update ON public.frame_tags FOR UPDATE
 CREATE POLICY frame_tags_delete ON public.frame_tags FOR DELETE
     USING (auth.uid() = user_id OR public.is_admin());
 
--- rater_profiles: a user reads and creates their own row; tier / is_admin /
--- validation_note can only be set by an admin (a self-insert or self-update
--- must leave them at their non-privileged values).
+-- rater_profiles: a user reads, creates and edits their own row. tier /
+-- validation_note / is_admin are admin-only and enforced by column
+-- privileges (below), not by the policy, so a validated rater can still
+-- rename themself: the policy is simply "your own row". Admins change the
+-- privileged columns through the API (PUT /api/admin/raters/{id}), whose DB
+-- role is not `authenticated`.
 ALTER TABLE public.rater_profiles ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS rater_profiles_select ON public.rater_profiles;
 DROP POLICY IF EXISTS rater_profiles_insert ON public.rater_profiles;
@@ -290,21 +322,31 @@ DROP POLICY IF EXISTS rater_profiles_delete ON public.rater_profiles;
 CREATE POLICY rater_profiles_select ON public.rater_profiles FOR SELECT
     USING (auth.uid() = user_id OR public.is_admin());
 CREATE POLICY rater_profiles_insert ON public.rater_profiles FOR INSERT
-    WITH CHECK (
-        public.is_admin()
-        OR (auth.uid() = user_id AND is_admin = false AND tier = 'open' AND validation_note IS NULL)
-    );
+    WITH CHECK (auth.uid() = user_id);
 CREATE POLICY rater_profiles_update ON public.rater_profiles FOR UPDATE
-    USING (auth.uid() = user_id OR public.is_admin())
-    WITH CHECK (
-        public.is_admin()
-        OR (auth.uid() = user_id AND is_admin = false AND tier = 'open' AND validation_note IS NULL)
-    );
+    USING (auth.uid() = user_id)
+    WITH CHECK (auth.uid() = user_id);
 CREATE POLICY rater_profiles_delete ON public.rater_profiles FOR DELETE
     USING (public.is_admin());
 
--- video_assignments: a rater sees their own; only an admin creates or deletes;
--- a rater may update their own row (status transitions).
+-- Column privileges: a self-insert relies on the column DEFAULTs for tier
+-- ('open'), is_admin (false) and validation_note (NULL); a self-update may
+-- not name them at all. Table-level INSERT/UPDATE is revoked first because a
+-- column-level REVOKE alone does nothing while the table-level grant stands.
+REVOKE INSERT, UPDATE ON public.rater_profiles FROM authenticated, anon;
+GRANT INSERT (
+    user_id, display_name, years_climbing, coaching_cert, highest_grade,
+    research_background, created_at
+) ON public.rater_profiles TO authenticated;
+GRANT UPDATE (
+    display_name, years_climbing, coaching_cert, highest_grade, research_background
+) ON public.rater_profiles TO authenticated;
+
+-- video_assignments: a rater sees their own; every write is admin-only. The
+-- rater's status transitions (assigned -> in_progress -> done) go through the
+-- API (/api/assignments/{id}/start|complete), whose DB role bypasses RLS and
+-- validates them. A rater-writable row would let them re-point video_id at
+-- any video (and so read it) or mark themself done without validation.
 ALTER TABLE public.video_assignments ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS video_assignments_select ON public.video_assignments;
 DROP POLICY IF EXISTS video_assignments_insert ON public.video_assignments;
@@ -315,7 +357,7 @@ CREATE POLICY video_assignments_select ON public.video_assignments FOR SELECT
 CREATE POLICY video_assignments_insert ON public.video_assignments FOR INSERT
     WITH CHECK (public.is_admin());
 CREATE POLICY video_assignments_update ON public.video_assignments FOR UPDATE
-    USING (auth.uid() = rater_user_id OR public.is_admin())
-    WITH CHECK (auth.uid() = rater_user_id OR public.is_admin());
+    USING (public.is_admin())
+    WITH CHECK (public.is_admin());
 CREATE POLICY video_assignments_delete ON public.video_assignments FOR DELETE
     USING (public.is_admin());

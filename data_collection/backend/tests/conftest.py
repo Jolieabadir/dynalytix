@@ -49,8 +49,16 @@ def dsn() -> str:
 
 @pytest.fixture(scope='session')
 def db(dsn):
-    """A Database on a freshly migrated schema."""
+    """A Database on a freshly migrated schema.
+
+    Re-applies scripts/auth_shim.sql first (idempotent) so a scratch database
+    built before the shim grew the anon / authenticated roles still has them;
+    the Dataset A migration grants and revokes privileges on those roles and
+    tests/test_rls_dataset_a.py impersonates them.
+    """
     database = Database(dsn)
+    with database.get_connection() as conn:
+        conn.execute((BACKEND_ROOT / 'scripts' / 'auth_shim.sql').read_text())
     database.apply_schema_sql()
     yield database
     database.close()
