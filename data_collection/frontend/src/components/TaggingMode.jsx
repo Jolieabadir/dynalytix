@@ -89,7 +89,18 @@ function TaggingMode() {
     setCurrentMove,
     config: storeConfig,
     setHolds,
+    videoPlaybackUrl,
+    readOnlyStructure,
+    currentAssignment,
   } = useStore();
+
+  // Rating view (Dataset A): no export, "back" goes to the canonical list, and
+  // once the assignment is done (or the video closed) tags are view-only —
+  // the API returns 403 for writes at that point, so the buttons say so first.
+  const rating = Boolean(readOnlyStructure);
+  const labelsLocked =
+    rating &&
+    (currentAssignment?.status === 'done' || currentVideo?.prep_status === 'closed');
 
   const [config, setConfigState] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -244,6 +255,7 @@ function TaggingMode() {
   };
 
   const handleTagButtonClick = (tagTypeId) => {
+    if (labelsLocked) return;
     setSelectedTagType(tagTypeId);
     setShowTagForm(true);
     setSelectedLocations([]);
@@ -307,6 +319,7 @@ function TaggingMode() {
   };
 
   const handleDeleteTag = async (tagId) => {
+    if (labelsLocked) return;
     if (!window.confirm('Delete this tag?')) return;
 
     try {
@@ -424,11 +437,24 @@ function TaggingMode() {
       {/* Header */}
       <div className="tagging-header">
         <div className="header-buttons">
-          <button onClick={handleNextMove} className="back-btn save-next-btn">
-            Save & Next Move →
-          </button>
-          <DoneButton onClick={handleDone} disabled={exporting} />
-          {exporting && <span className="exporting-text">Exporting...</span>}
+          {rating ? (
+            <button onClick={handleNextMove} className="back-btn save-next-btn">
+              ← Back to moves
+            </button>
+          ) : (
+            <>
+              <button onClick={handleNextMove} className="back-btn save-next-btn">
+                Save & Next Move →
+              </button>
+              <DoneButton onClick={handleDone} disabled={exporting} />
+              {exporting && <span className="exporting-text">Exporting...</span>}
+            </>
+          )}
+          {labelsLocked && (
+            <span className="locked-note" role="note">
+              Rating submitted — tags are read-only.
+            </span>
+          )}
         </div>
         <div className="move-info">
           <h2>
@@ -450,7 +476,9 @@ function TaggingMode() {
             <video
               ref={videoRef}
               src={
-                videoBlobUrl || `${API_BASE_URL}/videos/${currentVideo.filename}`
+                videoBlobUrl ||
+                videoPlaybackUrl ||
+                `${API_BASE_URL}/videos/${currentVideo.filename}`
               }
               loop
             />
@@ -531,6 +559,7 @@ function TaggingMode() {
                   className={`tag-button ${selectedTagType === id ? 'selected' : ''}`}
                   style={{ '--tag-color': getTagColor(id) }}
                   onClick={() => handleTagButtonClick(id)}
+                  disabled={labelsLocked}
                 >
                   <span className="tag-emoji">{getTagEmoji(id)}</span>
                   <span className="tag-label">{label}</span>
@@ -691,13 +720,15 @@ function TaggingMode() {
                       </div>
                       {tag.note && <div className="tag-note">{tag.note}</div>}
                     </div>
-                    <button
-                      className="delete-tag-btn"
-                      onClick={() => handleDeleteTag(tag.id)}
-                      title="Delete tag"
-                    >
-                      ✕
-                    </button>
+                    {!labelsLocked && (
+                      <button
+                        className="delete-tag-btn"
+                        onClick={() => handleDeleteTag(tag.id)}
+                        title="Delete tag"
+                      >
+                        ✕
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>

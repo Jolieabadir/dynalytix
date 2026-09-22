@@ -3,12 +3,18 @@
  *
  * Displays all completed moves for the current video.
  * Updated for three-lens schema: shows approach/size/move_tags and outcome.
+ *
+ * Dataset A: with `readOnly` the list is the canonical set — no delete, and a
+ * card opens the rater's three-lens form through `onSelect` instead. Also
+ * used by an owner on a locked (ready/closed) video, whose moves the API
+ * refuses to change. `labelStatus` ({ [moveId]: { environment, outcome } })
+ * shows which moves this rater has finished.
  */
 import { useEffect } from 'react';
 import useStore from '../store/useStore';
-import { getMoves, deleteMove, getEnvironmentForMove, getOutcomeForMove } from '../api/client';
+import { getMoves, deleteMove } from '../api/client';
 
-function MovesList() {
+function MovesList({ readOnly = false, onSelect = null, labelStatus = null }) {
   const { currentVideo, moves, setMoves, setCurrentMove, setMode } = useStore();
 
   // Load moves when video changes
@@ -52,20 +58,25 @@ function MovesList() {
 
   return (
     <div className="moves-list">
-      <h3>Completed Moves</h3>
+      <h3>{readOnly ? 'Canonical Moves' : 'Completed Moves'}</h3>
 
       {moves.length === 0 ? (
         <p className="no-moves">
-          No moves created yet. Mark start/end frames to create a move.
+          {readOnly
+            ? 'This video has no canonical moves yet.'
+            : 'No moves created yet. Mark start/end frames to create a move.'}
         </p>
       ) : (
         <div className="moves-container">
-          {moves.map((move) => (
+          {moves.map((move, index) => (
             <MoveCard
               key={move.id}
               move={move}
+              index={index}
               onAddTags={handleAddFrameTags}
-              onDelete={handleDelete}
+              onDelete={readOnly ? null : handleDelete}
+              onSelect={onSelect}
+              status={labelStatus?.[move.id] ?? null}
             />
           ))}
         </div>
@@ -75,7 +86,7 @@ function MovesList() {
 }
 
 // Individual move card component
-function MoveCard({ move, onAddTags, onDelete }) {
+function MoveCard({ move, index, onAddTags, onDelete, onSelect, status }) {
   const formatLabel = (str) => {
     if (!str) return '';
     return str
@@ -117,11 +128,29 @@ function MoveCard({ move, onAddTags, onDelete }) {
     return move.move_tags.map(formatLabel).join(', ');
   };
 
+  const rated = status ? status.environment && status.outcome : null;
+
   return (
-    <div className="move-card">
+    <div
+      className={`move-card ${onSelect ? 'selectable' : ''} ${rated ? 'rated' : ''}`}
+      data-testid={`move-card-${move.id}`}
+    >
       <div className="move-header">
-        <h4>{getMoveDescription()}</h4>
+        <h4>
+          {index != null && onSelect ? `${index + 1}. ` : ''}
+          {getMoveDescription()}
+        </h4>
         <div className="move-actions">
+          {onSelect && (
+            <button
+              type="button"
+              onClick={() => onSelect(move)}
+              className="btn-primary btn-rate"
+              title="Open the rating form for this move"
+            >
+              {rated ? 'Edit rating' : 'Rate'}
+            </button>
+          )}
           <button
             onClick={() => onAddTags(move)}
             className="btn-tag"
@@ -129,15 +158,28 @@ function MoveCard({ move, onAddTags, onDelete }) {
           >
             Tag Frames
           </button>
-          <button
-            onClick={() => onDelete(move.id)}
-            className="btn-delete"
-            title="Delete move"
-          >
-            ✕
-          </button>
+          {onDelete && (
+            <button
+              onClick={() => onDelete(move.id)}
+              className="btn-delete"
+              title="Delete move"
+            >
+              ✕
+            </button>
+          )}
         </div>
       </div>
+
+      {status && (
+        <div className="rating-status" data-testid={`rating-status-${move.id}`}>
+          <span className={status.environment ? 'lens-done' : 'lens-missing'}>
+            {status.environment ? '✓' : '○'} Environment
+          </span>
+          <span className={status.outcome ? 'lens-done' : 'lens-missing'}>
+            {status.outcome ? '✓' : '○'} Outcome
+          </span>
+        </div>
+      )}
 
       <div className="move-details">
         {/* Move Tags */}

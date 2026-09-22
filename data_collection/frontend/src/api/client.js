@@ -358,4 +358,193 @@ export const deleteFrameTag = async (tagId) => {
   await api.delete(`/api/frame-tags/${tagId}`);
 };
 
+// ==================== PLAYBACK ====================
+
+/**
+ * Presigned URL for the original video, for a video that was not uploaded in
+ * this session — a rater's assignment, or an owner's reload. Resolves to null
+ * (rather than throwing) when no original was ever uploaded, because the pose
+ * CSV can exist without it and the labeling UI still works on the skeleton.
+ */
+export const getVideoPlaybackUrl = async (videoId) => {
+  try {
+    const response = await api.get(`/api/videos/${videoId}/video-url`);
+    return response.data?.url ?? null;
+  } catch (err) {
+    if (err.response?.status === 404) return null;
+    throw err;
+  }
+};
+
+// ==================== RATER PROFILE (Dataset A) ====================
+
+/** The caller's rater profile, or null on 404 — which is what opens the gate. */
+export const getMyProfile = async () => {
+  try {
+    const response = await api.get('/api/me/profile');
+    return response.data;
+  } catch (err) {
+    if (err.response?.status === 404) return null;
+    throw err;
+  }
+};
+
+export const createMyProfile = async (profile) => {
+  const response = await api.post('/api/me/profile', profile);
+  return response.data;
+};
+
+export const updateMyProfile = async (fields) => {
+  const response = await api.put('/api/me/profile', fields);
+  return response.data;
+};
+
+// ==================== RATER QUEUE (Dataset A) ====================
+
+/** `[{ assignment, video, move_count }]`, oldest first. */
+export const getMyAssignments = async () => {
+  const response = await api.get('/api/me/assignments');
+  return response.data;
+};
+
+export const startAssignment = async (assignmentId) => {
+  const response = await api.post(`/api/assignments/${assignmentId}/start`);
+  return response.data;
+};
+
+/**
+ * Mark an assignment done. Resolves to the assignment on 200. On 422 the
+ * server lists what is missing; that is a normal outcome here, not an
+ * exception, so it comes back as `{ incomplete: true, detail, missing }`.
+ */
+export const completeAssignment = async (assignmentId) => {
+  try {
+    const response = await api.post(`/api/assignments/${assignmentId}/complete`);
+    return { incomplete: false, assignment: response.data };
+  } catch (err) {
+    if (err.response?.status === 422 && Array.isArray(err.response.data?.missing)) {
+      return {
+        incomplete: true,
+        detail: err.response.data.detail,
+        missing: err.response.data.missing,
+      };
+    }
+    throw err;
+  }
+};
+
+export const deleteEnvironment = async (envId) => {
+  await api.delete(`/api/environments/${envId}`);
+};
+
+export const deleteOutcome = async (outcomeId) => {
+  await api.delete(`/api/outcomes/${outcomeId}`);
+};
+
+// ==================== ADMIN (Dataset A) ====================
+
+/** `[{ video, assignment_count, done_count }]`, newest first. Admin only. */
+export const adminListVideos = async () => {
+  const response = await api.get('/api/admin/videos');
+  return response.data;
+};
+
+export const adminUpdateVideoMetadata = async (videoId, fields) => {
+  const response = await api.put(`/api/admin/videos/${videoId}/metadata`, fields);
+  return response.data;
+};
+
+export const adminMarkReady = async (videoId) => {
+  const response = await api.post(`/api/admin/videos/${videoId}/ready`);
+  return response.data;
+};
+
+export const adminCloseVideo = async (videoId) => {
+  const response = await api.post(`/api/admin/videos/${videoId}/close`);
+  return response.data;
+};
+
+export const adminReopenVideo = async (videoId) => {
+  const response = await api.post(`/api/admin/videos/${videoId}/reopen`);
+  return response.data;
+};
+
+export const adminListAssignments = async (videoId) => {
+  const response = await api.get('/api/admin/assignments', {
+    params: videoId != null ? { video_id: videoId } : {},
+  });
+  return response.data;
+};
+
+export const adminCreateAssignment = async ({ video_id, rater_user_id, cohort }) => {
+  const response = await api.post('/api/admin/assignments', { video_id, rater_user_id, cohort });
+  return response.data;
+};
+
+export const adminDeleteAssignment = async (assignmentId) => {
+  await api.delete(`/api/admin/assignments/${assignmentId}`);
+};
+
+export const adminListRaters = async () => {
+  const response = await api.get('/api/admin/raters');
+  return response.data;
+};
+
+export const adminUpdateRater = async (userId, fields) => {
+  const response = await api.put(`/api/admin/raters/${userId}`, fields);
+  return response.data;
+};
+
+/**
+ * Download an admin export as a file.
+ *
+ * The export endpoints are plain authenticated GETs — not presigned, so a
+ * bare link would 401. Fetch with the bearer token, read the body as a blob,
+ * and hand it to the browser through a temporary object URL. The filename
+ * comes from Content-Disposition when the server sends one.
+ *
+ * `saveBlob` is injectable so a test can capture the blob instead of touching
+ * the DOM's download machinery.
+ *
+ * @param {'long'|'full'} kind
+ * @param {{dataset?: 'A'|'B'|'all', video_id?: number}} [params]
+ */
+export const downloadAdminExport = async (kind, params = {}, saveBlob = saveBlobAsFile) => {
+  const headers = await authHeader();
+  const query = new URLSearchParams();
+  if (params.dataset) query.set('dataset', params.dataset);
+  if (params.video_id != null) query.set('video_id', String(params.video_id));
+  const suffix = query.toString() ? `?${query}` : '';
+
+  const response = await fetch(`${API_BASE_URL}/api/admin/export/${kind}${suffix}`, { headers });
+  if (!response.ok) {
+    let detail = '';
+    try {
+      detail = (await response.json())?.detail || '';
+    } catch {
+      // Not JSON; the status is the message.
+    }
+    throw new Error(detail || `Export failed (${response.status})`);
+  }
+
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename="?([^";]+)"?/);
+  const filename = match ? match[1] : `dynalytix_${kind}.csv`;
+  const blob = await response.blob();
+  saveBlob(blob, filename);
+  return filename;
+};
+
+function saveBlobAsFile(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  // Give the click a tick to start before the URL goes away.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export default api;

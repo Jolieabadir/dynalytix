@@ -20,6 +20,7 @@ import { fpsOf, frameToTime, frameToMs } from '../utils/frames';
 import { optionLabel, optionDescription } from '../utils/taxonomy';
 import { suggestHoldSlots } from '../services/holdAssignment';
 import InfoTip from './InfoTip';
+import { EnvironmentLens, OutcomeLens, RadioGroup } from './LensFields';
 import { createMove, createEnvironment, createOutcome, deleteMove } from '../api/client';
 
 // Form quality anchor text. Not taxonomy — these are scale anchors for a
@@ -336,23 +337,10 @@ function MoveForm() {
       ? frameToTime(frameCount, fps).toFixed(2)
       : '0.00';
 
-  /** One radio group, every option with its definition. */
-  const radioGroup = (taxonomyKey, name, value, onChange, options) => (
-    <div className="radio-group">
-      {(options ?? config[taxonomyKey] ?? []).map((opt) => (
-        <label key={opt} className="radio-label">
-          <input
-            type="radio"
-            name={name}
-            value={opt}
-            checked={value === opt}
-            onChange={() => onChange(opt)}
-          />
-          <span>{optionLabel(config, taxonomyKey, opt)}</span>
-          <InfoTip text={optionDescription(config, taxonomyKey, opt)} />
-        </label>
-      ))}
-    </div>
+  // The lens field groups live in LensFields so the rating view renders the
+  // same controls; this form keeps the state and the validation.
+  const radioGroup = (taxonomyKey, name, value, onChange) => (
+    <RadioGroup config={config} taxonomyKey={taxonomyKey} name={name} value={value} onChange={onChange} />
   );
 
   return (
@@ -374,107 +362,18 @@ function MoveForm() {
         {error && <div className="error-message">{error}</div>}
 
         {/* ---------- Lens 1: Environment ---------- */}
-        <div className="lens-section">
-          <h3 className="lens-title">🏔️ Environment</h3>
-
-          <div className="form-field">
-            <label className="form-label">Wall Angle</label>
-            {radioGroup('wall_angles', 'wall_angle', wallAngle, setWallAngle)}
-          </div>
-
-          {noHandsSelected && (
-            <p className="field-disabled-note">
-              Hand holds are disabled — “No Hands” is tagged for this move.
-            </p>
-          )}
-
-          {SLOT_ORDER.map((slot) => {
-            const isHandSlot = slot !== 'foot';
-            if (noHandsSelected && isHandSlot) return null;
-            const s = slots[slot];
-            const picking = holdPickSlot?.slot === slot;
-
-            return (
-              <fieldset key={slot} className="hold-slot" data-testid={`hold-slot-${slot}`}>
-                <legend className="hold-slot-legend">
-                  {optionLabel(config, 'hold_slots', slot)}
-                  {slot === 'foot' && <span className="optional-flag"> (optional)</span>}
-                  <InfoTip text={optionDescription(config, 'hold_slots', slot)} />
-                  {s.suggested && (
-                    <span className="suggested-flag" title="Auto-suggested from the pose data — confirm or change it">
-                      suggested
-                    </span>
-                  )}
-                </legend>
-
-                <div className="hold-slot-pick">
-                  <button
-                    type="button"
-                    className={`pick-on-video-btn ${picking ? 'active' : ''}`}
-                    onClick={() =>
-                      setHoldPickSlot(picking ? null : { slot, assignedHoldId: null })
-                    }
-                  >
-                    {picking ? 'Click a box on the video…' : 'Pick on video'}
-                  </button>
-                  {s.hold_id != null && (
-                    <span className="picked-hold">
-                      Hold #{s.hold_id}
-                      <button
-                        type="button"
-                        className="unpick-btn"
-                        onClick={() => updateSlot(slot, { hold_id: null })}
-                        aria-label={`Unassign the hold from ${slot}`}
-                      >
-                        ✕
-                      </button>
-                    </span>
-                  )}
-                </div>
-
-                <div className="form-field">
-                  <label className="form-label">Hold Type</label>
-                  <div className="radio-group">
-                    {(config.hold_types ?? []).map((type) => (
-                      <label key={type} className="radio-label">
-                        <input
-                          type="radio"
-                          name={`${slot}_hold_type`}
-                          value={type}
-                          checked={s.hold_type === type}
-                          onChange={() => updateSlot(slot, { hold_type: type })}
-                        />
-                        <span>{optionLabel(config, 'hold_types', type)}</span>
-                        <InfoTip text={optionDescription(config, 'hold_types', type)} />
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="form-field">
-                  <label className="form-label">Hold Quality</label>
-                  <div className="checkbox-group">
-                    {(config.hold_qualities ?? []).map((quality) => (
-                      <label key={quality} className="checkbox-label">
-                        <input
-                          type="checkbox"
-                          checked={(s.hold_quality || []).includes(quality)}
-                          onChange={() => toggleSlotQuality(slot, quality)}
-                        />
-                        <span>{optionLabel(config, 'hold_qualities', quality)}</span>
-                        <InfoTip text={optionDescription(config, 'hold_qualities', quality)} />
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                <button type="button" className="clear-slot-btn" onClick={() => clearSlot(slot)}>
-                  Clear this slot
-                </button>
-              </fieldset>
-            );
-          })}
-        </div>
+        <EnvironmentLens
+          config={config}
+          wallAngle={wallAngle}
+          onWallAngle={setWallAngle}
+          slots={slots}
+          holdPickSlot={holdPickSlot}
+          onPickSlot={setHoldPickSlot}
+          onUpdateSlot={updateSlot}
+          onToggleQuality={toggleSlotQuality}
+          onClearSlot={clearSlot}
+          noHands={noHandsSelected}
+        />
 
         {/* ---------- Lens 2: Strategy ---------- */}
         <div className="lens-section">
@@ -566,27 +465,15 @@ function MoveForm() {
         </div>
 
         {/* ---------- Lens 3: Outcome ---------- */}
-        <div className="lens-section">
-          <h3 className="lens-title">📊 Outcome</h3>
-
-          <div className="form-field">
-            <label className="form-label">Result</label>
-            {radioGroup('results', 'result', result, setResult)}
-          </div>
-
-          <div className="form-field">
-            <label className="form-label">Reach Detail</label>
-            {radioGroup('reach_details', 'reach_detail', reachDetail, setReachDetail)}
-          </div>
-
-          <div className="form-field">
-            <label className="form-label">
-              Confidence
-              <InfoTip text="How confident you are in the labels you just gave — not how confident the climber looked." />
-            </label>
-            {radioGroup('confidence_levels', 'confidence', confidence, setConfidence)}
-          </div>
-        </div>
+        <OutcomeLens
+          config={config}
+          result={result}
+          onResult={setResult}
+          reachDetail={reachDetail}
+          onReachDetail={setReachDetail}
+          confidence={confidence}
+          onConfidence={setConfidence}
+        />
       </div>
 
       <div className="move-form-footer">

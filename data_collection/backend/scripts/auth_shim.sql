@@ -43,3 +43,35 @@ AS $$
     'anon'
   );
 $$;
+
+-- ---------------------------------------------------------------------------
+-- The PostgREST roles. Supabase creates `anon` and `authenticated` and gives
+-- them privileges on every new table in public via default privileges; the
+-- Dataset A migration REVOKEs / GRANTs column privileges from them and the
+-- RLS tests impersonate them with:
+--
+--     SET ROLE authenticated;
+--     SET request.jwt.claims = '{"sub":"<uuid>","role":"authenticated"}';
+--
+-- Idempotent: safe to apply again to an existing scratch database.
+-- ---------------------------------------------------------------------------
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        CREATE ROLE anon NOLOGIN;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        CREATE ROLE authenticated NOLOGIN;
+    END IF;
+END $$;
+
+GRANT USAGE ON SCHEMA public, auth TO anon, authenticated;
+-- Tables that already exist (a scratch database built before this shim grew
+-- the roles): grant now; the Dataset A migration revokes on top of this.
+GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated;
+-- Tables the migrations create from here on get the same broad grants
+-- Supabase applies, so the migration's REVOKEs mean what they mean there.
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO anon, authenticated;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO anon, authenticated;

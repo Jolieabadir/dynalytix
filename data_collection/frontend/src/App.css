@@ -2232,3 +2232,465 @@ body {
   font-size: 11px;
   opacity: 0.6;
 }
+
+/* ==================== Dataset A: nav, queue, rating, admin ==================== */
+
+.app-nav {
+  display: flex;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+}
+
+.app-nav-tab {
+  padding: 0.45rem 0.9rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-full, 999px);
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-normal);
+}
+
+.app-nav-tab:hover {
+  background: var(--primary-soft);
+}
+
+.app-nav-tab.active {
+  background: var(--gradient-button);
+  color: white;
+  box-shadow: var(--shadow-soft);
+}
+
+.app-nav-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0 0.45rem;
+  border-radius: var(--radius-full, 999px);
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--primary-dark);
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+.app-nav-tab:not(.active) .app-nav-badge {
+  background: var(--primary);
+  color: white;
+}
+
+.tier-badge {
+  margin-left: 0.4rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: var(--radius-full, 999px);
+  background: var(--success-soft);
+  color: var(--accent-sage-dark);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.profile-card {
+  max-width: 480px;
+}
+
+.profile-card .checkbox-label {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.view-header {
+  padding: var(--space-xl) var(--space-xl) 0;
+}
+
+.view-header h2 {
+  margin: 0 0 0.25rem;
+}
+
+.view-subtitle {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  max-width: 70ch;
+}
+
+.queue-view,
+.admin-view,
+.rating-view.loading {
+  padding-bottom: var(--space-2xl);
+}
+
+.queue-empty {
+  margin: var(--space-lg) var(--space-xl);
+  color: var(--text-muted);
+}
+
+.data-table {
+  width: calc(100% - 2 * var(--space-xl));
+  margin: var(--space-lg) var(--space-xl);
+  border-collapse: separate;
+  border-spacing: 0;
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  font-size: 0.9rem;
+}
+
+.data-table th,
+.data-table td {
+  padding: 0.6rem 0.9rem;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.data-table thead th {
+  background: var(--bg-warm);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.data-table .cell-primary {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.cell-sub {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 400;
+}
+
+.cell-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.cell-actions .btn-primary,
+.cell-actions .btn-secondary,
+.queue-table .btn-primary,
+.admin-raters-table .btn-primary,
+.assign-form .btn-primary {
+  padding: 0.35rem 0.8rem;
+  font-size: 0.85rem;
+}
+
+.status-pill {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: var(--radius-full, 999px);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: capitalize;
+  background: var(--bg-warm);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-light);
+}
+
+.status-pill.status-in_progress,
+.status-pill.prep-ready {
+  background: var(--warning-soft);
+  color: #8a6d3b;
+}
+
+.status-pill.status-done,
+.status-pill.prep-closed {
+  background: var(--success-soft);
+  color: var(--accent-sage-dark);
+}
+
+.rating-strip .progress-counts strong {
+  color: white;
+}
+
+.rating-strip .status-pill {
+  margin-left: 0.25rem;
+}
+
+.locked-note {
+  font-size: 0.85rem;
+  color: var(--accent-gold);
+  font-weight: 600;
+}
+
+.saved-note {
+  margin: 0.75rem 1rem;
+  padding: 0.5rem 0.9rem;
+  background: var(--success-soft);
+  border: 1px solid var(--success);
+  border-radius: var(--radius-md);
+  color: var(--accent-sage-dark);
+  font-size: 0.9rem;
+}
+
+.move-form-content .saved-note {
+  margin: 0 0 0.75rem;
+}
+
+.complete-error {
+  margin: 0.75rem 1rem;
+}
+
+.missing-list {
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--primary-dark);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.move-card.selectable {
+  cursor: default;
+}
+
+.move-card.rated {
+  border-left-color: var(--accent-sage);
+}
+
+.btn-rate {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.8rem;
+}
+
+.rating-status {
+  display: flex;
+  gap: 0.75rem;
+  margin: 0.25rem 0 0.5rem;
+  font-size: 0.8rem;
+}
+
+.rating-status .lens-done {
+  color: var(--accent-sage-dark);
+  font-weight: 600;
+}
+
+.rating-status .lens-missing {
+  color: var(--text-muted);
+}
+
+.strategy-summary .readonly-flag {
+  margin-left: 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.strategy-summary-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 0.9rem;
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.strategy-summary-grid dt {
+  color: var(--text-muted);
+}
+
+.strategy-summary-grid dd {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.hold-select {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--bg-input);
+  font-size: 0.85rem;
+  color: var(--text-primary);
+}
+
+.hold-overlay.readonly .hold-box {
+  cursor: default;
+}
+
+.hold-overlay.readonly.picking .hold-box {
+  cursor: pointer;
+}
+
+.move-selection-controls.readonly {
+  justify-content: flex-start;
+}
+
+.video-meta-panel {
+  margin: 0.75rem 1rem 0;
+  padding: 0.6rem 0.9rem;
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+}
+
+.video-meta-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.video-meta-title {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.video-meta-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.video-meta-actions .btn-primary,
+.video-meta-actions .btn-secondary {
+  padding: 0.35rem 0.8rem;
+  font-size: 0.85rem;
+}
+
+.video-meta-panel .onboarding-banner,
+.video-meta-panel .error-message,
+.video-meta-panel .saved-note {
+  margin: 0.6rem 0 0;
+}
+
+.video-meta-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.6rem 1rem;
+  margin-top: 0.75rem;
+}
+
+.video-meta-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.85rem;
+}
+
+.video-meta-field .auth-input {
+  padding: 0.4rem 0.6rem;
+  font-size: 0.9rem;
+}
+
+.video-meta-value {
+  color: var(--text-primary);
+}
+
+.video-meta-footer {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.admin-section {
+  margin-top: var(--space-lg);
+}
+
+.admin-section h3 {
+  margin: 0 var(--space-xl) 0.25rem;
+}
+
+.admin-exports .export-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin: 0.5rem var(--space-xl) 0.25rem;
+}
+
+.admin-exports .cell-sub {
+  display: block;
+  margin: 0 var(--space-xl);
+}
+
+.admin-exports label,
+.assign-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.admin-exports select,
+.assign-form select,
+.admin-raters-table select {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--bg-input);
+  font-size: 0.9rem;
+  color: var(--text-primary);
+}
+
+.admin-assignments-row td {
+  background: var(--bg-warm);
+}
+
+.admin-assignments {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.assign-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.assignment-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.assignment-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.admin-raters-table .note-input {
+  width: 100%;
+  min-width: 180px;
+}
+
+@media (max-width: 900px) {
+  .app-header {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .data-table {
+    display: block;
+    overflow-x: auto;
+  }
+}

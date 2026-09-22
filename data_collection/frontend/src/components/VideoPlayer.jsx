@@ -62,10 +62,13 @@ function VideoPlayer() {
     moveStart,
     moveEnd,
     videoBlobUrl,
+    videoPlaybackUrl,
     csvData: storeCsvData,
     holds,
     showHoldOverlay,
     holdPickSlot,
+    readOnlyStructure,
+    currentMove,
     setCurrentFrame,
     setIsPlaying,
     setMoveStart,
@@ -79,6 +82,11 @@ function VideoPlayer() {
   } = useStore();
 
   const fps = fpsOf(currentVideo);
+
+  // Rating view, or an owner on a locked video: holds and moves are the
+  // canonical set. The player still scrubs and picks holds; it just cannot
+  // draw, delete, or mark move boundaries.
+  const readOnly = Boolean(readOnlyStructure);
 
   // This session's extraction wins; anything else is fetched. Derived rather
   // than copied into state, so there is no effect that just mirrors the store.
@@ -154,11 +162,11 @@ function VideoPlayer() {
           break;
         case '[':
           e.preventDefault();
-          setMoveStart(currentFrame);
+          if (!readOnly) setMoveStart(currentFrame);
           break;
         case ']':
           e.preventDefault();
-          setMoveEnd(currentFrame);
+          if (!readOnly) setMoveEnd(currentFrame);
           break;
         case 's':
         case 'S':
@@ -193,6 +201,7 @@ function VideoPlayer() {
     setShowHoldOverlay,
     holdPickSlot,
     setHoldPickSlot,
+    readOnly,
   ]);
 
   const handleCreateMove = () => {
@@ -236,7 +245,7 @@ function VideoPlayer() {
     <div className="video-player">
       <div className="video-container">
         <div className="video-wrapper">
-          <video ref={videoRef} src={videoBlobUrl || undefined} />
+          <video ref={videoRef} src={videoBlobUrl || videoPlaybackUrl || undefined} />
 
           {showSkeleton && csvData && (
             <SkeletonOverlay
@@ -253,6 +262,7 @@ function VideoPlayer() {
               onCreate={handleCreateHold}
               onDelete={handleDeleteHold}
               onPick={handlePickHold}
+              readOnly={readOnly}
             />
           )}
         </div>
@@ -291,9 +301,14 @@ function VideoPlayer() {
         </button>
       </div>
 
-      {showHoldOverlay && (
+      {showHoldOverlay && !readOnly && (
         <p className="hold-hint">
           Drag on the video to add a hold; click a hold to delete it.
+        </p>
+      )}
+      {showHoldOverlay && readOnly && (
+        <p className="hold-hint">
+          Holds are locked for this video. Use “Pick on video” in the form to choose one.
         </p>
       )}
 
@@ -318,8 +333,31 @@ function VideoPlayer() {
             style={{ left: `${(moveEnd / currentVideo.total_frames) * 100}%` }}
           />
         )}
+        {readOnly && currentMove && (
+          <>
+            <div
+              className="move-marker start"
+              style={{ left: `${(currentMove.frame_start / currentVideo.total_frames) * 100}%` }}
+            />
+            <div
+              className="move-marker end"
+              style={{ left: `${(currentMove.frame_end / currentVideo.total_frames) * 100}%` }}
+            />
+          </>
+        )}
       </div>
 
+      {readOnly ? (
+        <div className="move-selection-controls readonly" data-testid="move-selection-readonly">
+          {currentMove ? (
+            <span className="selection-info">
+              Move: frames {currentMove.frame_start} – {currentMove.frame_end}
+            </span>
+          ) : (
+            <span className="selection-info">Select a move from the list to rate it.</span>
+          )}
+        </div>
+      ) : (
       <div className="move-selection-controls">
         <button
           onClick={() => setMoveStart(currentFrame)}
@@ -345,6 +383,7 @@ function VideoPlayer() {
           </>
         )}
       </div>
+      )}
     </div>
   );
 }

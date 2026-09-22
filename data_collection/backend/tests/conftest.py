@@ -1,9 +1,9 @@
 """
 Shared pytest fixtures.
 
-The suite runs against a real Postgres. It applies the v3 migration, which
-DROPS AND RECREATES the labeling tables - point TEST_DATABASE_URL at a
-throwaway database, never at production.
+The suite runs against a real Postgres. It applies every migration under
+supabase/migrations in order; the v3 base DROPS AND RECREATES the labeling
+tables - point TEST_DATABASE_URL at a throwaway database, never at production.
 
 R2 is exercised against the real bucket when credentials are present and
 working; otherwise an in-memory fake stands in.
@@ -49,8 +49,16 @@ def dsn() -> str:
 
 @pytest.fixture(scope='session')
 def db(dsn):
-    """A Database on a freshly migrated schema."""
+    """A Database on a freshly migrated schema.
+
+    Re-applies scripts/auth_shim.sql first (idempotent) so a scratch database
+    built before the shim grew the anon / authenticated roles still has them;
+    the Dataset A migration grants and revokes privileges on those roles and
+    tests/test_rls_dataset_a.py impersonates them.
+    """
     database = Database(dsn)
+    with database.get_connection() as conn:
+        conn.execute((BACKEND_ROOT / 'scripts' / 'auth_shim.sql').read_text())
     database.apply_schema_sql()
     yield database
     database.close()
@@ -61,7 +69,8 @@ def clean_db(db):
     """Truncate every data table so each test starts empty."""
     with db.get_connection() as conn:
         conn.execute(
-            'TRUNCATE frame_tags, outcomes, environments, moves, holds, videos '
+            'TRUNCATE frame_tags, outcomes, environments, moves, holds, videos, '
+            'video_assignments, rater_profiles '
             'RESTART IDENTITY CASCADE'
         )
     return db

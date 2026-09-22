@@ -7,14 +7,32 @@
  * build did.
  *
  *   no session  → AuthGate
- *   session     → load config → upload or label
+ *   session     → load config → load profile (404 → ProfileGate)
+ *               → load assignments → land on My queue if any, else My videos
+ *
+ * Dataset A adds the profile gate, the nav, "My queue" + the rating view, and
+ * the Admin view. "My videos" is the Dataset B flow and is unchanged.
  */
 import { useCallback, useEffect, useState } from 'react';
 import useStore from './store/useStore';
-import { getConfig } from './api/client';
+import {
+  getConfig,
+  getMyProfile,
+  getMyAssignments,
+  getVideoPlaybackUrl,
+  getHolds,
+  getVideoCsvText,
+} from './api/client';
+import { parsePoseCsv } from './utils/csv';
 import { exportVideo, getExportDownloadUrl } from './api/client';
 import { getSession, onAuthChange, signOut } from './api/auth';
 import AuthGate from './components/AuthGate';
+import ProfileGate from './components/ProfileGate';
+import AppNav from './components/AppNav';
+import MyQueue from './components/MyQueue';
+import RatingView from './components/RatingView';
+import AdminView from './components/AdminView';
+import VideoMetadataPanel from './components/VideoMetadataPanel';
 import VideoUpload from './components/VideoUpload';
 import VideoPlayer from './components/VideoPlayer';
 import MovesList from './components/MovesList';
@@ -32,9 +50,24 @@ function App() {
   const session = useStore((s) => s.session);
   const setSession = useStore((s) => s.setSession);
   const resetForSignOut = useStore((s) => s.resetForSignOut);
+  const profile = useStore((s) => s.profile);
+  const setProfile = useStore((s) => s.setProfile);
+  const setAssignments = useStore((s) => s.setAssignments);
+  const view = useStore((s) => s.view);
+  const setView = useStore((s) => s.setView);
+  const setCurrentAssignment = useStore((s) => s.setCurrentAssignment);
+  const resetVideoState = useStore((s) => s.resetVideoState);
+  const setCurrentVideo = useStore((s) => s.setCurrentVideo);
+  const setVideoPlaybackUrl = useStore((s) => s.setVideoPlaybackUrl);
+  const setHolds = useStore((s) => s.setHolds);
+  const setCsvData = useStore((s) => s.setCsvData);
 
   const [authChecked, setAuthChecked] = useState(false);
   const [configError, setConfigError] = useState(null);
+  // 'loading' | 'missing' (404 → gate) | 'ready' | 'error'
+  const [profileState, setProfileState] = useState('loading');
+  const [profileError, setProfileError] = useState(null);
+  const [landed, setLanded] = useState(false);
 
   // Read the persisted session once, then follow it.
   useEffect(() => {
@@ -50,7 +83,18 @@ function App() {
       .catch(() => active && setAuthChecked(true));
 
     const unsubscribe = onAuthChange((s) => {
-      setSession(s);
+      if (!s) {
+        // Expired or signed out elsewhere. Clear everything video-scoped the
+        // same way the sign-out button does, so a different user signing in
+        // on this tab never inherits the previous user's moves, holds,
+        // labels, profile or queue. The next sign-in re-runs the gate.
+        resetForSignOut();
+        setConfig(null);
+        setProfileState('loading');
+        setLanded(false);
+      } else {
+        setSession(s);
+      }
       setAuthChecked(true);
     });
 
@@ -58,7 +102,7 @@ function App() {
       active = false;
       unsubscribe();
     };
-  }, [setSession]);
+  }, [setSession, resetForSignOut, setConfig]);
 
   // Config needs the token, so it waits for the session.
   useEffect(() => {
@@ -83,11 +127,118 @@ function App() {
     };
   }, [session, setConfig]);
 
+  // Profile: the gate. Waits for the session like config does.
+  useEffect(() => {
+    // Signed out: handleSignOut already reset profileState/landed.
+    if (!session) return;
+    let active = true;
+    getMyProfile()
+      .then((p) => {
+        if (!active) return;
+        if (p) {
+          setProfile(p);
+          setProfileState('ready');
+        } else {
+          setProfileState('missing');
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to load profile:', error);
+        if (active) {
+          setProfileError(error.response?.data?.detail || error.message || 'Could not load your profile.');
+          setProfileState('error');
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [session, setProfile]);
+
+  // Landing: once the profile exists, load the queue; a rater with at least
+  // one assignment lands on it, everyone else on My videos (Dataset B).
+  useEffect(() => {
+    if (profileState !== 'ready' || landed) return;
+    let active = true;
+    getMyAssignments()
+      .then((items) => {
+        if (!active) return;
+        setAssignments(items);
+        if (items.length > 0) setView('queue');
+      })
+      .catch((error) => {
+        console.warn('Could not load assignments:', error);
+      })
+      .finally(() => active && setLanded(true));
+    return () => {
+      active = false;
+    };
+  }, [profileState, landed, setAssignments, setView]);
+
   const handleSignOut = useCallback(async () => {
     await signOut();
     resetForSignOut();
     setConfig(null);
+    setProfileState('loading');
+    setLanded(false);
   }, [resetForSignOut, setConfig]);
+
+  const handleProfileCreated = useCallback(
+    (p) => {
+      setProfile(p);
+      setProfileState('ready');
+    },
+    [setProfile]
+  );
+
+  /** From My queue: open one assignment in the rating view. */
+  const handleOpenAssignment = useCallback(
+    ({ assignment, video }) => {
+      resetVideoState();
+      setCurrentAssignment(assignment);
+      setCurrentVideo(video);
+      setView('rating');
+    },
+    [resetVideoState, setCurrentAssignment, setCurrentVideo, setView]
+  );
+
+  const handleExitRating = useCallback(() => {
+    resetVideoState();
+    setView('queue');
+  }, [resetVideoState, setView]);
+
+  /**
+   * From Admin: open any video in the prep (Define) flow. Nothing of it is in
+   * this session, so the holds, the pose rows and a playback URL are fetched
+   * the way the upload path would have produced them. Each is best-effort:
+   * a missing original still leaves the skeleton and the moves list usable.
+   */
+  const handleOpenVideoForPrep = useCallback(
+    async (video) => {
+      resetVideoState();
+      setCurrentVideo(video);
+      setView('videos');
+      const [holds, playbackUrl, csvText] = await Promise.all([
+        getHolds(video.id).catch((error) => {
+          console.warn('Could not load holds for video', video.id, error);
+          return [];
+        }),
+        getVideoPlaybackUrl(video.id).catch((error) => {
+          console.warn('No playback URL for video', video.id, error);
+          return null;
+        }),
+        getVideoCsvText(video.id).catch((error) => {
+          console.warn('No pose CSV for video', video.id, error);
+          return '';
+        }),
+      ]);
+      // The user may have moved on while these loaded.
+      if (useStore.getState().currentVideo?.id !== video.id) return;
+      setHolds(holds ?? []);
+      setVideoPlaybackUrl(playbackUrl);
+      setCsvData(parsePoseCsv(csvText));
+    },
+    [resetVideoState, setCurrentVideo, setView, setVideoPlaybackUrl, setHolds, setCsvData]
+  );
 
   if (!authChecked) {
     return (
@@ -115,12 +266,48 @@ function App() {
     );
   }
 
-  if (!config) {
+  if (profileState === 'error') {
+    return (
+      <div className="loading">
+        <h2>Dynalytix</h2>
+        <div className="error-message">
+          <p><strong>Could not load your rater profile.</strong></p>
+          <p>{profileError}</p>
+        </div>
+        <button className="btn-secondary" onClick={handleSignOut}>
+          Sign out
+        </button>
+      </div>
+    );
+  }
+
+  if (profileState === 'missing') {
+    return (
+      <ProfileGate
+        email={session.user?.email}
+        onCreated={handleProfileCreated}
+        onSignOut={handleSignOut}
+      />
+    );
+  }
+
+  if (!config || profileState !== 'ready' || !landed) {
     return (
       <div className="loading">
         <h2>Loading Dynalytix…</h2>
       </div>
     );
+  }
+
+  let body;
+  if (view === 'rating') {
+    body = <RatingView onExit={handleExitRating} />;
+  } else if (view === 'queue') {
+    body = <MyQueue onOpen={handleOpenAssignment} />;
+  } else if (view === 'admin' && profile?.is_admin) {
+    body = <AdminView onOpenVideo={handleOpenVideoForPrep} />;
+  } else {
+    body = mode === 'define' ? <DefineMode /> : <TaggingMode />;
   }
 
   return (
@@ -130,15 +317,19 @@ function App() {
           <h1>Dynalytix</h1>
           <p>Climbing Movement Data Collection</p>
         </div>
+        <AppNav />
         <div className="app-header-account">
-          <span className="account-email">{session.user?.email}</span>
+          <span className="account-email" title={session.user?.email}>
+            {profile?.display_name || session.user?.email}
+            {profile?.tier === 'validated' && <span className="tier-badge">validated</span>}
+          </span>
           <button type="button" className="signout-btn" onClick={handleSignOut}>
             Sign out
           </button>
         </div>
       </header>
 
-      {mode === 'define' ? <DefineMode /> : <TaggingMode />}
+      {body}
     </div>
   );
 }
@@ -150,6 +341,7 @@ function App() {
  */
 function DefineMode() {
   const currentVideo = useStore((s) => s.currentVideo);
+  const readOnlyStructure = useStore((s) => s.readOnlyStructure);
   const showMoveForm = useStore((s) => s.showMoveForm);
   const setShowMoveForm = useStore((s) => s.setShowMoveForm);
   const moveStart = useStore((s) => s.moveStart);
@@ -209,12 +401,18 @@ function DefineMode() {
         canSaveNext={moveStart !== null || moveEnd !== null || showMoveForm}
       />
 
-      <OnboardingBanner id={BANNER_DEFINE} />
+      <VideoMetadataPanel />
+
+      {!readOnlyStructure && <OnboardingBanner id={BANNER_DEFINE} />}
 
       <div className={`main-area ${showMoveForm ? 'with-panel' : ''}`}>
         <VideoPlayer />
         <div className="side-column">
-          {showMoveForm ? <MoveForm /> : <MovesList />}
+          {showMoveForm && !readOnlyStructure ? (
+            <MoveForm />
+          ) : (
+            <MovesList readOnly={readOnlyStructure} />
+          )}
         </div>
       </div>
 
