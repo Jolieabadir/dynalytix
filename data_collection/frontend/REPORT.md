@@ -1489,3 +1489,137 @@ Prerequisites: migration pushed (`supabase migration list` clean), backend deplo
 7. **Export.** Admin → *Export long CSV* (dataset A) → a file `dynalytix_long.csv` downloads; `python scripts/irr_alpha.py dynalytix_long.csv` runs on it. *Export full CSV* with dataset `all` → `dynalytix_full.csv`.
 8. **Raters panel.** Set A to `validated` with a note → *Save*; A's header badge reads *validated* after their next sign-in.
 9. **Close.** Admin → *Close* the video → rater B (not done) sees "This video is closed to rating" and cannot save. *Reopen* → `draft` again; the owner can edit structure.
+
+## 14. Server-side pose extraction (runbook-w1-worker)
+
+Branch `feat/server-pose-worker`, together with backend REPORT §11 and
+`data_collection/worker/`. **One feature unit — merge all three together, and
+only after the Modal app is deployed and `MODAL_ENDPOINT_URL` /
+`MODAL_WEBHOOK_SECRET` are set on Railway and the `pose_status` migration is
+pushed.** Backend §11.6 has the ordered steps.
+
+### 14.1 What changed for the labeler
+
+Pick a file and the player is there within a second, playing the local file
+(`playsInline`, so iPhone Safari does not go full-screen). The upload runs
+behind the UI with a percentage in a header chip; when it lands, the backend
+hands the clip to the worker and the chip walks through "Pose extraction
+queued" → "Extracting pose on the server…" → "Pose ready". At that moment
+the skeleton overlay switches on, hold suggestions start working, and
+"Finish & Export" (and Tagging mode's "Done") become enabled. Until then
+they are disabled with a tooltip saying why. If the worker fails, the chip
+turns red with the server's reason and a Retry button. Nothing about the
+browser matters any more: no MediaPipe download, no HEVC decode question, no
+"keep this tab open", no throttling when the tab is backgrounded.
+
+### 14.2 Per-file changes
+
+| File | Change |
+|---|---|
+| `src/services/PoseExtractor.js` | **Deleted** (browser MediaPipe, fps detection loop, monotonic detect clock, DecodeUnsupported/FrameCallbackUnsupported paths, visibilitychange pausing). |
+| `scripts/test_pose_extractor.mjs` | **Deleted** (tests of the detect clock). |
+| `package.json` / `package-lock.json` | `@mediapipe/tasks-vision` removed (`npm uninstall`); `test:extractor` script removed; `test` now runs `test:math` + `test:ui`. Bundle 293 kB (was larger with the WASM loader). `onnxruntime-web` stays: it belongs to the (off by default) hold detector. |
+| `src/services/poseMath.js` | `detectFps` and `KNOWN_FPS` removed (nothing measures fps in the browser now). Everything else stays: this file is the **CSV contract** the worker's `angles.py` reproduces byte for byte, and `normalizeLandmark(s)` is still used for hold matching. Header comment says so. |
+| `scripts/test_pose_math.mjs` | The six `detectFps` tests removed; the frame-index tests against the recorded `frame_times_*.json` fixtures and the golden-file test stay (55 pass). |
+| `src/utils/csv.js` | **New.** The one `parseCsv` (was duplicated in VideoUpload and VideoPlayer). |
+| `src/utils/videoMeta.js` | **New.** `readVideoMetadata(objectUrl)` (duration, videoWidth/Height from a detached `<video>`), `PROVISIONAL_FPS = 30`, `provisionalRegisterPayload(file, meta)`. |
+| `src/api/client.js` | `registerVideo` payload has no `csv_data`. **New** `putVideoToR2WithProgress` (XHR; fetch has no upload progress), `uploadOriginalVideo(videoId, file, {onProgress, signal})` returns the confirm body (which carries `pose_status`), `getPoseStatus`, `retryPose`, `getPoseCsvUrl`, `fetchPoseCsvText`. `getVideoCSV`/`getVideoCsvText` (the 307 dance against `/csv`) removed. |
+| `src/store/useStore.js` | `csvString` removed. **New** `patchCurrentVideo(fields)`, `upload {state, fraction, error}` + `setUpload`, `poseStatus` (last `/status` payload) + `setPoseStatus`; both reset on sign-out. |
+| `src/hooks/usePoseStatus.js` | **New.** The poll (5 s, stops on done/failed, survives transient errors). On done: patches `fps/total_frames/duration_ms/width/height` onto `currentVideo`, rescales saved moves + the `[ ]` selection + the play head if fps changed (moves via `PUT /api/moves/{id}` with frames recomputed from their timestamps), then fetches the CSV from its presigned URL into `csvData`. `retry()` calls `/retry-pose` and restarts the loop. Exports `rescaleFrame`, `movesToRescale`, `POLL_INTERVAL_MS`. |
+| `src/components/PoseStatusChip.jsx` | **New.** Header chip described above; owns the hook. |
+| `src/components/VideoUpload.jsx` | Rewritten: read metadata → register → hand over the player → `runBackgroundJobs` (upload with progress → confirm → seed `poseStatus` from the confirm body → hold detection if enabled). Upload/register errors are shown; the "processed locally / best on a computer" copy is gone. |
+| `src/components/VideoPlayer.jsx` | No CSV fetch of its own; reads `csvData` + `poseStatus` from the store. `SkeletonOverlay` renders only when `poseStatus.pose_status === 'done'` and rows exist; the skeleton toggle is disabled with "(waiting for pose)" until then. `<video playsInline>`. |
+| `src/components/ProgressStrip.jsx` | `canExport` / `exportBlockedReason` props → disabled + `title`. |
+| `src/App.jsx` | Renders `PoseStatusChip` in the header; computes `poseDone` and the blocked reason for `ProgressStrip`. |
+| `src/components/HoldSuggestions.jsx` | New reasons `waiting-for-pose` and `pose-failed`, shown until the CSV is in. |
+| `src/components/TaggingMode.jsx` / `DoneButton.jsx` | Done disabled with a tooltip until pose is done; `DoneButton` gets a separate `busy` prop; the stale `exportVideo(id, true)` second argument dropped. |
+| `src/App.css` | `.pose-chip*` styles. |
+| Tests | **New** `utils/csv.test.js`, `utils/videoMeta.test.js`, `hooks/usePoseStatus.test.jsx` (cadence with fake timers, stop on done/failed, retry restarts, fps rescale of moves/selection/play head, no rescale when fps unchanged, transient failure), `components/PoseStatusChip.test.jsx`, `components/ProgressStrip.test.jsx`, `components/VideoUpload.test.jsx` (player before upload completes, exact register payload without `csv_data`, progress into the store, confirm's failed enqueue surfaces, upload failure keeps the player, register failure stays on the picker, non-video rejected). |
+
+### 14.3 Defaults taken
+
+- **Provisional fps = 30 at register.** The browser cannot read a frame
+  rate; the worker measures it. If it comes back different (a 60 fps clip),
+  `usePoseStatus` rescales already-saved moves through their `timestamp_ms`
+  (authoritative), and the current selection/play head through time. Frame
+  tags are not rescaled: they are made in Tagging mode, normally well after
+  the worker finished, and there is no update route for them. The chip makes
+  the waiting state obvious; the recommended capture setting stays 30 fps.
+- **Polling, not push**: 5 s interval per the runbook, one request while
+  pending/processing, none after done/failed.
+- **The chip shows the upload first**, then the worker: a labeler cannot see
+  "queued" while the file is still leaving the phone.
+- **Export gating is client-side and server-side**: the button is disabled
+  with a tooltip, and the backend would 409 anyway.
+- **Skeleton renders only when done** (the runbook's wording), not on a
+  partial CSV — there is no partial CSV.
+- **No cancel button for the upload.** The old cancel stopped a minutes-long
+  browser extraction; the upload is a background job that finishes on its
+  own. `putVideoToR2WithProgress` accepts an `AbortSignal` if one is wanted.
+- Kept `onnxruntime-web` and the hold detector untouched (off by default).
+
+### 14.3a Coexistence with Dataset A (§13) — rebased onto `e5cf348`
+
+- **The header chip is view-independent.** `PoseStatusChip` sits next to
+  the Dataset A nav/profile badge and mounts `usePoseStatus` for whichever
+  view has a `currentVideo`: My videos (Define/Tagging), the **rating view**
+  and a video an admin opened for prep. The CSV therefore has one loader.
+  `RatingView` and `App.handleOpenVideoForPrep` no longer fetch the CSV
+  themselves (`getVideoCsvText` and the 307 dance are gone); they load holds,
+  moves and the playback URL and let the hook bring the pose rows in when
+  `/status` says done. A rater on a video whose worker has not finished sees
+  the chip, no skeleton, and "waiting for pose" in the suggestions — the
+  backend lets raters read `/status` and `/pose-csv-url`, and 403s them on
+  retry (the chip's Retry button will surface that error; retrying is the
+  prepper's or admin's job).
+- `utils/csv.js` exports Dataset A's `parsePoseCsv` and keeps `parseCsv` as
+  an alias (same implementation).
+- `VideoPlayer` keeps Dataset A's `videoBlobUrl || videoPlaybackUrl` source
+  and gains `playsInline`; the skeleton gate is unchanged.
+- `TaggingMode` keeps the rating-mode header (no Done button for raters) and
+  gates the Dataset B Done button on pose done.
+- `useStore`: `VIDEO_SCOPED_RESET` (Dataset A's per-video reset) now also
+  clears `upload` and `poseStatus`; `csvString` is gone.
+- `RatingView.test.jsx` / `App.test.jsx` mock factories swap
+  `getVideoCsvText` for the pose-status client functions.
+
+### 14.4 Verification
+
+```
+$ npx vitest run             Test Files 16 passed · Tests 128 passed   (main at e5cf348: 104)
+$ node --test scripts/test_pose_math.mjs      # pass 55  # fail 0
+$ npm run build              ✓ built in 1.83s   dist/assets/index-*.js 293.51 kB
+$ npx eslint src scripts     3 errors + 1 warning, all pre-existing on main (SkeletonOverlay hoisting); none in changed files
+```
+
+### 14.5 What could NOT be verified, and why
+
+- **A real browser run against the deployed stack** (pick → label at once →
+  chip → skeleton appears → export): needs the Modal app deployed and the
+  Railway variables set (backend §11.5/§11.6). Every piece is unit-tested
+  with the API mocked; the integration is the manual step.
+- **iPhone Safari specifics**: `playsInline` on the local object URL, XHR
+  upload progress events for a 300 MB HEVC clip over cellular, and Safari's
+  behaviour when the tab is backgrounded mid-upload (the upload may pause;
+  the chip will show it stalled, and the labeler can keep labeling — the
+  video is not needed for labels, only for the worker). This is the W3
+  mobile runbook's territory; nothing here should make it harder.
+- The `accept` attribute now also lists `video/*` so the iOS picker offers
+  the camera roll; not tested on a device.
+
+### 14.6 Manual test for Jolie (after the backend/worker steps in §11.6)
+
+1. Open the deployed site, sign in, pick a short iPhone clip. The player
+   should appear before you can count to one, playing the local file.
+2. Header chip: "Uploading video… NN%" climbing, then "Pose extraction
+   queued", then "Extracting pose on the server…" (this is the worker's
+   `processing`), then green "Pose ready". Press S to toggle the skeleton
+   once it is ready; it should be disabled with "(waiting for pose)" before.
+3. Mark a move with [ and ] *before* the chip is green and save it. When the
+   chip turns green the move's frame numbers should still land on the same
+   moment of video (they are rescaled if the clip was not 30 fps).
+4. "Finish & Export" is disabled (hover for the reason) until green, then
+   exports and offers the download.
+5. Failure path: temporarily blank `MODAL_ENDPOINT_URL` on Railway, upload a
+   clip — the chip should go red with "worker not configured…" and a Retry
+   button; restore the variable, press Retry, watch it go green.

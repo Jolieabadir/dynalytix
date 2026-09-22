@@ -1345,3 +1345,200 @@ To make the RLS tests possible, `scripts/auth_shim.sql` now creates the
 `anon` / `authenticated` roles with Supabase-like default privileges, and the
 `db` fixture re-applies the shim (idempotent) so an existing scratch database
 does not need rebuilding. **Never apply the shim to the Supabase project.**
+
+## 11. Server-side pose worker (runbook-w1-worker)
+
+Branch `feat/server-pose-worker`. Pose extraction moved out of the browser
+into a Modal T4 app (`data_collection/worker/`). This section covers the
+backend half; the worker has its own `README.md`, and the frontend half is
+`frontend/REPORT.md` §14. The three are **one feature unit** and merge together
+(MAILBOX rule 6).
+
+> **Do not merge until (a) the migration below is pushed with `supabase db
+> push` via the session pooler, (b) `modal deploy` has run, and (c)
+> `MODAL_ENDPOINT_URL` and `MODAL_WEBHOOK_SECRET` are set on Railway.**
+> Merging without (c) makes every new upload land in `pose_status='failed'`
+> with "worker not configured" (recoverable via the retry button once set,
+> but pointless). Merging without (a) 500s on register.
+
+### 11.1 New flow
+
+```
+register (provisional fps=30, duration/size from <video>)  →  videos row, pose_status=pending
+upload-url → browser PUTs to R2 → confirm-upload
+   └─ records r2_video_key, then POST {video_id,user_id,r2_key} + X-Webhook-Secret → MODAL_ENDPOINT_URL
+        ok      → pose_status=pending  (worker flips it to processing, then done/failed)
+        failure → pose_status=failed, pose_error set, confirm still returns 200
+GET  /api/videos/{id}/status        polled by the UI every 5 s
+POST /api/videos/{id}/retry-pose    owner re-enqueues after failed (409 if processing/done)
+POST /api/videos/{id}/pose-result   worker callback (X-Webhook-Secret), fallback to direct DB write
+GET  /api/videos/{id}/pose-csv-url  presigned GET as JSON, 409 until done
+export / export/download / csv      409 {"detail":"pose extraction not finished (status=...)"} until done
+```
+
+### 11.2 Per-file changes
+
+| File | Change |
+|---|---|
+| `supabase/migrations/20260922130000_pose_status.sql` | **New.** `pose_status text not null default 'pending' check in (pending, processing, done, failed)`, `pose_error text`, `pose_started_at timestamptz`, `pose_finished_at timestamptz`, index on `pose_status`. Backfills rows that already have `r2_pose_csv_key` to `done`. Additive; no `schema_version` bump (same reasoning as the dimensions migration). |
+| `src/labeling/models.py` | `Video` gains `pose_status='pending'`, `pose_error`, `pose_started_at`, `pose_finished_at`; `to_dict`/`from_dict` handle the new timestamps; `POSE_STATUSES` tuple. |
+| `src/labeling/database.py` | `create_video` writes `pose_status`/`pose_error`; `_row_to_video` reads them with `.get` (a DB without the migration reads as pending). **New** `set_pose_status(video_id, status, error, user_id=None)` (stamps started/finished, clears on pending) and `record_pose_result(video_id, status, error, fps, total_frames, duration_ms, width, height, r2_pose_csv_key)` (the worker's overwrite of provisional metadata). |
+| `src/labeling/pose_queue.py` | **New.** `enqueue_pose_job(video_id, user_id, r2_key)`: `httpx.post(MODAL_ENDPOINT_URL, json=..., headers={'X-Webhook-Secret': MODAL_WEBHOOK_SECRET}, timeout=15)`. Raises `PoseQueueNotConfigured` ("worker not configured: set MODAL_ENDPOINT_URL and MODAL_WEBHOOK_SECRET") or `PoseQueueError` ("worker unreachable: ConnectError" / "worker rejected the job (401): ..."). Messages are short and safe to store in `pose_error`. |
+| `src/web/api.py` | `VideoRegister` loses `csv_data`; `fps`/`total_frames`/`duration_ms` get defaults (30 / 0 / 0) and `pydantic` ignores an unknown `csv_data` from a stale client. The 60 MB register-body middleware and `MAX_REGISTER_BYTES` are gone (nothing large is posted any more). `VideoResponse` carries the four pose fields. New schemas `PoseStatusResponse`, `PoseResult`, `PoseCsvUrlResponse`. `confirm_upload` calls `_enqueue_or_fail`. New routes listed above. `_require_pose_done` gates `/csv`, `/export`, `/export/download`, `/pose-csv-url` with 409. `_require_worker_secret` does a constant-time compare of `X-Webhook-Secret` against `MODAL_WEBHOOK_SECRET`. |
+| `requirements.txt` | `httpx>=0.27.0` (was already present transitively via FastAPI's test client; now explicit because production code imports it). |
+| `tests/test_api_scoping.py` | `register_video` helper sends provisional metadata, no CSV. New helpers `upload_video`, `finish_pose` (plays the worker: puts the CSV in R2 and posts the `done` callback) and `ready_video`. Export tests use `ready_video`. 17 new tests: register pending / ignores csv_data / defaults, confirm enqueues with the exact payload, not-configured and unreachable → failed + 200, status scoping, callback auth (no header / wrong / user JWT all 401), processing→done overwrites fps/size, failed records error, done requires key, unknown video 404, retry re-enqueues / 409 while processing or done / 400 before upload / 404 other user, pose-csv-url 409→200, export/download/csv 409 until done. |
+| `tests/test_pose_queue.py` | **New.** `httpx.MockTransport`: header name and value, JSON body, non-2xx → `PoseQueueError` with status, transport error, non-JSON 2xx accepted, blank secret = not configured. |
+| `tests/test_database_v3.py` | 8 new tests: pending default, `set_pose_status` stamps and clears, user scoping, bad status, `record_pose_result` overwrites metadata, unknown id, CHECK constraint, and the **migration backfill** (rebuilds the pre-migration schema, inserts a row with a CSV key and one without, applies the migration, asserts done/pending, then re-applies everything). |
+
+### 11.3 Defaults taken
+
+- **Provisional metadata at register.** The runbook left it open whether
+  fps/total_frames/duration_ms become nullable. Chosen: keep them `NOT NULL`
+  and required by the DB, but let the browser send what the `<video>`
+  element knows (duration, width, height) with `fps=30` and
+  `total_frames=round(duration*30)`. The worker overwrites all five from
+  ffprobe. Consequence: on a 60 fps clip, frame numbers computed before the
+  worker finishes are off by 2x — the frontend corrects saved moves and the
+  current selection from their timestamps when the measured fps arrives
+  (frontend REPORT §14.3). Frame tags are not rescaled (they are created in
+  Tagging mode, normally after the worker has long finished; and there is no
+  frame-tag update route). Recommended capture setting stays 30 fps.
+- **Enqueue failure never fails confirm-upload.** The upload succeeded; the
+  row says `failed` + why; the UI shows a retry.
+- **Worker → DB directly by default**, callback route provided as the
+  fallback (`POSE_RESULT_MODE=callback` in the Modal secret). Both apply the
+  same update through the same column semantics.
+- **Secret header is `X-Webhook-Secret`** on both directions (backend →
+  `enqueue`, worker → `pose-result`). The Modal endpoint also accepts
+  `Authorization: Bearer <secret>`.
+- **`/csv` now 409s until done** (it used to 404 without a key). Same
+  message as export so the UI has one string to handle.
+- **`retry-pose` is 409 while processing or done**, 400 before the video is
+  uploaded, 404 for another user's video.
+- `pose_error` is truncated to 500 chars on the backend path, 1000 on the
+  worker path.
+
+### 11.3a Coexistence with Dataset A (§10) — rebased onto `e5cf348`
+
+This branch was rebased onto main after Dataset A merged. Where the two
+features meet, the decisions were:
+
+| Route | Who | Note |
+|---|---|---|
+| `GET /videos/{id}/status` | owner, assigned rater, admin (`_require_video_access`) | A rater's rating view waits on the same skeleton; 404 for anyone else. |
+| `GET /videos/{id}/pose-csv-url` | owner, rater, admin | 409 until done, like `/csv` (which is also 409 now, for all three roles). |
+| `POST /videos/{id}/retry-pose` | owner or admin; **403** for a rater | Re-running the worker is the prepper's call. |
+| `POST /videos/{id}/confirm-upload` | owner only (unchanged) | The uploader is the owner by construction. |
+| `GET /admin/export/full?video_id=` | admin | **409** while that video's pose is not done (404 if no such video). |
+| `GET /admin/export/full` (multi-video) | admin | Videos whose pose is not done stay in the export as **label-only rows** (Dataset A's existing behaviour for a missing CSV — `AdminExporter._pose_rows` now also returns `[]` while `pose_status != 'done'`), so one pending upload never blocks the dataset. |
+| `GET /admin/export/long` | admin | Not gated: it reads labels, not pose rows. |
+
+**Column privileges.** Dataset A's migration revokes table-level `UPDATE` on
+`videos` from `authenticated`/`anon` and grants back a fixed column list. The
+`pose_*` columns are deliberately **not** added to that grant: they are
+written only by the worker (service-role `DATABASE_URL`) or the API's
+`pose-result` callback (the API's own role), never by a signed-in user
+through PostgREST, so a forged "done" from a browser is refused.
+`tests/test_rls_dataset_a.py::test_pose_columns_are_not_writable_through_postgrest`
+pins this (owner and admin both `InsufficientPrivilege`; a rater can read
+`pose_status`; `record_pose_result` through the API role works). Migration
+order is `…120000_dataset_a.sql` then `…130000_pose_status.sql`; the fixture
+applies all four files in filename order.
+
+**Dataset A tests.** `test_dataset_a.py` imports `register_video` from
+`test_api_scoping.py`, which no longer sends a CSV. `prepped_video()` and the
+two Dataset B fixtures in the export tests now use `ready_video()`
+(register → upload-url → confirm → worker callback with the CSV), so the
+exports have pose rows as before. The `enqueued` fixture moved to
+`conftest.py` and both `client` fixtures use it (otherwise the real enqueue
+would run, find no `MODAL_ENDPOINT_URL`, and mark every test video
+`failed`). The playback-URL test registers a separate never-uploaded video
+for its 404 assertion. Two new tests cover the table above.
+
+### 11.4 Test output
+
+```
+$ cd data_collection/backend && TEST_DATABASE_URL=postgresql://root@localhost:5432/dyn_test_w python -m pytest tests/ -q
+148 passed          (main at e5cf348: 126; this branch before the rebase: 101 on a 72 baseline)
+```
+
+Worker (`data_collection/worker`): `73 passed` — see the worker README
+"Tests" for what each file covers. Frontend: vitest `128 passed` (main:
+104), `node --test scripts/test_pose_math.mjs` 55 pass, `npm run build`
+green.
+
+### 11.5 What could NOT be verified, and why
+
+- **Modal deploy / the `enqueue` URL.** No Modal account or token in this
+  environment. `modal_app.py` imports and builds its `App` under modal 1.5.5;
+  the job body (`run_job`) and the secret check are unit-tested with Modal's
+  runtime stubbed. The image definition (`debian_slim` + ffmpeg + EGL libs,
+  `pip_install_from_requirements`, `add_local_file` for the model,
+  `add_local_python_source`) has not been built.
+- **The TFLite GPU delegate on a T4.** MediaPipe's Python GPU delegate needs
+  EGL/GLES in the container; `libegl1 libgles2` are installed and the code
+  falls back to CPU with a warning if the GPU landmarker cannot be created.
+  Whether it actually engages on Modal's T4 image is unknown until the first
+  run; CPU FULL on this machine ran the 4.3 s iPhone clip in 8 s.
+- **Railway secrets** (`MODAL_ENDPOINT_URL`, `MODAL_WEBHOOK_SECRET`): no
+  Railway access here.
+- **`supabase db push`** of the migration: no Supabase access here. The
+  migration was applied to the local throwaway Postgres 16 by the test
+  fixture (and its backfill is tested).
+- **A real iPhone clip end to end from the deployed site**, and **GPU
+  seconds / cost**: require all of the above. The pipeline itself was run on
+  the real iPhone HEVC sample under `backend/videos/` (rotated 1920x1080 →
+  1080x1920, 30 fps, edit list): 130 rows, exactly the row count the browser
+  extractor had produced for the same clip, every frame with a pose.
+- **Byte-for-byte landmark equality with the browser** is not achievable and
+  was not claimed: WASM/WebGL vs TFLite CPU/GPU differ in the low bits of
+  float16 inference. The CSV format and angle math are byte-identical (golden
+  test, including fdlibm `acos` matching V8 bit for bit on 20k inputs).
+
+### 11.6 Manual steps for Jolie (in this order)
+
+1. **Migration first** (REPORT §9 step 0, session pooler 5432):
+   ```bash
+   cd data_collection/backend
+   supabase db push --db-url "$SESSION_DSN" --dry-run
+   supabase db push --db-url "$SESSION_DSN"
+   supabase migration list --db-url "$SESSION_DSN"   # 20260922130000 must show Remote
+   ```
+   Dataset A's `20260922120000_dataset_a.sql` is already on main; if it has
+   not been pushed yet, `db push` applies both in order. Pushing this one
+   alone (after Dataset A's) is safe: it is additive.
+2. **Deploy the worker** — `data_collection/worker/README.md` "Deploy":
+   `modal secret create dynalytix-worker R2_ACCOUNT_ID=… R2_ACCESS_KEY_ID=…
+   R2_SECRET_ACCESS_KEY=… R2_BUCKET=… DATABASE_URL=<transaction pooler 6543>
+   MODAL_WEBHOOK_SECRET=$(openssl rand -hex 32)`, then
+   `modal deploy data_collection/worker/modal_app.py`; copy the printed
+   `enqueue` URL.
+3. **Railway** (never echo values):
+   ```bash
+   printf 'MODAL_ENDPOINT_URL=%s\n' '<enqueue URL>' | railway variables --set-from-stdin --skip-deploys
+   printf 'MODAL_WEBHOOK_SECRET=%s\n' '<same value as the Modal secret>' | railway variables --set-from-stdin --skip-deploys
+   ```
+4. **Smoke the worker alone**: `modal run data_collection/worker/modal_app.py
+   --video-id <existing id> --user-id <uuid> --r2-key videos/<uuid>/<id>/<file>`
+   and confirm `GET /api/videos/<id>/status` (or the row) says `done`.
+   Note GPU seconds from the Modal dashboard here: ______ s, $______.
+5. **Merge `feat/server-pose-worker` to main as one unit** (backend + worker
+   + frontend). Both services redeploy.
+6. **End-to-end on the deployed site with a real iPhone clip**: pick → the
+   player appears at once → chip shows upload % → "Pose extraction queued" →
+   "Extracting pose on the server…" → "Pose ready" and the skeleton appears →
+   Finish & Export enables → download. If the chip shows "Pose extraction
+   failed: worker not configured", step 3 did not take; set the variables
+   and press Retry.
+7. **Optional hardening**: rotate `MODAL_WEBHOOK_SECRET` periodically (change
+   in both places); tighten the `enqueue` endpoint further with Modal's
+   proxy-auth if desired; consider `POSE_RESULT_MODE=callback` so the worker
+   holds no DB credential.
+
+### 11.7 Rollback
+
+Railway → Deployments → redeploy the previous build; the frontend likewise.
+The migration is additive and can stay. Videos uploaded during the window
+have `pose_status='pending'` rows with no CSV; the old browser flow cannot
+fill them — re-upload, or run the worker on them with `modal run` once it is
+back.
