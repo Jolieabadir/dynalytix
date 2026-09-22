@@ -110,6 +110,7 @@ class FakeR2:
 
     def __init__(self):
         self.objects = {}
+        self.multipart = {}
 
     def put_object(self, key, body, content_type=None):
         if isinstance(body, str):
@@ -132,6 +133,35 @@ class FakeR2:
 
     def presigned_get_url(self, key, expires_in=3600, download_filename=None):
         return f'https://fake-r2.local/{key}?sig=get&expires={expires_in}'
+
+    # --- multipart ---
+
+    def create_multipart_upload(self, key, content_type=None):
+        upload_id = f'upload-{len(self.multipart) + 1}'
+        self.multipart[upload_id] = {'key': key, 'parts': {}, 'completed': False}
+        return upload_id
+
+    def presigned_upload_part_url(self, key, upload_id, part_number, expires_in=3600):
+        return (
+            f'https://fake-r2.local/{key}'
+            f'?sig=part&uploadId={upload_id}&partNumber={part_number}&expires={expires_in}'
+        )
+
+    def complete_multipart_upload(self, key, upload_id, parts):
+        session = self.multipart.get(upload_id)
+        if session is None or session['key'] != key:
+            raise KeyError(f'no such multipart upload: {upload_id}')
+        session['completed'] = True
+        session['parts'] = {p['PartNumber']: p['ETag'] for p in parts}
+        # The assembled object stands in for the concatenated bytes.
+        self.objects[key] = b'multipart:' + ','.join(
+            str(p['PartNumber']) for p in sorted(parts, key=lambda x: x['PartNumber'])
+        ).encode()
+        return key
+
+    def abort_multipart_upload(self, key, upload_id):
+        self.multipart.pop(upload_id, None)
+        return True
 
 
 def real_r2_usable() -> bool:
@@ -163,6 +193,10 @@ def fake_r2(monkeypatch):
         'object_exists',
         'presigned_put_url',
         'presigned_get_url',
+        'create_multipart_upload',
+        'presigned_upload_part_url',
+        'complete_multipart_upload',
+        'abort_multipart_upload',
     ):
         monkeypatch.setattr(r2, name, getattr(fake, name))
     monkeypatch.setattr(r2, 'is_configured', lambda: True)

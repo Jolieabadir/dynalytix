@@ -259,6 +259,53 @@ class ConfirmUploadRequest(BaseModel):
     key: Optional[str] = None
 
 
+# --- Resumable multipart upload (iPhone) ---
+
+class CreateMultipartRequest(BaseModel):
+    """Begin a resumable upload of the original video."""
+    content_type: str = 'video/mp4'
+
+
+class CreateMultipartResponse(BaseModel):
+    """Everything the browser needs to drive, and later resume, the upload."""
+    key: str
+    upload_id: str
+    part_size: int
+
+
+class SignPartRequest(BaseModel):
+    """Sign one part. Part numbers are 1-based, as S3 requires."""
+    key: str
+    upload_id: str
+    part_number: int = Field(ge=1, le=10000)
+
+
+class SignPartResponse(BaseModel):
+    """A presigned URL for exactly one part."""
+    url: str
+    part_number: int
+    expires_in: int
+
+
+class CompletedPart(BaseModel):
+    """One part the browser has finished, with the ETag R2 answered."""
+    part_number: int = Field(ge=1, le=10000)
+    etag: str
+
+
+class CompleteMultipartRequest(BaseModel):
+    """Assemble the parts into the final object."""
+    key: str
+    upload_id: str
+    parts: List[CompletedPart]
+
+
+class AbortMultipartRequest(BaseModel):
+    """Throw away an unfinished multipart upload."""
+    key: str
+    upload_id: str
+
+
 # --- Hold Schemas ---
 
 class HoldItem(BaseModel):
@@ -1107,6 +1154,130 @@ async def create_upload_url(
         )
 
     return UploadUrlResponse(url=url, key=key, expires_in=expires_in)
+
+
+def _multipart_key(video, user_id: str) -> str:
+    """The one key a multipart upload for this video is allowed to write."""
+    return r2.video_key(user_id, video.id, video.filename)
+
+
+def _guard_multipart_key(video, user_id: str, key: str) -> str:
+    """Refuse any key but this video's own, so a client cannot assemble parts
+    into another user's object."""
+    expected = _multipart_key(video, user_id)
+    if key != expected:
+        raise _bad_request('Key does not belong to this video')
+    return key
+
+
+@app.post("/api/videos/{video_id}/upload/create-multipart", response_model=CreateMultipartResponse)
+async def create_multipart(
+    video_id: int,
+    payload: CreateMultipartRequest,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Start a resumable upload.
+
+    The phone is the primary client and iOS Safari kills a page on app switch
+    or lock, so the original video goes up in independently signed parts. The
+    browser holds on to `upload_id` and resumes from the first part it has no
+    ETag for.
+    """
+    video = _require_video(video_id, user_id)
+    key = _multipart_key(video, user_id)
+
+    try:
+        upload_id = r2.create_multipart_upload(key, content_type=payload.content_type)
+    except r2.R2NotConfigured as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f'Object storage unavailable: {exc}',
+        )
+
+    return CreateMultipartResponse(
+        key=key, upload_id=upload_id, part_size=r2.MULTIPART_PART_SIZE
+    )
+
+
+@app.post("/api/videos/{video_id}/upload/sign-part", response_model=SignPartResponse)
+async def sign_upload_part(
+    video_id: int,
+    payload: SignPartRequest,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Presign one part. Called again on resume, and again on a part retry."""
+    video = _require_video(video_id, user_id)
+    key = _guard_multipart_key(video, user_id, payload.key)
+
+    expires_in = 3600
+    try:
+        url = r2.presigned_upload_part_url(
+            key, payload.upload_id, payload.part_number, expires_in=expires_in
+        )
+    except r2.R2NotConfigured as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f'Object storage unavailable: {exc}',
+        )
+
+    return SignPartResponse(
+        url=url, part_number=payload.part_number, expires_in=expires_in
+    )
+
+
+@app.post("/api/videos/{video_id}/upload/complete-multipart", response_model=VideoResponse)
+async def complete_multipart(
+    video_id: int,
+    payload: CompleteMultipartRequest,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Assemble the parts, record the key, and enqueue the pose worker.
+
+    This is confirm-upload for the multipart path: same post-conditions, one
+    round trip instead of two, because the phone may not get another.
+    """
+    video = _require_video(video_id, user_id)
+    key = _guard_multipart_key(video, user_id, payload.key)
+
+    if not payload.parts:
+        raise _bad_request('No parts to complete')
+
+    try:
+        r2.complete_multipart_upload(
+            key,
+            payload.upload_id,
+            [{'PartNumber': part.part_number, 'ETag': part.etag} for part in payload.parts],
+        )
+    except r2.R2NotConfigured as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f'Object storage unavailable: {exc}',
+        )
+
+    get_db().set_video_r2_keys(video_id, user_id, r2_video_key=key)
+    video.r2_video_key = key
+    return video_to_response(_enqueue_or_fail(video))
+
+
+@app.post("/api/videos/{video_id}/upload/abort-multipart")
+async def abort_multipart(
+    video_id: int,
+    payload: AbortMultipartRequest,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Discard an abandoned upload so R2 stops billing for its parts."""
+    video = _require_video(video_id, user_id)
+    key = _guard_multipart_key(video, user_id, payload.key)
+
+    try:
+        r2.abort_multipart_upload(key, payload.upload_id)
+    except r2.R2NotConfigured as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f'Object storage unavailable: {exc}',
+        )
+
+    return {'aborted': True, 'key': key}
 
 
 @app.post("/api/videos/{video_id}/confirm-upload", response_model=VideoResponse)

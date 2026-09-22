@@ -241,3 +241,71 @@ def presigned_get_url(key: str, expires_in: int = 3600, download_filename: Optio
         Params=params,
         ExpiresIn=expires_in,
     )
+
+
+# ==================== MULTIPART (resumable phone uploads) ====================
+#
+# iOS Safari evicts a page on app switch or lock, which kills a single long
+# PUT outright. Multipart splits the file into independently signed parts, so
+# a lock screen mid-upload costs one part, not the whole clip. The browser
+# keeps the upload_id and the ETags it has collected; a reload resumes from
+# the first part it has not confirmed.
+
+# 8 MiB. R2 requires every part except the last to be at least 5 MiB, and a
+# part is the unit of retry, so bigger parts mean a more expensive retry on a
+# flaky phone connection. 8 MiB keeps a 2-minute 1080p30 clip under ~40 parts.
+MULTIPART_PART_SIZE = 8 * 1024 * 1024
+
+
+def create_multipart_upload(key: str, content_type: Optional[str] = None) -> str:
+    """Begin a multipart upload. Returns the upload id."""
+    kwargs = {'Bucket': bucket_name(), 'Key': key}
+    if content_type:
+        kwargs['ContentType'] = content_type
+    response = get_client().create_multipart_upload(**kwargs)
+    return response['UploadId']
+
+
+def presigned_upload_part_url(
+    key: str, upload_id: str, part_number: int, expires_in: int = 3600
+) -> str:
+    """Presigned URL the browser PUTs one part to.
+
+    Unlike the single-shot presign, no Content-Type is signed: a part is a byte
+    range, not a typed object, and R2 rejects the signature if the browser
+    sends a header that was not signed.
+    """
+    return get_client().generate_presigned_url(
+        'upload_part',
+        Params={
+            'Bucket': bucket_name(),
+            'Key': key,
+            'UploadId': upload_id,
+            'PartNumber': part_number,
+        },
+        ExpiresIn=expires_in,
+    )
+
+
+def complete_multipart_upload(key: str, upload_id: str, parts: list) -> str:
+    """Finish a multipart upload. Returns the key.
+
+    `parts` is [{'PartNumber': int, 'ETag': str}], which S3 requires sorted by
+    part number. Sorted here rather than trusted from the client.
+    """
+    ordered = sorted(parts, key=lambda p: p['PartNumber'])
+    get_client().complete_multipart_upload(
+        Bucket=bucket_name(),
+        Key=key,
+        UploadId=upload_id,
+        MultipartUpload={'Parts': ordered},
+    )
+    return key
+
+
+def abort_multipart_upload(key: str, upload_id: str) -> bool:
+    """Discard an unfinished multipart upload so its parts stop being billed."""
+    get_client().abort_multipart_upload(
+        Bucket=bucket_name(), Key=key, UploadId=upload_id
+    )
+    return True
