@@ -15,7 +15,16 @@
 import useStore from '../store/useStore';
 import { progressCounts } from '../utils/progress';
 
-function ProgressStrip({ onSaveAndNext, onFinish, busy = false, canSaveNext = true }) {
+function ProgressStrip({
+  onSaveAndNext,
+  onFinish,
+  busy = false,
+  canSaveNext = true,
+  // Export needs the worker's pose CSV; until then the button is disabled and
+  // says why on hover.
+  canExport = true,
+  exportBlockedReason = '',
+}) {
   const moves = useStore((s) => s.moves);
   const frameTags = useStore((s) => s.frameTags);
   const currentMove = useStore((s) => s.currentMove);
@@ -45,7 +54,9 @@ function ProgressStrip({ onSaveAndNext, onFinish, busy = false, canSaveNext = tr
           type="button"
           className="btn-primary"
           onClick={onFinish}
-          disabled={busy}
+          disabled={busy || !canExport}
+          title={!canExport ? exportBlockedReason : undefined}
+          aria-disabled={busy || !canExport}
         >
           {busy ? 'Exporting…' : 'Finish & Export'}
         </button>

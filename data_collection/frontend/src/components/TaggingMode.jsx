@@ -92,6 +92,7 @@ function TaggingMode() {
     videoPlaybackUrl,
     readOnlyStructure,
     currentAssignment,
+    poseStatus,
   } = useStore();
 
   // Rating view (Dataset A): no export, "back" goes to the canonical list, and
@@ -338,11 +339,12 @@ function TaggingMode() {
     setFrameTags([]);
   };
 
-  // Done - export then show thank you
+  // Done - export then show thank you. Export is refused (409) until the
+  // server-side pose worker has finished; the button is disabled until then.
   const handleDone = async () => {
     setExporting(true);
     try {
-      await exportVideo(currentVideo.id, true); // true = delete video after export
+      await exportVideo(currentVideo.id);
       setShowThankYou(true);
     } catch (err) {
       console.error('Export failed:', err);
@@ -352,6 +354,9 @@ function TaggingMode() {
       setExporting(false);
     }
   };
+
+  const poseDone =
+    poseStatus?.video_id === currentVideo?.id && poseStatus?.pose_status === 'done';
 
   const formatLabel = (str) => {
     return str
@@ -446,7 +451,11 @@ function TaggingMode() {
               <button onClick={handleNextMove} className="back-btn save-next-btn">
                 Save & Next Move →
               </button>
-              <DoneButton onClick={handleDone} disabled={exporting} />
+              <span
+                title={poseDone ? undefined : 'Export is available once the server has finished extracting the pose.'}
+              >
+                <DoneButton onClick={handleDone} disabled={!poseDone} busy={exporting} />
+              </span>
               {exporting && <span className="exporting-text">Exporting...</span>}
             </>
           )}

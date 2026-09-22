@@ -40,7 +40,8 @@ const VIDEO_SCOPED_RESET = {
   videoBlobUrl: null,
   videoPlaybackUrl: null,
   csvData: null,
-  csvString: null,
+  upload: { state: 'idle', fraction: 0, error: null },
+  poseStatus: null,
   moves: [],
   currentMove: null,
   frameTags: [],
@@ -61,19 +62,34 @@ const useStore = create((set, get) => ({
   // ==================== VIDEO STATE ====================
   currentVideo: null,
   videos: [],
-  videoBlobUrl: null, // Local blob URL for client-side video
-  // Presigned URL for a video not extracted in this session (rating view,
-  // or an owner reopening an upload). videoBlobUrl wins when both exist.
+  videoBlobUrl: null, // Object URL of the picked file; the player uses it at once
+  // Presigned URL for a video not picked in this session (rating view, or an
+  // owner/admin reopening an upload). videoBlobUrl wins when both exist.
   videoPlaybackUrl: null,
-  csvData: null, // Parsed CSV data from client-side extraction
-  csvString: null, // Raw CSV string to send to server
+  csvData: null, // Parsed pose CSV rows, set once the worker reports done
 
   setCurrentVideo: (video) => set({ currentVideo: video }),
+  // Merge fields onto the current video (the worker's measured fps etc.).
+  patchCurrentVideo: (fields) =>
+    set((state) => ({
+      currentVideo: state.currentVideo ? { ...state.currentVideo, ...fields } : state.currentVideo,
+    })),
   setVideos: (videos) => set({ videos }),
   setVideoBlobUrl: (url) => set({ videoBlobUrl: url }),
   setVideoPlaybackUrl: (url) => set({ videoPlaybackUrl: url }),
   setCsvData: (data) => set({ csvData: data }),
-  setCsvString: (str) => set({ csvString: str }),
+
+  // ==================== BACKGROUND JOBS ====================
+  // The original-video upload runs behind the labeling UI.
+  // state: 'idle' | 'uploading' | 'confirming' | 'done' | 'failed'
+  upload: { state: 'idle', fraction: 0, error: null },
+  setUpload: (upload) => set((state) => ({ upload: { ...state.upload, ...upload } })),
+
+  // The worker's pose job, as last polled from GET /api/videos/{id}/status.
+  // null until the video is registered. `pose_status` is one of
+  // 'pending' | 'processing' | 'done' | 'failed'.
+  poseStatus: null,
+  setPoseStatus: (poseStatus) => set({ poseStatus }),
 
   /** Drop everything tied to the open video. See VIDEO_SCOPED_RESET. */
   resetVideoState: () => set({ ...VIDEO_SCOPED_RESET }),

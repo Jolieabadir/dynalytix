@@ -26,10 +26,9 @@ api.interceptors.request.use(async (config) => {
 /**
  * Refresh once on 401, then replay the request.
  *
- * Pose extraction can run for minutes before the first API call, which is long
- * enough for an access token to expire mid-session. Rather than dumping the
- * labeler back at the sign-in screen (and losing the extraction), force a
- * refresh and retry exactly once. `_retriedAfterRefresh` guards against a loop
+ * A labeling session runs long enough for an access token to expire mid-way
+ * (the status poll alone runs for minutes). Rather than dumping the labeler
+ * back at the sign-in screen, force a refresh and retry exactly once. `_retriedAfterRefresh` guards against a loop
  * when the refresh token is dead too — in that case the 401 propagates and the
  * auth state listener in App will show the sign-in screen.
  */
@@ -62,14 +61,16 @@ export const getConfig = async () => {
 // ==================== VIDEOS ====================
 
 /**
- * Register a client-processed video.
+ * Register a video before uploading it.
  *
- * Retried with exponential backoff: extraction can run for minutes before this
- * call, so a transient network blip here would throw away all of that work.
- * Only transport failures and 5xx are retried — a 401 or a 413 will not become
- * true on a second attempt.
+ * The payload is the browser's provisional metadata (utils/videoMeta): the
+ * worker overwrites fps/total_frames/duration_ms/width/height when it has run
+ * ffprobe. No CSV is sent any more.
  *
- * @param {{filename: string, fps: number, total_frames: number, duration_ms: number, csv_data: string}} payload
+ * Retried with exponential backoff. Only transport failures and 5xx are
+ * retried — a 401 will not become true on a second attempt.
+ *
+ * @param {{filename: string, fps: number, total_frames: number, duration_ms: number, width?: number|null, height?: number|null}} payload
  * @param {{attempts?: number, baseDelayMs?: number, onRetry?: (attempt: number, delayMs: number, err: Error) => void, signal?: AbortSignal}} [options]
  */
 export const registerVideo = async (payload, options = {}) => {
@@ -127,21 +128,113 @@ export const putVideoToR2 = async (url, file, contentType = 'video/mp4') => {
   return response;
 };
 
-/** Record the R2 key once the direct upload has finished. */
+/**
+ * Upload the original video to R2 with progress.
+ *
+ * XMLHttpRequest rather than fetch because fetch has no upload progress
+ * events, and a multi-hundred-megabyte phone clip needs a visible bar.
+ * Same rules as putVideoToR2: Content-Type must match the presign, no auth.
+ *
+ * @param {string} url presigned PUT URL
+ * @param {File} file
+ * @param {string} contentType
+ * @param {{onProgress?: (fraction: number) => void, signal?: AbortSignal}} [options]
+ */
+export const putVideoToR2WithProgress = (url, file, contentType = 'video/mp4', options = {}) =>
+  new Promise((resolve, reject) => {
+    const { onProgress, signal } = options;
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', url, true);
+    xhr.setRequestHeader('Content-Type', contentType);
+    xhr.upload.onprogress = (event) => {
+      if (onProgress && event.lengthComputable && event.total > 0) {
+        onProgress(event.loaded / event.total);
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        if (onProgress) onProgress(1);
+        resolve(xhr);
+      } else {
+        reject(new Error(`Video upload failed (${xhr.status})`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Video upload failed (network error)'));
+    xhr.onabort = () => reject(new DOMException('Upload cancelled', 'AbortError'));
+    if (signal) {
+      if (signal.aborted) {
+        xhr.abort();
+        return;
+      }
+      signal.addEventListener('abort', () => xhr.abort(), { once: true });
+    }
+    xhr.send(file);
+  });
+
+/**
+ * Record the R2 key once the direct upload has finished.
+ *
+ * The backend enqueues the pose worker here and answers with the video row,
+ * including `pose_status` — 'pending' when the job was accepted, 'failed'
+ * with `pose_error` when the worker could not be reached (retry later).
+ */
 export const confirmUpload = async (videoId, key) => {
   const response = await api.post(`/api/videos/${videoId}/confirm-upload`, { key });
   return response.data;
 };
 
 /**
- * Full original-video upload: presign → PUT to R2 → confirm.
- * Best-effort by design; the pose CSV is already saved by registerVideo.
+ * Full original-video upload: presign → PUT to R2 (with progress) → confirm.
+ *
+ * @param {number} videoId
+ * @param {File} file
+ * @param {{onProgress?: (fraction: number) => void, signal?: AbortSignal}} [options]
+ * @returns {Promise<object>} the confirmed video row (carries pose_status)
  */
-export const uploadOriginalVideo = async (videoId, file) => {
+export const uploadOriginalVideo = async (videoId, file, options = {}) => {
   const contentType = file.type || 'video/mp4';
   const { url, key } = await getUploadUrl(videoId, contentType);
-  await putVideoToR2(url, file, contentType);
+  await putVideoToR2WithProgress(url, file, contentType, options);
   return confirmUpload(videoId, key);
+};
+
+// ==================== POSE JOB ====================
+
+/**
+ * The pose job's state, polled by the header chip.
+ *
+ * @returns {Promise<{video_id: number, pose_status: 'pending'|'processing'|'done'|'failed', pose_error: string|null, pose_started_at: string|null, pose_finished_at: string|null, fps: number, total_frames: number, duration_ms: number, width: number|null, height: number|null, r2_pose_csv_key: string|null}>}
+ */
+export const getPoseStatus = async (videoId) => {
+  const response = await api.get(`/api/videos/${videoId}/status`);
+  return response.data;
+};
+
+/** Re-enqueue a failed job. 409 if it is processing or already done. */
+export const retryPose = async (videoId) => {
+  const response = await api.post(`/api/videos/${videoId}/retry-pose`);
+  return response.data;
+};
+
+/** Presigned GET URL for the pose CSV (409 until pose_status is done). */
+export const getPoseCsvUrl = async (videoId) => {
+  const response = await api.get(`/api/videos/${videoId}/pose-csv-url`);
+  return response.data.url;
+};
+
+/**
+ * The pose CSV as text, once the worker has finished.
+ *
+ * The presigned R2 URL is fetched bare: it rejects an Authorization header,
+ * and the signature is the auth.
+ */
+export const fetchPoseCsvText = async (videoId) => {
+  const url = await getPoseCsvUrl(videoId);
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Could not load pose data (${response.status})`);
+  }
+  return response.text();
 };
 
 export const getVideos = async () => {
@@ -154,33 +247,12 @@ export const getVideo = async (videoId) => {
   return response.data;
 };
 
-export const getVideoCSV = async (videoId) => {
-  const response = await api.get(`/api/videos/${videoId}/csv`);
-  return response.data;
-};
-
-/**
- * The pose CSV as text, for a video whose extraction is not in this session's
- * store (a reload, or a video registered on another machine).
- *
- * Two hops by necessity: the API answers `307` to a presigned R2 URL, and that
- * URL rejects an Authorization header — so the token goes on the first request
- * and nothing goes on the second.
- */
-export const getVideoCsvText = async (videoId) => {
-  const headers = await authHeader();
-  const response = await fetch(`${API_BASE_URL}/api/videos/${videoId}/csv`, { headers });
-  if (!response.ok) {
-    throw new Error(`Could not load pose data (${response.status})`);
-  }
-  return response.text();
-};
-
 /**
  * Export labeled data for a video.
  *
  * v3 takes no query params — the video is no longer deleted as a side effect
- * of exporting.
+ * of exporting. Answers 409 ("pose extraction not finished") until the
+ * worker's CSV exists; the UI disables the button until then.
  *
  * @param {number} videoId - The video ID to export
  * @returns {Promise<{video_id: number, r2_export_key: string}>}

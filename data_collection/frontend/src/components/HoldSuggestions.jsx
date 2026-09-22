@@ -14,6 +14,10 @@ import { suggestHoldsForFrame, bodyPartsFor, sideFor } from '../services/holdSug
 
 /** Why no suggestion is available, in the labeller's terms. */
 const REASON_TEXT = {
+  'waiting-for-pose':
+    'Waiting for pose — the server is still extracting the skeleton for this video.',
+  'pose-failed':
+    'Pose extraction failed, so there is nothing to match against. Retry it from the header.',
   'no-holds':
     'No holds recorded for this video yet, so there is nothing to match against.',
   'no-dimensions':
@@ -23,19 +27,28 @@ const REASON_TEXT = {
 };
 
 function HoldSuggestions({ onApply }) {
-  const { currentVideo, csvData, currentFrame, holds } = useStore();
+  const { currentVideo, csvData, currentFrame, holds, poseStatus } = useStore();
+
+  const poseState =
+    poseStatus?.video_id === currentVideo?.id ? poseStatus.pose_status : 'pending';
 
   const suggestion = useMemo(() => {
-    // csvData is indexed positionally; the no-gap guarantee from extraction is
-    // what makes row N frame N.
-    const row = csvData?.[currentFrame];
+    if (poseState === 'failed') {
+      return { available: false, reason: 'pose-failed', contacts: [] };
+    }
+    if (poseState !== 'done' || !csvData) {
+      return { available: false, reason: 'waiting-for-pose', contacts: [] };
+    }
+    // csvData is indexed positionally; the worker's no-gap guarantee is what
+    // makes row N frame N.
+    const row = csvData[currentFrame];
     return suggestHoldsForFrame(
       row,
       holds,
       currentVideo?.width,
       currentVideo?.height
     );
-  }, [csvData, currentFrame, holds, currentVideo?.width, currentVideo?.height]);
+  }, [poseState, csvData, currentFrame, holds, currentVideo?.width, currentVideo?.height]);
 
   const { available, reason, contacts } = suggestion;
 
