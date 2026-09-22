@@ -1119,7 +1119,7 @@ to `main` **only together with** its frontend changes.
 
 | File | Change |
 |---|---|
-| `supabase/migrations/20260922120000_dataset_a.sql` | **New, additive only.** `videos` + `dataset` ('A'\|'B', default 'B'), `prep_status` ('draft'\|'ready'\|'closed', default 'draft'), `route_grade`, `wall_type`, `climber_experience`, `climber_height_cm`, `climber_ape_index_cm`, `camera_angle`, `gym`, `notes`. New `rater_profiles` (user_id PK, display_name, tier, years_climbing, coaching_cert, highest_grade, research_background, validation_note, **is_admin**, created_at). New `video_assignments` (id, video_id FK cascade, rater_user_id, cohort, status, assigned_at, completed_at, UNIQUE(video_id, rater_user_id)). `environments`/`outcomes`/`frame_tags` + `taxonomy_version text NOT NULL DEFAULT 'pre-3.1'` and `is_gold boolean NOT NULL DEFAULT false`. `environments`/`outcomes` UNIQUE(move_id) → UNIQUE(move_id, user_id). SQL helpers `public.is_admin()`, `public.has_assignment(video_id)`, `public.video_is_draft(video_id)` (SECURITY DEFINER) and RLS policies on every table mirroring the API rules. `schema_version` is **not** bumped (see §10.2). Does not touch the `pose_*` columns the Worker lane adds. |
+| `supabase/migrations/20260922120000_dataset_a.sql` | **New, additive only.** (Revised after review, see §10.7.) `videos` + `dataset` ('A'\|'B', default 'B'), `prep_status` ('draft'\|'ready'\|'closed', default 'draft'), `route_grade`, `wall_type`, `climber_experience`, `climber_height_cm`, `climber_ape_index_cm`, `camera_angle`, `gym`, `notes`. New `rater_profiles` (user_id PK, display_name, tier, years_climbing, coaching_cert, highest_grade, research_background, validation_note, **is_admin**, created_at). New `video_assignments` (id, video_id FK cascade, rater_user_id, cohort, status, assigned_at, completed_at, UNIQUE(video_id, rater_user_id)). `environments`/`outcomes`/`frame_tags` + `taxonomy_version text NOT NULL DEFAULT 'pre-3.1'` and `is_gold boolean NOT NULL DEFAULT false`. `environments`/`outcomes` UNIQUE(move_id) → UNIQUE(move_id, user_id). SQL helpers `public.is_admin()`, `public.has_assignment(video_id)`, `public.video_is_draft(video_id)` (SECURITY DEFINER) and RLS policies on every table mirroring the API rules. `schema_version` is **not** bumped (see §10.2). Does not touch the `pose_*` columns the Worker lane adds. |
 | `src/labeling/models.py` | `TAXONOMY_VERSION = "3.1.0"`; constants for datasets, prep statuses, cohorts, assignment statuses, tiers; `Video` gains the new columns + `is_locked()`; `Environment`/`Outcome`/`FrameTag` gain `taxonomy_version`, `is_gold`; new `RaterProfile`, `VideoAssignment`. |
 | `src/labeling/database.py` | Insert/update stamp the new columns. New unscoped `*_any` accessors (`get_video_any`, `get_holds_for_video_any`, `get_moves_for_video_any`, `update_hold_any`, `delete_hold_any`, `update_move_any`, `delete_move_any`, `get_hold_any`, `get_move_any`) for use only after the API's access check; `list_videos_admin`, `update_video_fields`, `get_videos_for_export`; cross-rater readers `get_environments_for_move_all` etc. for exports; profile CRUD (`create_rater_profile`, `get_rater_profile`, `is_admin`, `list_rater_profiles`, `update_rater_profile` (admin fields), `update_rater_profile_self` (rater fields)); assignment CRUD. Every existing per-user label query already filtered by `user_id`; confirmed none assumed one-env-per-move without it. `apply_schema_sql()` already applied every `supabase/migrations/*.sql` in filename order, so the new file is picked up by tests unchanged. |
 | `src/web/api.py` | Access model: `_require_video_access` → `VideoAccess(role = owner\|rater\|admin)`; `_require_structure_write` (holds/moves: owner while draft, admin always, rater never → 403); `_require_label_write` (rater: assignment open and video not closed; first write flips `assigned → in_progress`). All hold/move/environment/outcome/frame-tag routes go through these. Hold slots must reference holds on the move's own video (400). New: `DELETE /api/environments/{id}`, `DELETE /api/outcomes/{id}`, `GET/POST/PUT /api/me/profile`, `GET /api/me/assignments`, `POST /api/assignments/{id}/start`, `POST /api/assignments/{id}/complete` (422 + `missing[]`), `GET /api/admin/videos`, `PUT /api/admin/videos/{id}/metadata`, `POST /api/admin/videos/{id}/ready|close|reopen`, `GET/POST/DELETE /api/admin/assignments`, `GET /api/admin/raters`, `PUT /api/admin/raters/{user_id}`, `GET /api/admin/export/long`, `GET /api/admin/export/full`. `GET /api/config` gains `version`. `VideoResponse` gains `owner_user_id`, `dataset`, `prep_status`, metadata, `access_role`. App version 3.1.0. |
@@ -1128,8 +1128,10 @@ to `main` **only together with** its frontend changes.
 | `scripts/snapshot_to_r2.py` | **New.** `COPY` every `public` base table to CSV → `snapshots/YYYY-MM-DD/<table>.csv` via `src/storage/r2`. `--dry-run`, `--date`. Exit 1 if any table failed (after trying all), 2 if env is missing. |
 | `scripts/railway.cron.md` | **New.** Scheduling as a Railway cron service (`python scripts/snapshot_to_r2.py`, `0 8 * * *` UTC), verification, restore, retention, Modal alternative. |
 | `scripts/irr_alpha.py` | **New.** Reads the long CSV, pivots (video, move) × rater per field, Krippendorff's alpha (ordinal for `form_quality`/`effort_level`, nominal otherwise; frame tags as presence per tag_type), NaN for missing, prints a table, optional `--json`. `pip install krippendorff`. |
-| `tests/conftest.py` | `clean_db` truncates `video_assignments`, `rater_profiles` too. |
-| `tests/test_dataset_a.py` | **New, 29 tests** (see §10.4). |
+| `tests/conftest.py` | `clean_db` truncates `video_assignments`, `rater_profiles` too. The session `db` fixture re-applies `scripts/auth_shim.sql` (idempotent) before the migrations so an older scratch database gains the PostgREST roles. |
+| `scripts/auth_shim.sql` | Test fixture only. Now also creates `anon` / `authenticated` (NOLOGIN) and gives them Supabase-like default privileges on `public`, so the migration's GRANT/REVOKE statements resolve and RLS can be exercised as a real non-superuser role. |
+| `tests/test_dataset_a.py` | **New, 30 tests** (see §10.4). |
+| `tests/test_rls_dataset_a.py` | **New, 7 tests.** Runs statements as `SET ROLE authenticated` / `anon` with `request.jwt.claims` set (what PostgREST does), so the policies and column privileges themselves are under test. |
 | `tests/test_snapshot.py`, `tests/test_irr_alpha.py` | **New**, 4 + 3 tests. |
 | `API_DATASET_A.md` | **New.** Frontend contract. |
 
@@ -1194,12 +1196,14 @@ Dataset B self-upload flow is untouched.
 
 ### 10.3 What could not be verified, and why
 
-- **Real Supabase RLS.** The API's DB role bypasses RLS; the test database
-  uses `scripts/auth_shim.sql` (a stub `auth.uid()`), so the new policies are
-  parsed and created but never exercised against a real JWT-bearing
-  PostgREST request. They mirror the API rules line for line and should be
-  spot-checked once with the anon key (a rater's token reading another
-  rater's environment row must return nothing).
+- **RLS against the real Supabase stack.** The policies and column
+  privileges ARE now exercised locally as the `authenticated` / `anon` roles
+  with `request.jwt.claims` set (`tests/test_rls_dataset_a.py`), which is
+  what PostgREST does. What is not exercised is Supabase's own `auth.uid()`
+  (the shim reads the same GUC) and its actual default grants; if the
+  project's `authenticated` role has grants beyond the defaults, the
+  REVOKE/GRANT in the migration still applies on top. One spot-check with
+  the anon key after `db push` (§10.5 step 4) closes that gap.
 - **`supabase db push`** was not run: no network to the project from this
   machine. The migration applies cleanly on Postgres 16 in the test fixture
   (the file runs after the v3 base and dimensions migration, in order).
@@ -1215,10 +1219,14 @@ Dataset B self-upload flow is untouched.
 
 ```
 $ cd data_collection/backend && TEST_DATABASE_URL=postgresql://root@localhost:5432/dyn_test_a python -m pytest tests/ -q
-108 passed
+116 passed
 ```
-(72 before this runbook, all still passing unmodified; +29 `test_dataset_a.py`,
-+4 `test_snapshot.py`, +3 `test_irr_alpha.py`.)
+(72 before this runbook, all still passing unmodified; +30 `test_dataset_a.py`
+(18 functions, one parametrised over the 12 admin routes), +7
+`test_rls_dataset_a.py`, +4 `test_snapshot.py`, +3 `test_irr_alpha.py`.)
+Also verified: a brand-new database built with `scripts/setup_test_db.sh`
+applies all three migrations, applies `20260922120000_dataset_a.sql` a
+second time without error, and passes the same 116.
 
 `test_dataset_a.py` covers: profile 404 → 201 → 409 and self-edit cannot
 touch tier/is_admin/validation_note; `/api/config` `version`; 403 on all 12
@@ -1263,7 +1271,10 @@ update.
    reference the API service's `DATABASE_URL` + `R2_*` variables). Run it once
    by hand and check `snapshots/<today>/` in the bucket.
 4. **Spot-check RLS** with the anon key once: as rater A, `GET
-   /rest/v1/environments?move_id=eq.<id>` must not return rater B's row.
+   /rest/v1/environments?move_id=eq.<id>` must not return rater B's row, and
+   `PATCH /rest/v1/video_assignments?id=eq.<mine>` with `{"status":"done"}`
+   must affect 0 rows. (`supabase db push` will also confirm the `anon` /
+   `authenticated` roles resolve, which they do on every Supabase project.)
 5. **Merge** only together with the frontend lane's branch (rule 6), after
    `supabase migration list` is clean.
 6. **IRR**: `GET /api/admin/export/long` (admin token) → `pip install
@@ -1276,3 +1287,61 @@ update.
 - Should a `done` assignment be re-openable by the rater, or only by an admin
   deleting and re-creating it? Currently admin only.
 - Retention for `snapshots/`: no lifecycle rule exists yet.
+
+### 10.7 Review fixes (same day, before merge)
+
+Four findings on the migration, fixed in place (the file had never been
+pushed), each with a test in `tests/test_rls_dataset_a.py`:
+
+1. **HIGH — `video_assignments_update` was rater-writable.** Via PostgREST a
+   rater could `UPDATE video_assignments SET video_id = <any>` and then read
+   that video, its holds, moves and pose key, or `SET status = 'done'`
+   bypassing `/complete`. Now `USING (public.is_admin()) WITH CHECK
+   (public.is_admin())`; INSERT/DELETE were already admin-only. Status
+   transitions belong to the API's role. Test:
+   `test_rater_cannot_repoint_or_complete_their_assignment`.
+2. **MEDIUM — owner could set `prep_status` / `dataset` directly.** Fixed
+   with column privileges — but **not** as a bare column `REVOKE`: Postgres
+   ignores a column-level REVOKE while the role still holds the table-level
+   privilege, and Supabase grants `authenticated` table-level ALL on every
+   public table by default (verified on Postgres 16 with
+   `has_column_privilege`). The migration therefore does `REVOKE UPDATE ON
+   videos FROM authenticated, anon` and `GRANT UPDATE (<every column except
+   id, user_id, uploaded_at, dataset, prep_status>) TO authenticated`. The
+   API's role (postgres / service, RLS-bypassing) is unaffected — the test
+   asserts that the API path still flips `prep_status`. Neither the frontend
+   nor the API updates `videos` through PostgREST, so nothing in use is
+   narrowed. A column the Worker lane adds later (`pose_*`) will not be
+   updatable by `authenticated`, which is the intended state (the worker
+   writes with the service role). Test:
+   `test_owner_cannot_change_prep_status_or_dataset_but_can_edit_metadata`.
+3. **LOW — a validated rater could not rename themself.** The self-update
+   policy required `tier = 'open' AND validation_note IS NULL`. Policies are
+   now simply "own row" for INSERT and UPDATE; `tier`, `validation_note`,
+   `is_admin` are protected by column privileges (table-level INSERT/UPDATE
+   revoked, then `GRANT INSERT (user_id, display_name, years_climbing,
+   coaching_cert, highest_grade, research_background, created_at)` and
+   `GRANT UPDATE (display_name, years_climbing, coaching_cert,
+   highest_grade, research_background)`). A self-insert relies on the column
+   defaults. Admin edits to the privileged columns go through
+   `PUT /api/admin/raters/{id}`; an admin through PostgREST is bound by the
+   same privileges (documented, intentional). Tests:
+   `test_validated_rater_can_rename_but_not_promote_themself`,
+   `test_self_insert_uses_defaults_and_cannot_name_privileged_columns`.
+4. **LOW — `ADD CONSTRAINT` re-run.** Both composite UNIQUE constraints are
+   added inside a `DO` block guarded on `pg_constraint`, so a manual re-run of
+   the file is a no-op (verified by applying it twice to a fresh database).
+
+Also from the same review, on the frontend half of this branch:
+
+5. `data_collection/frontend/src/App.jsx`: the `onAuthChange` null-session
+   branch now calls `resetForSignOut()` and drops `config`, as the sign-out
+   button does, so a dead session followed by another user signing in on the
+   same tab never keeps user A's moves/holds/labels/profile/queue. Test in
+   `App.test.jsx` (fails on the previous code). vitest 104/104, `npm run
+   build` and eslint green.
+
+To make the RLS tests possible, `scripts/auth_shim.sql` now creates the
+`anon` / `authenticated` roles with Supabase-like default privileges, and the
+`db` fixture re-applies the shim (idempotent) so an existing scratch database
+does not need rebuilding. **Never apply the shim to the Supabase project.**
