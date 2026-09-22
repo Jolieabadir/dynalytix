@@ -1104,3 +1104,175 @@ Railway keeps previous deployments: open the service → Deployments → pick th
 `7be1840` build → Redeploy. That restores the old backend. The Supabase project
 and R2 bucket are separate from it and are unaffected by a rollback.
 
+
+---
+
+## §10 Dataset A (runbook-w1-backend) — 2026-09-22
+
+Branch `feat/dataset-a-assignments`. Backend section of
+`claude-ops/runbook-w1-backend.md` only; the Frontend section is a separate
+lane and builds against `API_DATASET_A.md` (every new/changed endpoint with
+request/response JSON and error codes). Per MAILBOX rule 6 this branch merges
+to `main` **only together with** its frontend changes.
+
+### 10.1 Per-file changes
+
+| File | Change |
+|---|---|
+| `supabase/migrations/20260922120000_dataset_a.sql` | **New, additive only.** `videos` + `dataset` ('A'\|'B', default 'B'), `prep_status` ('draft'\|'ready'\|'closed', default 'draft'), `route_grade`, `wall_type`, `climber_experience`, `climber_height_cm`, `climber_ape_index_cm`, `camera_angle`, `gym`, `notes`. New `rater_profiles` (user_id PK, display_name, tier, years_climbing, coaching_cert, highest_grade, research_background, validation_note, **is_admin**, created_at). New `video_assignments` (id, video_id FK cascade, rater_user_id, cohort, status, assigned_at, completed_at, UNIQUE(video_id, rater_user_id)). `environments`/`outcomes`/`frame_tags` + `taxonomy_version text NOT NULL DEFAULT 'pre-3.1'` and `is_gold boolean NOT NULL DEFAULT false`. `environments`/`outcomes` UNIQUE(move_id) → UNIQUE(move_id, user_id). SQL helpers `public.is_admin()`, `public.has_assignment(video_id)`, `public.video_is_draft(video_id)` (SECURITY DEFINER) and RLS policies on every table mirroring the API rules. `schema_version` is **not** bumped (see §10.2). Does not touch the `pose_*` columns the Worker lane adds. |
+| `src/labeling/models.py` | `TAXONOMY_VERSION = "3.1.0"`; constants for datasets, prep statuses, cohorts, assignment statuses, tiers; `Video` gains the new columns + `is_locked()`; `Environment`/`Outcome`/`FrameTag` gain `taxonomy_version`, `is_gold`; new `RaterProfile`, `VideoAssignment`. |
+| `src/labeling/database.py` | Insert/update stamp the new columns. New unscoped `*_any` accessors (`get_video_any`, `get_holds_for_video_any`, `get_moves_for_video_any`, `update_hold_any`, `delete_hold_any`, `update_move_any`, `delete_move_any`, `get_hold_any`, `get_move_any`) for use only after the API's access check; `list_videos_admin`, `update_video_fields`, `get_videos_for_export`; cross-rater readers `get_environments_for_move_all` etc. for exports; profile CRUD (`create_rater_profile`, `get_rater_profile`, `is_admin`, `list_rater_profiles`, `update_rater_profile` (admin fields), `update_rater_profile_self` (rater fields)); assignment CRUD. Every existing per-user label query already filtered by `user_id`; confirmed none assumed one-env-per-move without it. `apply_schema_sql()` already applied every `supabase/migrations/*.sql` in filename order, so the new file is picked up by tests unchanged. |
+| `src/web/api.py` | Access model: `_require_video_access` → `VideoAccess(role = owner\|rater\|admin)`; `_require_structure_write` (holds/moves: owner while draft, admin always, rater never → 403); `_require_label_write` (rater: assignment open and video not closed; first write flips `assigned → in_progress`). All hold/move/environment/outcome/frame-tag routes go through these. Hold slots must reference holds on the move's own video (400). New: `DELETE /api/environments/{id}`, `DELETE /api/outcomes/{id}`, `GET/POST/PUT /api/me/profile`, `GET /api/me/assignments`, `POST /api/assignments/{id}/start`, `POST /api/assignments/{id}/complete` (422 + `missing[]`), `GET /api/admin/videos`, `PUT /api/admin/videos/{id}/metadata`, `POST /api/admin/videos/{id}/ready|close|reopen`, `GET/POST/DELETE /api/admin/assignments`, `GET /api/admin/raters`, `PUT /api/admin/raters/{user_id}`, `GET /api/admin/export/long`, `GET /api/admin/export/full`. `GET /api/config` gains `version`. `VideoResponse` gains `owner_user_id`, `dataset`, `prep_status`, metadata, `access_role`. App version 3.1.0. |
+| `src/labeling/exporter.py` | `Exporter._build_frame_labels` takes an explicit move list and hold lookup (default behaviour unchanged). New `AdminExporter`: `long_rows/long_csv` (one row per video × move × rater × lens × field, sorted) and `full_rows/full_csv` (per-video export shape across every video × rater). |
+| `src/labeling/__init__.py` | Re-exports the new models/constants. |
+| `scripts/snapshot_to_r2.py` | **New.** `COPY` every `public` base table to CSV → `snapshots/YYYY-MM-DD/<table>.csv` via `src/storage/r2`. `--dry-run`, `--date`. Exit 1 if any table failed (after trying all), 2 if env is missing. |
+| `scripts/railway.cron.md` | **New.** Scheduling as a Railway cron service (`python scripts/snapshot_to_r2.py`, `0 8 * * *` UTC), verification, restore, retention, Modal alternative. |
+| `scripts/irr_alpha.py` | **New.** Reads the long CSV, pivots (video, move) × rater per field, Krippendorff's alpha (ordinal for `form_quality`/`effort_level`, nominal otherwise; frame tags as presence per tag_type), NaN for missing, prints a table, optional `--json`. `pip install krippendorff`. |
+| `tests/conftest.py` | `clean_db` truncates `video_assignments`, `rater_profiles` too. |
+| `tests/test_dataset_a.py` | **New, 29 tests** (see §10.4). |
+| `tests/test_snapshot.py`, `tests/test_irr_alpha.py` | **New**, 4 + 3 tests. |
+| `API_DATASET_A.md` | **New.** Frontend contract. |
+
+No existing test was changed. `tests/test_api_scoping.py` and
+`tests/test_database_v3.py` pass unmodified, which is the evidence that the
+Dataset B self-upload flow is untouched.
+
+### 10.2 Defaults taken (runbook said "pick one, document it")
+
+- **Admin flag** = `rater_profiles.is_admin boolean NOT NULL DEFAULT false`, not
+  a `users_admin` table. One row per user already exists; the same query that
+  gates labeling answers "is this an admin". The API checks it (its DB role
+  bypasses RLS, as before); the RLS helper `public.is_admin()` reads the same
+  column for direct PostgREST access.
+- **`owner_user_id`** is `videos.user_id`, **not renamed**. The whole codebase
+  and the v3 RLS policies read `user_id`; the column is commented in SQL and
+  surfaced as `owner_user_id` in every `VideoResponse`. No duplicate column.
+- **`schema_version` not bumped.** `Database.check_schema()` requires an exact
+  match, so a bump would refuse to start the API on a database that has not
+  had this migration; the dimensions migration made the same call. Every new
+  NOT NULL column carries a DEFAULT so existing rows backfill in place.
+- **`taxonomy_version`** = `"3.1.0"` (`TAXONOMY_VERSION` in models.py, `version`
+  in `/api/config`), stamped on every insert and re-stamped on every PUT.
+  Pre-existing rows backfill to `'pre-3.1'`.
+- **Lock semantics.** `ready` and `closed` lock holds and moves for everyone
+  but admins, **including the owner**. `closed` additionally blocks rater
+  label writes. Owners keep writing their own labels on their own video at any
+  status (Dataset B is never closed by anyone but an admin). `POST
+  /api/admin/videos/{id}/reopen` (optional in the spec, implemented) returns to
+  `draft`.
+- **`ready` also sets `dataset = 'A'`**, so the prep flow needs no separate
+  call to tag the video.
+- **Rater `complete`** requires an environment **and** an outcome by that
+  rater on every canonical move; Strategy is the canonical move itself and
+  always counts. Frame tags are not required (a move may have none). Failure
+  is **422** with `missing: [{move_id, move_index, missing: [...]}]`. `done`
+  is final for the rater (further label writes 403); an admin deletes and
+  re-creates the assignment to reopen it.
+- **Assignment status**: `assigned → in_progress` on the rater's first label
+  write or on `POST /api/assignments/{id}/start`; `→ done` on `complete`.
+  Deleting an assignment keeps the rater's label rows.
+- **No cap on raters per video**: "3" is the study design, enforced by the
+  admin, not the API.
+- **Long export**: strategy rows are emitted once per rater (identical values
+  from the canonical move) so the per-field pivot is rectangular; the set of
+  raters on a move is assigned raters ∪ anyone with a label row, falling back
+  to the move creator (Dataset B). `frame_tags` lens: one row per tag, `field`
+  = tag_type, `value` = `frame:level:side:locations`. `environment` includes
+  `{slot}_hold_id` on top of the runbook's "type + quality" so agreement on
+  *which* hold was chosen is measurable. Defaults to `dataset=A`.
+- **Full export** = the per-video export's frame-level shape (pose columns +
+  label columns) for every video × rater, with identity columns in front and
+  the pose header unioned across videos. It re-streams every pose CSV from R2
+  and repeats frames per rater, so it is large; `?dataset=` / `?video_id=`
+  narrow it.
+- **Snapshot** is a Railway cron (the Worker runbook's Modal cron had not
+  landed when this ran); the script is platform-agnostic and the note explains
+  the Modal equivalent. Table list is discovered from `information_schema`, so
+  the Worker lane's or any future table is included automatically.
+- **Hold slot ids** on an environment must belong to the move's own video
+  (400 otherwise). Previously the check was "a hold the caller owns".
+
+### 10.3 What could not be verified, and why
+
+- **Real Supabase RLS.** The API's DB role bypasses RLS; the test database
+  uses `scripts/auth_shim.sql` (a stub `auth.uid()`), so the new policies are
+  parsed and created but never exercised against a real JWT-bearing
+  PostgREST request. They mirror the API rules line for line and should be
+  spot-checked once with the anon key (a rater's token reading another
+  rater's environment row must return nothing).
+- **`supabase db push`** was not run: no network to the project from this
+  machine. The migration applies cleanly on Postgres 16 in the test fixture
+  (the file runs after the v3 base and dimensions migration, in order).
+- **The nightly cron is not scheduled** — that is a Railway dashboard action
+  (§10.5). The script was run only with a mocked `r2.put_object`.
+- **`GET /api/admin/export/full` at production scale** (hundreds of MB for
+  many videos × 3 raters) was not load-tested.
+- **The `krippendorff` package** is not in `requirements.txt` on purpose: it
+  is a notebook/CLI dependency, not an API one. `tests/test_irr_alpha.py`
+  skips if it is not installed.
+
+### 10.4 Test output
+
+```
+$ cd data_collection/backend && TEST_DATABASE_URL=postgresql://root@localhost:5432/dyn_test_a python -m pytest tests/ -q
+108 passed
+```
+(72 before this runbook, all still passing unmodified; +29 `test_dataset_a.py`,
++4 `test_snapshot.py`, +3 `test_irr_alpha.py`.)
+
+`test_dataset_a.py` covers: profile 404 → 201 → 409 and self-edit cannot
+touch tier/is_admin/validation_note; `/api/config` `version`; 403 on all 12
+`/api/admin/*` routes for a non-admin and for a user with no profile; admin
+tier/validation update; assignment CRUD incl. 409/400/404, queue, admin video
+counts; rater reads assigned video/holds/moves/csv and gets 404 on unassigned
+ones and in `GET /api/videos`; **rater A cannot see or touch rater B's
+environment/outcome/frame_tags on the same move, both can hold their own**;
+rater 403 on every hold/move write; owner locked out of holds/moves at
+`ready`, admin edits through, reopen restores; `closed` blocks rater label
+writes; `complete` 422 with the exact `missing` list twice, then 200, done is
+final, idempotent; `start`; long export columns/row count (2 raters × 3 moves
+= 3 × (2 × 22 + 1 + 2) = 141 rows), tiers/cohorts, pipe-delimited values, tag
+value format, sort order, determinism, `?video_id=`, `?dataset=all`, and the
+CSV fed through `irr_alpha.compute`; full export columns and rows across an
+admin-prepped A video and a rater-owned B video; taxonomy_version stamped and
+re-stamped on PUT with `pre-3.1` readable; Dataset B defaults; admin metadata
+update.
+
+### 10.5 Manual steps for Jolie
+
+1. **Apply the migration** (MAILBOX rule 8) on the **session pooler, port
+   5432**, before this branch's code deploys:
+   ```bash
+   cd data_collection/backend
+   supabase db push --db-url "$SESSION_POOLER_URL"     # applies 20260922120000_dataset_a.sql
+   supabase migration list --db-url "$SESSION_POOLER_URL"   # must show no pending rows
+   ```
+   If the Worker lane's `20260922130000_pose_status.sql` is also on the branch
+   it applies in the same push, after this one. Both are additive.
+2. **Create the first admin** (yourself). Sign in once on the app and create
+   a profile (the profile gate), then in the Supabase SQL editor:
+   ```sql
+   update public.rater_profiles set is_admin = true
+   where user_id = '<your auth.users uuid>';
+   ```
+   (`select id, email from auth.users;` to find it.) Further admins can be
+   flagged from the app via `PUT /api/admin/raters/{user_id}` `{"is_admin": true}`.
+3. **Schedule the nightly snapshot**: follow `scripts/railway.cron.md`
+   (new Railway service from the same repo, root `data_collection/backend`,
+   start command `python scripts/snapshot_to_r2.py`, cron `0 8 * * *`,
+   reference the API service's `DATABASE_URL` + `R2_*` variables). Run it once
+   by hand and check `snapshots/<today>/` in the bucket.
+4. **Spot-check RLS** with the anon key once: as rater A, `GET
+   /rest/v1/environments?move_id=eq.<id>` must not return rater B's row.
+5. **Merge** only together with the frontend lane's branch (rule 6), after
+   `supabase migration list` is clean.
+6. **IRR**: `GET /api/admin/export/long` (admin token) → `pip install
+   krippendorff numpy` → `python scripts/irr_alpha.py dynalytix_long.csv`.
+
+### 10.6 Open questions (for chat, not the Mailbox)
+
+- Should `complete` require at least one frame tag per move, or is "no
+  sensation" a valid rating? Currently not required.
+- Should a `done` assignment be re-openable by the rater, or only by an admin
+  deleting and re-creating it? Currently admin only.
+- Retention for `snapshots/`: no lifecycle rule exists yet.
