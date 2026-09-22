@@ -1389,3 +1389,102 @@ One test is worth calling out: **the same contact is resolved identically at 192
 comparison, and it is the property the whole §11/§12 pair exists to protect.
 
 Lint clean on every new and changed file; build succeeds.
+
+---
+
+## 13. Dataset A frontend (runbook-w1-backend, frontend half)
+
+Branch `feat/dataset-a-assignments`, on top of the backend half (commits `1fe2947`…
+`2a00c38`). Built against `data_collection/backend/API_DATASET_A.md`. Dataset B — the
+self-upload flow under **My videos** — is the app as it was; a non-admin with no
+assignments lands there with no Admin tab (asserted in `App.test.jsx`).
+
+### 13.1 Per-file changes
+
+**Backend (one additive endpoint, documented in API_DATASET_A.md)**
+
+| File | Change |
+|---|---|
+| `backend/src/web/api.py` | `GET /api/videos/{id}/video-url` → `{url, expires_in}`: presigned GET for the original video, owner/rater/admin scoped through `_require_video_access`, 404 when no original was uploaded. Without it the rating view had nothing to play — a rater never had the file in their browser, and `VideoPlayer` only played from the session's blob URL. |
+| `backend/tests/test_dataset_a.py` | `test_playback_url_for_owner_rater_admin_and_404_otherwise` (108 → 109). |
+| `backend/API_DATASET_A.md` | The endpoint, under *New endpoints*. |
+
+**Frontend — new**
+
+| File | What |
+|---|---|
+| `api/client.js` | `getMyProfile` (404 → `null`), `createMyProfile`, `updateMyProfile`, `getMyAssignments`, `startAssignment`, `completeAssignment` (a 422 with `missing` comes back as `{incomplete: true, detail, missing}` — a normal outcome, not an exception), `deleteEnvironment/Outcome`, `adminListVideos`, `adminUpdateVideoMetadata`, `adminMarkReady/CloseVideo/ReopenVideo`, `adminListAssignments`, `adminCreateAssignment`, `adminDeleteAssignment`, `adminListRaters`, `adminUpdateRater`, `downloadAdminExport(kind, {dataset, video_id}, saveBlob)` — authenticated `fetch` → blob → temporary `<a download>`, filename from `Content-Disposition` (the same pattern as `getExportDownloadUrl`; the export routes are not presigned). `getVideoPlaybackUrl` (404 → `null`). |
+| `api/client.test.js` | The export helper (token on the request, filename parsing, non-OK → throw and no save), `completeAssignment` 422/200/other, `getMyProfile` 404. |
+| `store/useStore.js` | `profile`, `view` (`videos` \| `queue` \| `admin` \| `rating`), `assignments`, `currentAssignment`, `readOnlyStructure`, `videoPlaybackUrl`, and `resetVideoState()` — one `VIDEO_SCOPED_RESET` object shared with `resetForSignOut`, so opening another assignment (or signing out) wipes moves, holds, frame tags, csv, the environment prefill and the read-only flag. **This is the client-side half of "never render another rater's labels"**: the API only ever returns the caller's rows, and the store never carries rows from one video into the next. |
+| `utils/csv.js` | `parsePoseCsv` — the parse `VideoUpload`/`VideoPlayer` do inline, shared by the two entry points that load someone else's extraction. |
+| `components/LensFields.jsx` | `EnvironmentLens`, `OutcomeLens`, `RadioGroup` extracted from `MoveForm` (same DOM — the 15 MoveForm tests pass unchanged), plus `StrategySummary` (read-only Lens 2). `EnvironmentLens` takes an optional `holds` list and then renders a per-slot dropdown restricted to those holds, next to the existing *Pick on video*. |
+| `components/ProfileGate.jsx` (+test) | Display name, years climbing, highest grade, coaching cert (optional), research background → `POST /api/me/profile`. Rendered in place of the app until it succeeds. No tier control: tier is admin-set. |
+| `components/AppNav.jsx` | My videos / My queue / Admin (`profile.is_admin` only). Leaving the rating view calls `resetVideoState`. Open-assignment count badge on My queue. |
+| `components/MyQueue.jsx` (+test) | `GET /api/me/assignments` → table (filename, moves, cohort, status, assigned date), *Rate* / *Review*. Re-fetched on every mount. |
+| `components/RatingView.jsx` (+test) | Loads video, holds, canonical moves, playback URL, pose CSV (for suggestions), and this rater's environment/outcome presence per move; sets `readOnlyStructure`; calls `POST …/start` on open when status is `assigned`. Side column: `MovesList readOnly` (with ✓/○ per lens) or `RaterMoveForm`. *Tag Frames* → the existing `TaggingMode`. **Complete** → `POST /api/assignments/{id}/complete`; 422 renders `missing` inline as "Move N: missing Environment and Outcome" with each entry clickable to open that move; 200 sets status `done`, updates the queue entry, hides Complete, locks the form and tags. |
+| `components/RaterMoveForm.jsx` | The rater's three-lens panel: `StrategySummary` (approach, size, tags, form quality, effort, prepper confidence, notes — read-only), `EnvironmentLens` and `OutcomeLens` editable. Loads with `GET /moves/{id}/environment|outcome` (the caller's own), saves with `POST` first time / `PUT` after; a `409` on POST (reload mid-save) falls back to GET+PUT. Hold slots: *Pick on video* (through `holdPickSlot` + `HoldOverlay` pick mode) or the dropdown, both limited to the video's holds. First-open auto-suggest from the pose data, marked *suggested*, as in `MoveForm`. 403 → "This rating is locked". |
+| `components/AdminView.jsx` (+test) | `GET /api/admin/videos` table: filename, owner (resolved to a display name through the rater roster), dataset, prep_status pill, assignment count (+done). Row actions: *Open* (loads the video into the Define/prep flow), *Mark ready* (draft), *Close* (ready), *Reopen* (ready/closed), *Assign rater* (expands: rater picker from `GET /api/admin/raters` minus already-assigned, cohort select `validated`/`overlap`, assignment list with remove). 409 → "already assigned". Exports panel: dataset select (A/B/all) + *Export long CSV* / *Export full CSV*. Raters panel: tier select + validation note → `PUT /api/admin/raters/{user_id}`. |
+| `components/VideoMetadataPanel.jsx` (+test) | Above the labeling area in the owner flow: filename · dataset · prep_status pill; *Video details* toggles the metadata form (route_grade, wall_type, climber_experience, climber_height_cm, climber_ape_index_cm, camera_angle, gym, notes) → `PUT /api/admin/videos/{id}/metadata` for admins, read-only values otherwise; *Mark ready to rate* / *Reopen for editing* for admins. Sets `readOnlyStructure` when the video is `ready`/`closed` **and** the viewer is not an admin, with a banner saying holds and moves are locked. |
+| `App.test.jsx` | Non-admin/no-assignment lands on My videos with no Admin tab; profile 404 → gate → app; ≥1 assignment → My queue; admin tab → admin view. |
+| `components/HoldOverlay.test.jsx` | readOnly: click does not delete, drag does not draw, pick still works; default mode still deletes. |
+
+**Frontend — changed**
+
+| File | Change |
+|---|---|
+| `App.jsx` | Boot: session → config → profile (`404` → `ProfileGate`, error → sign-out screen) → assignments → landing (`queue` if any, else `videos`). Header gains `AppNav` and shows the display name (+ *validated* badge). View switch: `rating` → `RatingView`, `queue` → `MyQueue`, `admin` (admin only) → `AdminView`, else the unchanged Define/Tagging pair. `DefineMode` renders `VideoMetadataPanel` and, when `readOnlyStructure`, hides the define banner, never opens `MoveForm`, and renders `MovesList readOnly`. Admin *Open* fetches holds, playback URL and pose CSV so the reopened video is labelable. Session lost via `onAuthChange` resets the gate state so the next sign-in re-runs it. |
+| `components/MoveForm.jsx` | Uses `EnvironmentLens`/`OutcomeLens`/`RadioGroup`; Strategy section and all state/validation untouched. |
+| `components/HoldOverlay.jsx` | `readOnly` prop: no drag-to-create, no click-to-delete, pick unchanged; titles/aria say "Hold N" instead of "Delete hold N". |
+| `components/VideoPlayer.jsx` | Reads `readOnlyStructure`, `videoPlaybackUrl`, `currentMove`. Read-only: `[`/`]` ignored, Mark Start/End/Create Move replaced by a "Select a move" strip, hold hint reworded, overlay read-only, the selected canonical move's range shown on the timeline. `src` falls back to the playback URL. |
+| `components/MovesList.jsx` | `readOnly`, `onSelect`, `labelStatus` props; heading "Canonical Moves", numbered cards with *Rate* / *Edit rating*, ✓/○ per lens, no ✕. Default props render exactly the old list. Dropped two unused imports (pre-existing lint error). |
+| `components/TaggingMode.jsx` | In rating: *← Back to moves* instead of *Save & Next Move* + *Done*; tag buttons and delete disabled with a note once the assignment is `done` or the video `closed`. `src` falls back to the playback URL. |
+| `App.css` | Nav, pills, tables, rating strip, missing list, strategy summary, hold select, metadata panel, admin panels. Appended; nothing existing changed. |
+
+### 13.2 Defaults taken (not asked)
+
+- **Opening an assignment calls `/start`** (idempotent), so the queue shows *In progress* as soon as a rater has looked at a video, not only after the first label write.
+- **Landing rule** is "≥ 1 assignment of any status → My queue". A rater whose assignments are all `done` still lands on the queue; My videos is one click away.
+- **Metadata form is admin-only** because the endpoint is (`PUT /api/admin/videos/{id}/metadata`). A non-admin owner sees the values read-only with a note that an admin fills them. See discrepancy (a) below.
+- **Admins are never structure-locked**: an admin who owns a `ready` video keeps hold/move editing (the API allows it; `access_role` comes back `owner` on the fast path, so the flag keys on `profile.is_admin`, not `access_role`).
+- Rater form reuses MoveForm's rule that `foot` is optional and the three hand slots need a hold **type** (a hold id is optional); `no_hands` on the canonical move hides the hand slots.
+- Owner display in the admin table resolves `owner_user_id` through the rater roster; a user with no profile shows the first 8 characters of the uuid.
+- Exports default to `dataset=A` (the API default for long) with a select for B/all; `video_id` narrowing is supported by the client helper but has no UI.
+- `label` status per move in the rating view costs 2 GETs per move on open; fine at prep sizes (≤ ~15 moves), noted in case videos get long.
+
+### 13.3 Contract discrepancies found
+
+(a) **Prep metadata is admin-only.** The runbook's frontend item 5 puts the metadata form in "the existing upload → holds → define flow", but the only write endpoint is `PUT /api/admin/videos/{id}/metadata` (403 for non-admins). Since the runbook's design also says the prep pass is an admin task, the UI follows the API: admins edit, owners read. If Dataset B uploaders should fill their own metadata later, the backend needs an owner-scoped `PUT /api/videos/{id}/metadata`.
+
+(b) **No playback URL existed.** Not in the contract at all; added as `GET /api/videos/{id}/video-url` (see 13.1). `VideoResponse.r2_video_key` is exposed but is useless client-side without a signature.
+
+(c) `access_role` is `owner`, not `admin`, for an admin on their own draft video (documented in `_require_video_access`); harmless, but the UI must not use it to decide admin powers — it uses `profile.is_admin`.
+
+(d) `GET /api/videos` remains owner-only, so there is still no "My videos" *list* — My videos is the upload screen as before, and an existing video is reopened from the Admin table (*Open*). A non-admin cannot reopen their own earlier upload; that was already true.
+
+### 13.4 Verification
+
+- `cd data_collection/frontend && npx vitest run` — **103 passed** (was 67; 36 new across `App`, `ProfileGate`, `MyQueue`, `RatingView`, `AdminView`, `VideoMetadataPanel`, `HoldOverlay`, `api/client`).
+- `npm run build` — succeeds (CSS 45.6 kB, JS 462.6 kB gzip 147 kB, unchanged JS size).
+- `npx eslint src/` — every new and changed file clean. The 4 errors + 1 warning in `SkeletonOverlay.jsx` predate this work and were left alone.
+- `cd data_collection/backend && TEST_DATABASE_URL=… python -m pytest tests/ -q` — **109 passed** (was 108).
+
+### 13.5 What could not be verified, and why
+
+- **No browser run against the deployed API.** No dev server or deployed backend was reachable from this session; everything above is jsdom with the API client mocked, plus the real backend under pytest. In particular: real `<video>` playback from the presigned R2 URL (CORS on the bucket is configured for PUT from `r2-cors.json` — a GET from the app origin needs `GET` in `AllowedMethods` or the video will not load; check that first if the player is blank), the blob download in a real browser, and layout of the new tables on a phone.
+- **No real 3-rater session.** Cross-rater invisibility is enforced and tested server-side (`test_raters_never_see_each_others_labels`); the client-side guarantee is `resetVideoState` on every open/exit and the fact that nothing reads label rows except by the caller's own GETs. Not exercised with three real accounts.
+- **Long export → `scripts/irr_alpha.py`** round trip through the browser download was not run; the shape is tested in `test_long_export_shape`.
+- `VideoPlayer` and `TaggingMode` are stubbed in the `RatingView`/`App` tests (jsdom has no canvas/video); their read-only behaviour is covered through the store flag and `HoldOverlay.test.jsx`, not a rendered player.
+
+### 13.6 Manual QA for Jolie
+
+Prerequisites: migration pushed (`supabase migration list` clean), backend deployed from this branch, `is_admin = true` set on your `rater_profiles` row in SQL after you have created your profile once through the app.
+
+1. **Profile gate.** Sign in with a fresh account → the profile form appears instead of the app; save → app. Sign out/in → no gate the second time. `GET /api/me/profile` in the network tab is 404 then 200.
+2. **Prep (admin).** My videos → upload a short clip → holds detected/drawn → define 2–3 moves → *Video details* → fill route grade, wall type, height → *Save details* → *Mark ready to rate*. The pill turns `ready`; you (admin) can still add/delete holds. Reload; Admin → *Open* on that video: the video plays (if it doesn't, see the CORS note in 13.5), holds and moves are there.
+3. **Assign.** Admin → the video row → *Assign rater* → pick two test accounts (each must have saved a profile first, or the API 404s) with cohort `validated`; a third with `overlap`. Assigning the same rater twice → "already assigned".
+4. **Rate (rater A).** Sign in as A → lands on My queue → *Rate*. Check: no *Mark Start/End*, no *Create Move*, no ✕ on moves or holds, dragging on the video draws nothing, `[`/`]` do nothing. Open move 1: Strategy is a read-only summary; pick holds via *Pick on video* and via the dropdown (only the prepped holds appear); *Save Rating*; the card shows ✓ Environment ✓ Outcome. *Tag Frames* → add a tag → *← Back to moves*. Press *Complete* with move 2 unrated → the red box lists "Move 2: missing Environment and Outcome"; click it → the form opens. Rate it → *Complete* → status *Done*, form/tag controls disabled, queue shows *Done*.
+5. **Independence (rater B).** Sign in as B on the same video: every move shows ○ ○, no tags — nothing of A's. Rate differently. Sign back in as A: A's labels are still A's.
+6. **Owner lock (non-admin).** As a non-admin, upload a video, then have the admin mark it ready; reopen it (Admin can't do this for them — instead use the same account before reload): the banner says holds and moves are locked and the ✕/drag controls are gone.
+7. **Export.** Admin → *Export long CSV* (dataset A) → a file `dynalytix_long.csv` downloads; `python scripts/irr_alpha.py dynalytix_long.csv` runs on it. *Export full CSV* with dataset `all` → `dynalytix_full.csv`.
+8. **Raters panel.** Set A to `validated` with a note → *Save*; A's header badge reads *validated* after their next sign-in.
+9. **Close.** Admin → *Close* the video → rater B (not done) sees "This video is closed to rating" and cannot save. *Reopen* → `draft` again; the owner can edit structure.
