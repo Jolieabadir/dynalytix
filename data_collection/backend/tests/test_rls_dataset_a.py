@@ -251,3 +251,26 @@ def test_anon_sees_nothing(world):
     anon = as_(world, None)
     for table in ('videos', 'holds', 'moves', 'environments', 'rater_profiles', 'video_assignments'):
         assert anon.rows(f'SELECT 1 FROM {table}') == [], table
+
+
+# ==================== 7. pose_* columns: worker/API only ====================
+
+def test_pose_columns_are_not_writable_through_postgrest(world):
+    """The pose job state is written by the worker (service-role DATABASE_URL)
+    or the API's pose-result callback, never by a signed-in user. The Dataset A
+    migration's column-level UPDATE grant deliberately leaves pose_* out, and
+    the pose_status migration adds no grant, so a forged 'done' from the
+    browser is refused. Reading them is fine (the chip polls /status through
+    the API, but PostgREST would work too)."""
+    owner = as_(world, 'owner')
+    for column, value in (('pose_status', "'done'"), ('pose_error', "'x'"),
+                          ('pose_finished_at', 'now()')):
+        assert owner.error(f"UPDATE videos SET {column} = {value} WHERE id = %s",
+                           (world['video_id'],)) is psycopg.errors.InsufficientPrivilege, column
+    assert as_(world, 'admin').error("UPDATE videos SET pose_status = 'done' WHERE id = %s",
+                                     (world['video_id'],)) is psycopg.errors.InsufficientPrivilege
+    rows = as_(world, 'rater_a').rows('SELECT pose_status FROM videos WHERE id = %s', (world['video_id'],))
+    assert rows and rows[0]['pose_status'] == 'pending'
+    # The API's own role is unaffected: this is the worker's path.
+    assert world['db'].record_pose_result(world['video_id'], 'processing')
+    assert world['db'].get_video_any(world['video_id']).pose_status == 'processing'

@@ -9,8 +9,14 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
+from src.labeling import pose_queue
+from src.storage import r2
 from src.web import api as api_module
-from tests.conftest import make_jwt, requires_db
+from tests.conftest import make_jwt, requires_db  # noqa: F401 - `enqueued` fixture lives in conftest
+
+WORKER_SECRET = 'test-worker-secret'
+# The real enqueue, captured before any fixture replaces it.
+_real_enqueue = pose_queue.enqueue_pose_job
 
 pytestmark = requires_db
 
@@ -18,10 +24,11 @@ pytestmark = requires_db
 # ==================== FIXTURES ====================
 
 @pytest.fixture
-def client(clean_db, fake_r2, monkeypatch):
-    """TestClient wired to the test database and the R2 fixture."""
+def client(clean_db, fake_r2, enqueued, monkeypatch):
+    """TestClient wired to the test database, the R2 fixture and a fake worker."""
     monkeypatch.setattr(api_module, '_db', clean_db)
     monkeypatch.setattr(api_module, '_exporter', None)
+    monkeypatch.setenv('MODAL_WEBHOOK_SECRET', WORKER_SECRET)
     with TestClient(api_module.app) as test_client:
         yield test_client
 
@@ -39,6 +46,7 @@ POSE_CSV = (
 
 
 def register_video(client, user_id, filename='climb.mp4'):
+    """Register with the browser's provisional metadata (no CSV any more)."""
     response = client.post(
         '/api/videos/register',
         json={
@@ -46,12 +54,61 @@ def register_video(client, user_id, filename='climb.mp4'):
             'fps': 30.0,
             'total_frames': 3,
             'duration_ms': 100.0,
-            'csv_data': POSE_CSV,
+            'width': 1920,
+            'height': 1080,
         },
         headers=auth(user_id),
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def upload_video(client, user_id, video):
+    """upload-url -> (pretend PUT) -> confirm-upload. Returns the confirm body."""
+    presigned = client.post(
+        f'/api/videos/{video["id"]}/upload-url',
+        json={'content_type': 'video/mp4'},
+        headers=auth(user_id),
+    )
+    assert presigned.status_code == 200, presigned.text
+    confirmed = client.post(
+        f'/api/videos/{video["id"]}/confirm-upload',
+        json={'key': presigned.json()['key']},
+        headers=auth(user_id),
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    return confirmed.json()
+
+
+def finish_pose(client, user_id, video, csv_text=POSE_CSV, **overrides):
+    """Play the worker: put the CSV in R2 and post the done callback."""
+    key = r2.pose_csv_key(user_id, video['id'])
+    r2.put_object(key, csv_text, content_type='text/csv')
+    body = {
+        'status': 'done',
+        'fps': 30.0,
+        'total_frames': 3,
+        'duration_ms': 100.0,
+        'width': 1920,
+        'height': 1080,
+        'r2_pose_csv_key': key,
+    }
+    body.update(overrides)
+    response = client.post(
+        f'/api/videos/{video["id"]}/pose-result',
+        json=body,
+        headers={pose_queue.SECRET_HEADER: WORKER_SECRET},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def ready_video(client, user_id, filename='climb.mp4'):
+    """A video that has been registered, uploaded and pose-extracted."""
+    video = register_video(client, user_id, filename)
+    upload_video(client, user_id, video)
+    finish_pose(client, user_id, video)
+    return client.get(f'/api/videos/{video["id"]}', headers=auth(user_id)).json()
 
 
 def create_move(client, user_id, video_id):
@@ -130,32 +187,245 @@ def test_expired_token_is_rejected(client, user_a):
 
 # ==================== REGISTER ====================
 
-def test_register_stores_pose_csv_in_r2(client, fake_r2, user_a):
+def test_register_creates_a_pending_row_with_no_csv(client, fake_r2, user_a):
     video = register_video(client, user_a)
 
-    assert video['r2_pose_csv_key'] == f'pose/{user_a}/{video["id"]}.csv'
+    assert video['pose_status'] == 'pending'
+    assert video['pose_error'] is None
+    assert video['r2_pose_csv_key'] is None
     assert video['r2_video_key'] is None
     assert video['fps'] == 30.0
     assert video['total_frames'] == 3
-
+    assert video['width'] == 1920
     if fake_r2 is not None:
-        assert fake_r2.objects[video['r2_pose_csv_key']].decode() == POSE_CSV
+        assert fake_r2.objects == {}
 
 
-def test_register_rejects_oversized_body(client, user_a):
-    oversized = 'x' * (api_module.MAX_REGISTER_BYTES + 1024)
+def test_register_ignores_csv_data(client, user_a):
+    """The old inline-CSV field is gone; a stale client must not 500."""
     response = client.post(
         '/api/videos/register',
-        json={
-            'filename': 'huge.mp4',
-            'fps': 30.0,
-            'total_frames': 1,
-            'duration_ms': 1.0,
-            'csv_data': oversized,
-        },
+        json={'filename': 'old.mp4', 'fps': 30.0, 'total_frames': 1,
+              'duration_ms': 33.0, 'csv_data': POSE_CSV},
         headers=auth(user_a),
     )
-    assert response.status_code == 413
+    assert response.status_code == 201
+    assert response.json()['r2_pose_csv_key'] is None
+
+
+def test_register_defaults_provisional_metadata(client, user_a):
+    response = client.post(
+        '/api/videos/register', json={'filename': 'bare.mov'}, headers=auth(user_a)
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body['fps'] == api_module.PROVISIONAL_FPS
+    assert body['total_frames'] == 0
+    assert body['pose_status'] == 'pending'
+
+
+# ==================== POSE JOB ====================
+
+def test_confirm_upload_enqueues_the_pose_job(client, enqueued, user_a):
+    video = register_video(client, user_a)
+    confirmed = upload_video(client, user_a, video)
+
+    assert confirmed['pose_status'] == 'pending'
+    assert enqueued == [{
+        'video_id': video['id'],
+        'user_id': user_a,
+        'r2_key': f'videos/{user_a}/{video["id"]}/climb.mp4',
+    }]
+
+
+def test_confirm_upload_marks_failed_when_worker_not_configured(client, monkeypatch, user_a):
+    monkeypatch.delenv('MODAL_ENDPOINT_URL', raising=False)
+    # Use the real enqueue so the not-configured branch is exercised.
+    monkeypatch.setattr(pose_queue, 'enqueue_pose_job', _real_enqueue)
+    video = register_video(client, user_a)
+    confirmed = upload_video(client, user_a, video)
+
+    assert confirmed['r2_video_key'].startswith(f'videos/{user_a}/')
+    assert confirmed['pose_status'] == 'failed'
+    assert 'worker not configured' in confirmed['pose_error']
+
+
+def test_confirm_upload_marks_failed_when_enqueue_raises(client, monkeypatch, user_a):
+    def boom(video_id, user_id, r2_key):
+        raise pose_queue.PoseQueueError('worker unreachable: ConnectError')
+
+    monkeypatch.setattr(pose_queue, 'enqueue_pose_job', boom)
+    video = register_video(client, user_a)
+    confirmed = upload_video(client, user_a, video)
+
+    assert confirmed['pose_status'] == 'failed'
+    assert confirmed['pose_error'] == 'worker unreachable: ConnectError'
+    status = client.get(f'/api/videos/{video["id"]}/status', headers=auth(user_a)).json()
+    assert status['pose_status'] == 'failed'
+    assert status['pose_finished_at']
+
+
+def test_status_endpoint_is_scoped_and_reports_pose_fields(client, user_a, user_b):
+    video = register_video(client, user_a)
+    response = client.get(f'/api/videos/{video["id"]}/status', headers=auth(user_a))
+    assert response.status_code == 200
+    body = response.json()
+    assert body['pose_status'] == 'pending'
+    assert body['fps'] == 30.0
+    assert body['total_frames'] == 3
+    assert body['width'] == 1920
+    assert set(body) >= {'pose_status', 'pose_error', 'pose_started_at',
+                         'pose_finished_at', 'fps', 'total_frames', 'width', 'height'}
+
+    assert client.get(f'/api/videos/{video["id"]}/status', headers=auth(user_b)).status_code == 404
+
+
+def test_pose_result_requires_the_worker_secret(client, user_a):
+    video = register_video(client, user_a)
+    url = f'/api/videos/{video["id"]}/pose-result'
+    body = {'status': 'processing'}
+
+    assert client.post(url, json=body).status_code == 401
+    assert client.post(url, json=body, headers={pose_queue.SECRET_HEADER: 'wrong'}).status_code == 401
+    # A user JWT is not a worker credential either.
+    assert client.post(url, json=body, headers=auth(user_a)).status_code == 401
+    assert client.post(url, json=body, headers={pose_queue.SECRET_HEADER: WORKER_SECRET}).status_code == 200
+
+
+def test_pose_result_walks_processing_then_done_and_overwrites_metadata(client, user_a):
+    video = register_video(client, user_a)
+    upload_video(client, user_a, video)
+    headers = {pose_queue.SECRET_HEADER: WORKER_SECRET}
+
+    processing = client.post(
+        f'/api/videos/{video["id"]}/pose-result', json={'status': 'processing'}, headers=headers
+    ).json()
+    assert processing['pose_status'] == 'processing'
+    assert processing['pose_started_at']
+    assert processing['pose_finished_at'] is None
+
+    # ffprobe says 60fps and 1080x1920 (a rotated phone clip); those win.
+    done = finish_pose(client, user_a, video, fps=60.0, total_frames=6, duration_ms=100.0,
+                       width=1080, height=1920)
+    assert done['pose_status'] == 'done'
+    assert done['fps'] == 60.0
+    assert done['total_frames'] == 6
+    assert done['width'] == 1080 and done['height'] == 1920
+    assert done['r2_pose_csv_key'] == f'pose/{user_a}/{video["id"]}.csv'
+    assert done['pose_finished_at']
+
+    fetched = client.get(f'/api/videos/{video["id"]}', headers=auth(user_a)).json()
+    assert fetched['fps'] == 60.0 and fetched['pose_status'] == 'done'
+
+
+def test_pose_result_failed_records_the_error(client, user_a):
+    video = register_video(client, user_a)
+    response = client.post(
+        f'/api/videos/{video["id"]}/pose-result',
+        json={'status': 'failed', 'error': 'ffmpeg produced no frames'},
+        headers={pose_queue.SECRET_HEADER: WORKER_SECRET},
+    )
+    assert response.status_code == 200
+    assert response.json()['pose_status'] == 'failed'
+    assert response.json()['pose_error'] == 'ffmpeg produced no frames'
+
+
+def test_pose_result_done_requires_a_csv_key(client, user_a):
+    video = register_video(client, user_a)
+    response = client.post(
+        f'/api/videos/{video["id"]}/pose-result',
+        json={'status': 'done'},
+        headers={pose_queue.SECRET_HEADER: WORKER_SECRET},
+    )
+    assert response.status_code == 400
+
+
+def test_pose_result_unknown_video_is_404(client):
+    response = client.post(
+        '/api/videos/999999/pose-result',
+        json={'status': 'processing'},
+        headers={pose_queue.SECRET_HEADER: WORKER_SECRET},
+    )
+    assert response.status_code == 404
+
+
+def test_retry_pose_reenqueues_a_failed_job(client, enqueued, monkeypatch, user_a):
+    video = register_video(client, user_a)
+    upload_video(client, user_a, video)
+    client.post(
+        f'/api/videos/{video["id"]}/pose-result',
+        json={'status': 'failed', 'error': 'gpu hiccup'},
+        headers={pose_queue.SECRET_HEADER: WORKER_SECRET},
+    )
+    enqueued.clear()
+
+    response = client.post(f'/api/videos/{video["id"]}/retry-pose', headers=auth(user_a))
+    assert response.status_code == 200, response.text
+    assert response.json()['pose_status'] == 'pending'
+    assert response.json()['pose_error'] is None
+    assert len(enqueued) == 1 and enqueued[0]['video_id'] == video['id']
+
+
+def test_retry_pose_refuses_while_processing_or_done(client, user_a):
+    video = register_video(client, user_a)
+    upload_video(client, user_a, video)
+    client.post(
+        f'/api/videos/{video["id"]}/pose-result', json={'status': 'processing'},
+        headers={pose_queue.SECRET_HEADER: WORKER_SECRET},
+    )
+    assert client.post(f'/api/videos/{video["id"]}/retry-pose', headers=auth(user_a)).status_code == 409
+    finish_pose(client, user_a, video)
+    assert client.post(f'/api/videos/{video["id"]}/retry-pose', headers=auth(user_a)).status_code == 409
+
+
+def test_retry_pose_before_upload_is_400_and_scoped(client, user_a, user_b):
+    video = register_video(client, user_a)
+    assert client.post(f'/api/videos/{video["id"]}/retry-pose', headers=auth(user_a)).status_code == 400
+    assert client.post(f'/api/videos/{video["id"]}/retry-pose', headers=auth(user_b)).status_code == 404
+
+
+def test_pose_csv_url_409_until_done_then_presigned(client, user_a, user_b):
+    video = register_video(client, user_a)
+    upload_video(client, user_a, video)
+    response = client.get(f'/api/videos/{video["id"]}/pose-csv-url', headers=auth(user_a))
+    assert response.status_code == 409
+    assert response.json()['detail'] == 'pose extraction not finished (status=pending)'
+
+    finish_pose(client, user_a, video)
+    response = client.get(f'/api/videos/{video["id"]}/pose-csv-url', headers=auth(user_a))
+    assert response.status_code == 200
+    assert response.json()['url']
+    assert response.json()['expires_in'] == 3600
+
+    assert client.get(f'/api/videos/{video["id"]}/pose-csv-url', headers=auth(user_b)).status_code == 404
+
+
+def test_export_is_409_until_pose_is_done(client, user_a):
+    video = register_video(client, user_a)
+    upload_video(client, user_a, video)
+
+    response = client.post(f'/api/videos/{video["id"]}/export', headers=auth(user_a))
+    assert response.status_code == 409
+    assert response.json()['detail'] == 'pose extraction not finished (status=pending)'
+
+    assert client.get(
+        f'/api/videos/{video["id"]}/export/download', headers=auth(user_a), follow_redirects=False
+    ).status_code == 409
+    assert client.get(
+        f'/api/videos/{video["id"]}/csv', headers=auth(user_a), follow_redirects=False
+    ).status_code == 409
+
+    client.post(
+        f'/api/videos/{video["id"]}/pose-result',
+        json={'status': 'failed', 'error': 'x'},
+        headers={pose_queue.SECRET_HEADER: WORKER_SECRET},
+    )
+    response = client.post(f'/api/videos/{video["id"]}/export', headers=auth(user_a))
+    assert response.status_code == 409
+    assert 'status=failed' in response.json()['detail']
+
+    finish_pose(client, user_a, video)
+    assert client.post(f'/api/videos/{video["id"]}/export', headers=auth(user_a)).status_code == 200
 
 
 # ==================== VIDEO SCOPING ====================
@@ -358,7 +628,7 @@ def test_outcome_and_frame_tag_scoping(client, user_a, user_b):
 # ==================== EXPORT ====================
 
 def test_export_writes_to_r2_and_is_scoped(client, fake_r2, user_a, user_b):
-    video = register_video(client, user_a)
+    video = ready_video(client, user_a)
     move = create_move(client, user_a, video['id'])
     client.post(
         '/api/outcomes',
@@ -390,14 +660,14 @@ def test_export_writes_to_r2_and_is_scoped(client, fake_r2, user_a, user_b):
 
 
 def test_export_response_has_no_delete_video_option(client, fake_r2, user_a):
-    video = register_video(client, user_a)
+    video = ready_video(client, user_a)
     response = client.post(f'/api/videos/{video["id"]}/export', headers=auth(user_a))
     assert response.status_code == 200
     assert set(response.json().keys()) == {'video_id', 'r2_export_key'}
 
 
 def test_export_download_redirects_to_presigned_url(client, fake_r2, user_a, user_b):
-    video = register_video(client, user_a)
+    video = ready_video(client, user_a)
     client.post(f'/api/videos/{video["id"]}/export', headers=auth(user_a))
 
     response = client.get(
@@ -416,7 +686,7 @@ def test_export_download_redirects_to_presigned_url(client, fake_r2, user_a, use
 
 
 def test_download_before_export_is_404(client, user_a):
-    video = register_video(client, user_a)
+    video = ready_video(client, user_a)
     response = client.get(
         f'/api/videos/{video["id"]}/export/download',
         headers=auth(user_a),
@@ -426,8 +696,8 @@ def test_download_before_export_is_404(client, user_a):
 
 
 def test_exports_mine_lists_only_own(client, fake_r2, user_a, user_b):
-    video_a = register_video(client, user_a, 'mine.mp4')
-    video_b = register_video(client, user_b, 'theirs.mp4')
+    video_a = ready_video(client, user_a, 'mine.mp4')
+    video_b = ready_video(client, user_b, 'theirs.mp4')
     client.post(f'/api/videos/{video_a["id"]}/export', headers=auth(user_a))
     client.post(f'/api/videos/{video_b["id"]}/export', headers=auth(user_b))
 

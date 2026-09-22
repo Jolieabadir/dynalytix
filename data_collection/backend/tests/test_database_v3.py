@@ -5,8 +5,10 @@ Covers the Postgres port: identity keys, jsonb round-trips, the four hold
 slots, nullable foot slot, and user scoping at the data layer.
 """
 import uuid
+from pathlib import Path
 from datetime import datetime, timezone
 
+import psycopg
 import pytest
 
 from src.labeling.database import SCHEMA_VERSION
@@ -455,3 +457,115 @@ def test_frame_tag_scoped_to_owner(clean_db, user_a, user_b):
     assert clean_db.get_frame_tags_for_move(move_id, user_b) == []
     assert clean_db.delete_frame_tag(tag_id, user_b) is False
     assert clean_db.delete_frame_tag(tag_id, user_a) is True
+
+
+# ==================== POSE STATUS (20260922130000_pose_status.sql) ====================
+
+def test_new_video_starts_pending(clean_db, user_a):
+    video_id = clean_db.create_video(make_video(user_a))
+    video = clean_db.get_video(video_id, user_a)
+    assert video.pose_status == 'pending'
+    assert video.pose_error is None
+    assert video.pose_started_at is None
+    assert video.pose_finished_at is None
+
+
+def test_set_pose_status_stamps_timestamps(clean_db, user_a):
+    video_id = clean_db.create_video(make_video(user_a))
+
+    assert clean_db.set_pose_status(video_id, 'processing', user_id=user_a)
+    video = clean_db.get_video(video_id, user_a)
+    assert video.pose_status == 'processing'
+    assert video.pose_started_at is not None
+    assert video.pose_finished_at is None
+
+    assert clean_db.set_pose_status(video_id, 'failed', 'gpu hiccup', user_id=user_a)
+    video = clean_db.get_video(video_id, user_a)
+    assert video.pose_status == 'failed'
+    assert video.pose_error == 'gpu hiccup'
+    assert video.pose_finished_at is not None
+
+    # A retry clears the error and both stamps.
+    assert clean_db.set_pose_status(video_id, 'pending', user_id=user_a)
+    video = clean_db.get_video(video_id, user_a)
+    assert video.pose_status == 'pending'
+    assert video.pose_error is None
+    assert video.pose_started_at is None and video.pose_finished_at is None
+
+
+def test_set_pose_status_is_scoped_when_a_user_is_given(clean_db, user_a, user_b):
+    video_id = clean_db.create_video(make_video(user_a))
+    assert clean_db.set_pose_status(video_id, 'failed', 'x', user_id=user_b) is False
+    assert clean_db.get_video(video_id, user_a).pose_status == 'pending'
+
+
+def test_set_pose_status_rejects_unknown_status(clean_db, user_a):
+    video_id = clean_db.create_video(make_video(user_a))
+    with pytest.raises(ValueError):
+        clean_db.set_pose_status(video_id, 'sideways')
+
+
+def test_record_pose_result_overwrites_provisional_metadata(clean_db, user_a):
+    video_id = clean_db.create_video(make_video(user_a, fps=30.0, total_frames=90, duration_ms=3000.0))
+
+    assert clean_db.record_pose_result(
+        video_id, 'done', fps=60.0, total_frames=180, duration_ms=3001.5,
+        width=1080, height=1920, r2_pose_csv_key=f'pose/{user_a}/{video_id}.csv',
+    )
+    video = clean_db.get_video(video_id, user_a)
+    assert video.pose_status == 'done'
+    assert video.fps == 60.0
+    assert video.total_frames == 180
+    assert video.duration_ms == pytest.approx(3001.5)
+    assert video.width == 1080 and video.height == 1920
+    assert video.r2_pose_csv_key == f'pose/{user_a}/{video_id}.csv'
+    assert video.pose_finished_at is not None
+
+
+def test_record_pose_result_unknown_video_is_false(clean_db):
+    assert clean_db.record_pose_result(999999, 'processing') is False
+
+
+def test_pose_status_check_constraint(clean_db, user_a):
+    video_id = clean_db.create_video(make_video(user_a))
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with clean_db.get_connection() as conn:
+            conn.execute("UPDATE videos SET pose_status = 'bogus' WHERE id = %s", (video_id,))
+
+
+def test_pose_status_migration_backfills_existing_csvs(db, user_a):
+    """A row that already had a browser-extracted CSV must read as done."""
+    migrations = sorted(
+        Path(__file__).resolve().parents[1].glob('supabase/migrations/*.sql')
+    )
+    pose_migration = [m for m in migrations if m.name.endswith('_pose_status.sql')]
+    assert len(pose_migration) == 1
+    before = [m for m in migrations if m < pose_migration[0]]
+
+    # Rebuild the schema as it was before the pose migration...
+    with db.get_connection() as conn:
+        for path in before:
+            conn.execute(path.read_text())
+        row = conn.execute(
+            '''INSERT INTO videos (user_id, filename, fps, total_frames, duration_ms, r2_pose_csv_key)
+               VALUES (%s, 'old.mp4', 30, 3, 100, %s) RETURNING id''',
+            (user_a, f'pose/{user_a}/1.csv'),
+        ).fetchone()
+        old_id = row['id']
+        conn.execute(
+            '''INSERT INTO videos (user_id, filename, fps, total_frames, duration_ms)
+               VALUES (%s, 'never-extracted.mp4', 30, 3, 100)''',
+            (user_a,),
+        )
+    try:
+        # ...then apply it and check the backfill.
+        with db.get_connection() as conn:
+            conn.execute(pose_migration[0].read_text())
+        done = db.get_video(old_id, user_a)
+        assert done.pose_status == 'done'
+        assert done.pose_finished_at is not None
+        pending = [v for v in db.get_all_videos(user_a) if v.filename == 'never-extracted.mp4'][0]
+        assert pending.pose_status == 'pending'
+    finally:
+        # Leave the session-scoped schema exactly as the other tests expect.
+        db.apply_schema_sql()

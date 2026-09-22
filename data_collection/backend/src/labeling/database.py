@@ -25,7 +25,7 @@ from psycopg_pool import ConnectionPool
 
 from .models import (
     Video, Hold, Move, Environment, Outcome, FrameTag,
-    RaterProfile, VideoAssignment, HOLD_SLOTS,
+    RaterProfile, VideoAssignment, HOLD_SLOTS, POSE_STATUSES,
 )
 
 SCHEMA_VERSION = 3
@@ -181,10 +181,12 @@ class Database:
                     r2_video_key, r2_pose_csv_key, r2_export_key, uploaded_at,
                     dataset, prep_status,
                     route_grade, wall_type, climber_experience,
-                    climber_height_cm, climber_ape_index_cm, camera_angle, gym, notes
+                    climber_height_cm, climber_ape_index_cm, camera_angle, gym, notes,
+                    pose_status, pose_error
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s)
                 RETURNING id
             ''', (
                 video.user_id,
@@ -208,6 +210,8 @@ class Database:
                 video.camera_angle,
                 video.gym,
                 video.notes,
+                video.pose_status or 'pending',
+                video.pose_error,
             ))
             return cursor.fetchone()['id']
 
@@ -347,6 +351,98 @@ class Database:
             cursor.execute(
                 f'UPDATE videos SET {", ".join(sets)} WHERE id = %s AND user_id = %s',
                 tuple(params)
+            )
+            return cursor.rowcount > 0
+
+    # ==================== POSE JOB STATE ====================
+
+    def set_pose_status(
+        self,
+        video_id: int,
+        status: str,
+        error: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> bool:
+        """Move a video's pose job to `status`.
+
+        'processing' stamps pose_started_at; 'done'/'failed' stamp
+        pose_finished_at; 'pending' clears both (a retry). `error` is stored
+        only for 'failed' and cleared otherwise. `user_id` scopes the update
+        when the caller is acting for a user; the worker/callback path passes
+        None because the row is looked up by id alone.
+        """
+        if status not in POSE_STATUSES:
+            raise ValueError(f'Unknown pose_status: {status}')
+
+        sets = ['pose_status = %s', 'pose_error = %s']
+        params: list = [status, (error or None) if status == 'failed' else None]
+        if status == 'processing':
+            sets.append('pose_started_at = now()')
+            sets.append('pose_finished_at = NULL')
+        elif status in ('done', 'failed'):
+            sets.append('pose_finished_at = now()')
+        else:  # pending
+            sets.append('pose_started_at = NULL')
+            sets.append('pose_finished_at = NULL')
+
+        where = 'id = %s'
+        params.append(video_id)
+        if user_id is not None:
+            where += ' AND user_id = %s'
+            params.append(user_id)
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f'UPDATE videos SET {", ".join(sets)} WHERE {where}', tuple(params))
+            return cursor.rowcount > 0
+
+    def record_pose_result(
+        self,
+        video_id: int,
+        status: str,
+        error: Optional[str] = None,
+        fps: Optional[float] = None,
+        total_frames: Optional[int] = None,
+        duration_ms: Optional[float] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        r2_pose_csv_key: Optional[str] = None,
+    ) -> bool:
+        """Apply the worker's outcome to the row.
+
+        The worker measured the real fps/frame count/duration/dimensions with
+        ffprobe, which overwrite the browser's provisional values. Only the
+        fields passed are written. Not user-scoped: the caller has already
+        authenticated as the worker (shared secret) or is the worker itself.
+        """
+        if status not in POSE_STATUSES:
+            raise ValueError(f'Unknown pose_status: {status}')
+
+        sets = ['pose_status = %s', 'pose_error = %s']
+        params: list = [status, (error or None) if status == 'failed' else None]
+        if status == 'processing':
+            sets.append('pose_started_at = now()')
+        elif status in ('done', 'failed'):
+            sets.append('pose_finished_at = now()')
+
+        for column, value in (
+            ('fps', fps),
+            ('total_frames', total_frames),
+            ('duration_ms', duration_ms),
+            ('width', width),
+            ('height', height),
+            ('r2_pose_csv_key', r2_pose_csv_key),
+        ):
+            if value is not None:
+                sets.append(f'{column} = %s')
+                params.append(value)
+        params.append(video_id)
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'UPDATE videos SET {", ".join(sets)} WHERE id = %s',
+                tuple(params),
             )
             return cursor.rowcount > 0
 
@@ -1170,6 +1266,12 @@ class Database:
             camera_angle=row.get('camera_angle'),
             gym=row.get('gym'),
             notes=row.get('notes'),
+            # .get again: a database without the pose_status migration reads
+            # back as 'pending' rather than raising.
+            pose_status=row.get('pose_status') or 'pending',
+            pose_error=row.get('pose_error'),
+            pose_started_at=row.get('pose_started_at'),
+            pose_finished_at=row.get('pose_finished_at'),
         )
 
     @staticmethod
