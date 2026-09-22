@@ -28,7 +28,8 @@ describe('ProfileGate', () => {
     expect(screen.getByLabelText('Display name')).toBeInTheDocument();
     expect(screen.getByLabelText('Years climbing')).toBeInTheDocument();
     expect(screen.getByLabelText('Highest grade climbed')).toBeInTheDocument();
-    expect(screen.getByLabelText(/Coaching certification/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Bio/)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Coaching certification/)).not.toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: /research background/i })).toBeInTheDocument();
     // Tier is set by an admin, never self-declared.
     expect(screen.queryByLabelText(/tier/i)).not.toBeInTheDocument();
@@ -52,6 +53,7 @@ describe('ProfileGate', () => {
     await user.type(screen.getByLabelText('Display name'), 'Jo');
     await user.type(screen.getByLabelText('Years climbing'), '7');
     await user.type(screen.getByLabelText('Highest grade climbed'), 'V6');
+    await user.type(screen.getByLabelText(/^Bio/), '  Coach, ten years.  ');
     await user.click(screen.getByRole('checkbox', { name: /research background/i }));
     await user.click(screen.getByRole('button', { name: 'Save profile' }));
 
@@ -60,7 +62,7 @@ describe('ProfileGate', () => {
         display_name: 'Jo',
         years_climbing: 7,
         highest_grade: 'V6',
-        coaching_cert: null,
+        bio: 'Coach, ten years.',
         research_background: true,
       })
     );

@@ -542,8 +542,13 @@ def test_pose_status_migration_backfills_existing_csvs(db, user_a):
     assert len(pose_migration) == 1
     before = [m for m in migrations if m < pose_migration[0]]
 
-    # Rebuild the schema as it was before the pose migration...
+    # Rebuild the schema as it was before the pose migration. Like
+    # apply_schema_sql, drop the Dataset A tables first: they are CREATE TABLE
+    # IF NOT EXISTS and the rater bio migration (after the pose one) reshapes
+    # rater_profiles, so a partial replay on the live schema would not apply.
     with db.get_connection() as conn:
+        conn.execute('DROP TABLE IF EXISTS public.video_assignments CASCADE')
+        conn.execute('DROP TABLE IF EXISTS public.rater_profiles CASCADE')
         for path in before:
             conn.execute(path.read_text())
         row = conn.execute(

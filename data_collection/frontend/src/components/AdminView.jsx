@@ -433,8 +433,12 @@ function RaterRow({ rater, onSaved, onError }) {
       <td>
         {rater.years_climbing != null ? `${rater.years_climbing} yrs` : '—'}
         {rater.highest_grade ? ` · ${rater.highest_grade}` : ''}
-        {rater.coaching_cert ? ` · ${rater.coaching_cert}` : ''}
         {rater.research_background ? ' · research' : ''}
+        {rater.bio && (
+          <div className="cell-sub admin-rater-bio" title={rater.bio}>
+            {rater.bio}
+          </div>
+        )}
       </td>
       <td>
         <select value={tier} onChange={(e) => setTier(e.target.value)} aria-label={`Tier for ${rater.display_name}`} disabled={busy}>

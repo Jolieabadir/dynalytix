@@ -50,7 +50,7 @@ const VIDEOS = [
 
 const RATERS = [
   { user_id: 'admin-1', display_name: 'Jolie', tier: 'validated', is_admin: true, years_climbing: 10, highest_grade: 'V8', research_background: true, validation_note: 'PI' },
-  { user_id: 'r-1', display_name: 'Rater One', tier: 'open', is_admin: false, years_climbing: 3, highest_grade: 'V4', research_background: false, validation_note: null },
+  { user_id: 'r-1', display_name: 'Rater One', tier: 'open', is_admin: false, years_climbing: 3, highest_grade: 'V4', bio: 'Coach at a local gym.', research_background: false, validation_note: null },
   { user_id: 'r-2', display_name: 'Rater Two', tier: 'open', is_admin: false, years_climbing: 6, highest_grade: 'V6', research_background: false, validation_note: null },
 ];
 
@@ -157,6 +157,13 @@ describe('AdminView — raters and exports', () => {
     await waitFor(() =>
       expect(adminUpdateRater).toHaveBeenCalledWith('r-1', { tier: 'validated', validation_note: 'coach, 3 yrs' })
     );
+  });
+
+  it('shows a rater bio in the raters panel', async () => {
+    render(<AdminView />);
+    const row = await screen.findByTestId('admin-rater-r-1');
+    expect(within(row).getByText('Coach at a local gym.')).toBeInTheDocument();
+    expect(within(screen.getByTestId('admin-rater-r-2')).queryByText(/gym/)).not.toBeInTheDocument();
   });
 
   it('downloads the long and full CSVs through the authenticated export helper', async () => {

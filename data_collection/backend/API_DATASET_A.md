@@ -104,7 +104,7 @@ write rules as PUT.
 ```json
 ProfileResponse {
   "user_id": "uuid", "display_name": "str", "tier": "open" | "validated",
-  "years_climbing": int | null, "coaching_cert": "str" | null,
+  "years_climbing": int | null, "bio": "str" | null,
   "highest_grade": "str" | null, "research_background": bool,
   "validation_note": "str" | null, "is_admin": bool,
   "created_at": "ISO-8601"
@@ -115,13 +115,13 @@ ProfileResponse {
 #### `POST /api/me/profile` → 201 `ProfileResponse`
 ```json
 { "display_name": "str (1..120, required)", "years_climbing": int|null (0..100),
-  "coaching_cert": "str"|null, "highest_grade": "str"|null,
+  "bio": "str"|null (free text, max 1000 chars, 422 above), "highest_grade": "str"|null,
   "research_background": bool (default false) }
 ```
 **409** if a profile exists. `tier` starts `open`, `is_admin` false.
 
 #### `PUT /api/me/profile` → 200 `ProfileResponse`
-Same fields as POST, all optional; `""` clears `coaching_cert` /
+Same fields as POST, all optional; `""` clears `bio` /
 `highest_grade`. `tier`, `validation_note`, `is_admin` are ignored if sent.
 **404** if no profile yet.
 

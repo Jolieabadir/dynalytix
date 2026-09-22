@@ -1346,6 +1346,43 @@ To make the RLS tests possible, `scripts/auth_shim.sql` now creates the
 `db` fixture re-applies the shim (idempotent) so an existing scratch database
 does not need rebuilding. **Never apply the shim to the Supabase project.**
 
+### 10.8 Profile: bio replaces coaching_cert (branch `feat/rater-bio`)
+
+Jolie's change request: drop the "coaching certification" field from the
+rater profile and replace it with an optional free-text **bio**.
+
+- **Migration `20260922150000_rater_bio.sql`** (new, additive, idempotent):
+  `ADD COLUMN IF NOT EXISTS bio text`, `DROP COLUMN IF EXISTS coaching_cert`,
+  then `GRANT INSERT (bio)` / `GRANT UPDATE (bio)` on `rater_profiles` to
+  `authenticated`, the same column-level privilege `display_name` etc. carry
+  from §10.7 fix 3. Dropping `coaching_cert` removes it from the existing
+  column grants automatically; `tier` / `validation_note` / `is_admin` stay
+  admin-only. The Dataset A migration is untouched.
+- **Backend:** `RaterProfile.bio` replaces `coaching_cert` in the dataclass,
+  `database.py` (insert / self-update allow-list / row mapping) and the
+  `ProfileCreate` / `ProfileResponse` / `ProfileUpdate` schemas. `bio` is
+  optional, trimmed, `""` clears it, and `max_length=1000` (422 above) on
+  both POST and PUT `/api/me/profile`. `/api/admin/raters` returns it through
+  the same `ProfileResponse`. Exports never carried `coaching_cert` (the long
+  export emits `rater_tier` only), so nothing changes there. `API_DATASET_A.md`
+  updated.
+- **Test-only schema replay:** `apply_schema_sql()` now drops
+  `rater_profiles` / `video_assignments` before replaying the migrations. The
+  v3 base already drops and recreates the labeling tables, but the Dataset A
+  tables are `CREATE TABLE IF NOT EXISTS`, and once `coaching_cert` is gone
+  the Dataset A column `GRANT` (which names it) fails on a second replay.
+  `test_pose_status_migration_backfills_existing_csvs` does the same before
+  its partial replay. Production still goes through `supabase db push`.
+- **Tests:** `test_profile_bio_round_trip_and_length_limit` (trim, GET
+  round-trip, `""` clears, 1000 ok / 1001 → 422 on POST and PUT, no
+  `coaching_cert` key); RLS tests now also set `bio` on a self-UPDATE and a
+  self-INSERT while `tier` / `is_admin` / `validation_note` remain refused.
+  149/149.
+- **Manual step:** push the migration with the others
+  (`supabase db push --db-url "$SESSION_DSN"`, dry-run first);
+  `supabase migration list` must show `20260922150000` Remote. It is safe to
+  push after `20260922130000_pose_status.sql` or together with it.
+
 ## 11. Server-side pose worker (runbook-w1-worker)
 
 Branch `feat/server-pose-worker`. Pose extraction moved out of the browser
@@ -1506,7 +1543,10 @@ green.
    ```
    Dataset A's `20260922120000_dataset_a.sql` is already on main; if it has
    not been pushed yet, `db push` applies both in order. Pushing this one
-   alone (after Dataset A's) is safe: it is additive.
+   alone (after Dataset A's) is safe: it is additive. The rater bio
+   migration `20260922150000_rater_bio.sql` (§10.8) is applied by the same
+   push once `feat/rater-bio` is merged; `migration list` should then show it
+   Remote too.
 2. **Deploy the worker** — `data_collection/worker/README.md` "Deploy":
    `modal secret create dynalytix-worker R2_ACCOUNT_ID=… R2_ACCESS_KEY_ID=…
    R2_SECRET_ACCESS_KEY=… R2_BUCKET=… DATABASE_URL=<transaction pooler 6543>
