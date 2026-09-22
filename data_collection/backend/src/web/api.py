@@ -1731,7 +1731,7 @@ async def complete_assignment(assignment_id: int, user_id: str = Depends(get_cur
     moves = db.get_moves_for_video_any(assignment.video_id)
     if not moves:
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=422,
             content={'detail': 'Video has no canonical moves to rate', 'missing': []},
         )
 
@@ -1747,7 +1747,7 @@ async def complete_assignment(assignment_id: int, user_id: str = Depends(get_cur
 
     if missing:
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=422,
             content={
                 'detail': f'{len(missing)} of {len(moves)} moves are incomplete',
                 'missing': missing,
