@@ -11,7 +11,7 @@
  * `(pointer: coarse)` is the right question. Touch-event sniffing says yes on
  * every touchscreen laptop, where the labeler is still using a mouse.
  */
-import { useEffect, useState } from 'react';
+import { useSyncExternalStore } from 'react';
 
 export const COARSE_QUERY = '(pointer: coarse)';
 
@@ -28,34 +28,43 @@ export function isCoarsePointer() {
 }
 
 /**
- * Reactive `isCoarsePointer()`.
+ * Subscribe to changes of pointer kind.
+ *
+ * A MediaQueryList is an external store, which is exactly what
+ * useSyncExternalStore is for — reading it into state inside an effect would
+ * render once with the wrong answer and then again with the right one.
+ */
+function subscribe(onChange) {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return () => {};
+  }
+  let mql;
+  try {
+    mql = window.matchMedia(COARSE_QUERY);
+  } catch {
+    return () => {};
+  }
+
+  // Safari only grew addEventListener on MediaQueryList in 14; the phones this
+  // is for are newer, but the fallback costs two lines.
+  if (typeof mql.addEventListener === 'function') {
+    mql.addEventListener('change', onChange);
+    return () => mql.removeEventListener('change', onChange);
+  }
+  if (typeof mql.addListener === 'function') {
+    mql.addListener(onChange);
+    return () => mql.removeListener(onChange);
+  }
+  return () => {};
+}
+
+/**
+ * Reactive `isCoarsePointer()` — an iPad that gains a trackpad mid-session
+ * changes answer, and so does a desktop browser toggling device emulation.
  * @returns {boolean}
  */
 export function useCoarsePointer() {
-  const [coarse, setCoarse] = useState(isCoarsePointer);
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
-    let mql;
-    try {
-      mql = window.matchMedia(COARSE_QUERY);
-    } catch {
-      return;
-    }
-    const onChange = (event) => setCoarse(event.matches);
-    setCoarse(mql.matches);
-
-    // Safari only grew addEventListener on MediaQueryList in 14; the phones
-    // this is for are newer, but the fallback costs two lines.
-    if (typeof mql.addEventListener === 'function') {
-      mql.addEventListener('change', onChange);
-      return () => mql.removeEventListener('change', onChange);
-    }
-    mql.addListener(onChange);
-    return () => mql.removeListener(onChange);
-  }, []);
-
-  return coarse;
+  return useSyncExternalStore(subscribe, isCoarsePointer, () => false);
 }
 
 /**

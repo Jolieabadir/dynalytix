@@ -65,12 +65,9 @@ function HoldOverlay({
   const canEdit = !disabled && !readOnly && !picking;
 
   // A selected hold that has since been deleted must not keep a pinch alive.
-  useEffect(() => {
-    if (selectedId != null && !holds.some((h) => h.id === selectedId)) {
-      setSelectedId(null);
-      setPinchPreview(null);
-    }
-  }, [holds, selectedId]);
+  // Derived rather than corrected in an effect, so there is never a render
+  // where the highlight points at a hold that is gone.
+  const selected = holds.some((h) => h.id === selectedId) ? selectedId : null;
 
   useEffect(() => () => clearTimeout(longPressTimer.current), []);
 
@@ -99,7 +96,7 @@ function HoldOverlay({
       cancelLongPress();
       gesture.current = null;
       const [a, b] = [...pointers.current.values()];
-      const target = holds.find((h) => h.id === selectedId);
+      const target = holds.find((h) => h.id === selected);
       if (target && canEdit) {
         pinch.current = { startDistance: distance(a, b), box: target };
       }
@@ -275,14 +272,14 @@ function HoldOverlay({
       onPointerCancel={handlePointerUp}
     >
       {holds.map((hold) => {
-        const previewing = pinchPreview && hold.id === selectedId;
+        const previewing = pinchPreview && hold.id === selected;
         const shown = previewing ? pinchPreview : hold;
         return (
           <button
             key={hold.id}
             type="button"
             className={`hold-box ${hold.source === 'detected' ? 'detected' : 'manual'} ${
-              hold.id === selectedId ? 'selected' : ''
+              hold.id === selected ? 'selected' : ''
             }`}
             style={{
               left: `${shown.bbox_x * 100}%`,
@@ -321,7 +318,7 @@ function HoldOverlay({
         </div>
       )}
 
-      {touch && !picking && selectedId != null && !readOnly && (
+      {touch && !picking && selected != null && !readOnly && (
         <div className="hold-pick-hint">Pinch to resize — press and hold to delete</div>
       )}
     </div>

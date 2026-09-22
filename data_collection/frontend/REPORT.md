@@ -1634,3 +1634,88 @@ $ npx eslint src scripts     3 errors + 1 warning, all pre-existing on main (Ske
 5. Failure path: temporarily blank `MODAL_ENDPOINT_URL` on Railway, upload a
    clip — the chip should go red with "worker not configured…" and a Retry
    button; restore the variable, press Retry, watch it go green.
+
+---
+
+## 15. iPhone-first labeling (runbook-w3-mobile)
+
+**Branch:** `feat/mobile-first-labeling`. Gated on both W1 runbooks; both had merged (`e5cf348`, `d84cc6a`, hotfix `9659289`) before this started.
+
+### The shape of it
+
+The runbook's constraint is the one that decided the design: *"One backend, one worker, one UI: the laptop path must keep working. Pointer vs touch is detected, not a separate build."*
+
+So nothing here is a breakpoint on screen width. Everything keys on **`(pointer: coarse)`** — the same question in CSS and in JS — which is the honest version of the question. A touchscreen laptop driven with a mouse keeps drag-to-draw, hover definitions and keyboard shortcuts; an iPad that gains a trackpad mid-session changes behaviour without a reload, because `useCoarsePointer` subscribes to the media query through `useSyncExternalStore` rather than sampling it once.
+
+`utils/pointer.js` is the whole of the detection, and the laptop expectations are asserted in the same test file as the phone ones, so a regression that "fixes" the phone by breaking the laptop fails the suite.
+
+### Requirement by requirement
+
+**1. Survive Safari.** Two halves.
+
+*Labels* were already safe: every move, environment, outcome, frame tag and hold is POSTed the instant it is made. The store was already a cache. What was missing was the way back — a reload landed on the queue with the open video gone.
+
+`services/sessionResume.js` keeps **one pointer** in localStorage (`{videoId, view, assignmentId}` — nothing resembling label data, asserted in a test) and rebuilds the rest from the API on the next load: `getVideo` + `getHolds` + `getMoves` + `getVideoPlaybackUrl`. The server stays the authority — a video it will not serve is forgotten rather than retried, so a closed or unassigned video cannot be resurrected from a stale pointer. Sign-out and an expired session both clear it, so the next user on the device never inherits a pointer to the previous one's video.
+
+*The upload* is `services/resumableUpload.js`: R2 multipart, 8 MiB parts, two in flight, each part retried four times with jittered backoff **and re-signed on every attempt** — a long lock screen can outlive a presign, and one extra small request beats failing the clip. Every finished part's ETag is written to localStorage as it lands; that record is what survives eviction.
+
+The file itself cannot survive — a browser may not hold a `File` across a page load — so resuming asks for the same file again and verifies it by name + size + lastModified before trusting the saved parts. A different file under the same video id discards them rather than assembling a corrupt object.
+
+Files under 8 MiB still go up in a single PUT. A retry that cheap does not need the machinery.
+
+**2. Zero-wait start.** Already shipped in §14 (object URL + `playsInline`, presigned R2 URL after confirm). Unchanged, and `videoMeta` still reads duration off a detached `<video>`.
+
+**3. Frame navigation without a keyboard.** `±1` / `±10` buttons already existed; they now carry aria-labels, clear `+1`/`-1` text and a 44 px minimum, and the row wraps with the frame counter on its own line. The scrubber's thumb grew to 28 px (a range input is a 4 px hit target by default). **Swipe** left/right on the video steps a frame, recognized by `swipeToFrameDelta`, which deliberately returns 0 for a mostly-vertical drag — that is the page scrolling, and stealing it would make the page feel broken.
+
+**4. Forms as a stepped bottom sheet.** `MoveForm` gains a `step` when the pointer is coarse: Environment → Strategy → Outcome, one per screen, Back/Next, with Save appearing only on the last. The panel becomes a fixed bottom sheet (max-height 72vh, 60vh in landscape) so the video stays visible above it, and the footer is sticky and thumb-reachable. On a pointer device there is no stepper and all three lenses render at once, exactly as before.
+
+Definitions come with it: inside the sheet, `InfoTip` renders in place and expanded rather than as a hover tooltip, because there is no hover on a finger. This is Taylor's "people need their hand held", solved for a screen that cannot show everything at once.
+
+**5. Holds by tap.** Drawing a rectangle with a thumb, at arm's length, on a box that is under the thumb, does not work. On touch:
+
+| Gesture | Meaning |
+|---|---|
+| tap empty space | drop a default-size box (9% of frame) centred on the tap |
+| tap a box | select it |
+| pinch | resize the selected box about its centre |
+| press and hold a box (600 ms) | delete it |
+| swipe | step a frame |
+
+Delete moved to press-and-hold because a tap cannot mean both "place" and "delete", and of the two, accidentally deleting a labeler's hold is the one that costs work. The geometry lives in `services/touchHolds.js`, pure and unit-tested: clamping keeps a corner tap's box on screen at full size rather than shrinking it, and a pinch cannot take a hold below a tappable minimum or past the frame. Pointer devices keep drag-to-draw and click-to-delete, byte for byte.
+
+`touch-action: none` is set **only** on the hold overlay, so a pinch there resizes a hold instead of zooming the page. It is deliberately not set page-wide, and `maximum-scale` is not set at all: disabling pinch-zoom across a page breaks it for anyone who needs to enlarge text.
+
+**6. Upload size guidance.** `BANNER_CAPTURE` in `OnboardingBanner`: 1080p / 30fps, with the Settings path. Touch-only — it is advice about the device in your hand — and its dismissal is **remembered across sessions** in localStorage, unlike the screen tips, which stay session-only as before. The runbook asked for once, and once is what it does.
+
+**7. PWA.** `public/manifest.webmanifest` (standalone, theme `#12151a`), three generated PNG icons including a maskable one, apple-touch-icon and the `apple-mobile-web-app-*` meta tags, and `viewport-fit=cover` with safe-area padding so nothing hides under the notch or the home indicator. `components/InstallPrompt.jsx` handles both platforms: Chrome's deferred `beforeinstallprompt` behind an Install button, and — since iOS fires no such event and exposes no API — the literal Share → Add to Home Screen words on iPhone. Hidden once already standalone, and dismissal is remembered.
+
+### Defaults taken (not asked)
+
+- 8 MiB parts, 2 concurrent, 4 attempts each. Phone radio, not a desktop link.
+- Tapped holds are 9% of the frame square. Roughly a jug at typical phone framing: big enough to see and pinch, small enough not to swallow its neighbours.
+- 600 ms long-press, 30 px swipe threshold, 8 px tap slop.
+- Session pointer and capture/install dismissals use localStorage; screen tips stay in the store. Each write is wrapped — Safari private mode throws, and losing the auto-reopen must never cost a label.
+
+### What could not be verified, and why
+
+- **No real iPhone.** Every gesture is covered by unit and component tests (synthetic pointer events with a stubbed surface rect), and the pure geometry is exhaustively tested — but jsdom cannot tell you that a 44 px target is comfortable at arm's length, that Safari's eviction behaves as documented, or that the Share sheet says what we claim. The runbook's manual pass is still owed: pick a clip → label 3 moves with hold slots → lock the phone mid-upload → unlock → watch it resume → tag 2 frames → switch apps and return → session intact → export.
+- **No service worker.** The runbook asks for manifest, icons and an install prompt, and iOS installs from those alone. A service worker was deliberately not added: main auto-deploys with no CI gate (mailbox rule 6), and a caching worker is the classic way to serve a stale build to the one labeler who installed the app. Worth adding later, with a versioned cache and a deliberate update path.
+- **Real multipart against R2.** Covered in backend REPORT §12 — the tests ran against the in-memory fake on this machine. The first real phone upload is also the first real multipart upload.
+
+### Tests
+
+| File | Tests | Covers |
+|---|---|---|
+| `utils/pointer.test.js` | 8 | coarse-pointer detection, swipe vs tap vs scroll |
+| `services/touchHolds.test.js` | 13 | tap box geometry, pinch scaling, clamping, hit testing |
+| `services/resumableUpload.test.js` | 11 | part arithmetic, file signature, saved session and its invalidation |
+| `services/sessionResume.test.js` | 9 | what is remembered, what is re-fetched, what is forgotten |
+| `components/MobileLabeling.test.jsx` | 20 | the stepped sheet, the laptop panel unchanged, tap/swipe/pick on the overlay, capture tip, install prompt |
+
+**Frontend suite: 189 passed / 24 files** (160 before this runbook, 128 before the touch layer). `vite build` clean; `node --test scripts/test_pose_math.mjs` unchanged and passing. ESLint reports only the three pre-existing `SkeletonOverlay` errors and its one pre-existing warning — nothing new.
+
+### Manual steps for Jolie
+
+1. Run the real-iPhone pass above, in Safari and then from the Home Screen.
+2. Check the same session still works on the laptop with keyboard shortcuts — that is the constraint this branch is most able to break.
+3. Nothing to configure: no new env var, no migration, no bucket change (the existing `ExposeHeaders: ["ETag"]` rule is what multipart needs, and it is already applied).
