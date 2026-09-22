@@ -20,7 +20,7 @@ from typing import Optional
 # Stamped into every environment / outcome / frame_tag row at write time and
 # exposed as `version` by /api/config, so an export can say which taxonomy a
 # label was produced under. Bump it whenever a list below changes meaning.
-# Rows written before the column existed were backfilled to '3.0.0'.
+# Rows written before the column existed were backfilled to 'pre-3.1'.
 
 TAXONOMY_VERSION = "3.1.0"
 

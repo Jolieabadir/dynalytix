@@ -101,19 +101,19 @@ CREATE INDEX IF NOT EXISTS idx_video_assignments_video ON public.video_assignmen
 --
 -- taxonomy_version is stamped by the API from its TAXONOMY_VERSION constant on
 -- every insert and update. Rows written before this migration are backfilled
--- to '3.0.0', the taxonomy they were labeled under; the default is kept so a
+-- to 'pre-3.1' (labeled before versioning existed); the default is kept so a
 -- direct insert without the column still satisfies NOT NULL.
 -- ---------------------------------------------------------------------------
 ALTER TABLE public.environments
-    ADD COLUMN IF NOT EXISTS taxonomy_version text    NOT NULL DEFAULT '3.0.0',
+    ADD COLUMN IF NOT EXISTS taxonomy_version text    NOT NULL DEFAULT 'pre-3.1',
     ADD COLUMN IF NOT EXISTS is_gold          boolean NOT NULL DEFAULT false;
 
 ALTER TABLE public.outcomes
-    ADD COLUMN IF NOT EXISTS taxonomy_version text    NOT NULL DEFAULT '3.0.0',
+    ADD COLUMN IF NOT EXISTS taxonomy_version text    NOT NULL DEFAULT 'pre-3.1',
     ADD COLUMN IF NOT EXISTS is_gold          boolean NOT NULL DEFAULT false;
 
 ALTER TABLE public.frame_tags
-    ADD COLUMN IF NOT EXISTS taxonomy_version text    NOT NULL DEFAULT '3.0.0',
+    ADD COLUMN IF NOT EXISTS taxonomy_version text    NOT NULL DEFAULT 'pre-3.1',
     ADD COLUMN IF NOT EXISTS is_gold          boolean NOT NULL DEFAULT false;
 
 -- ---------------------------------------------------------------------------

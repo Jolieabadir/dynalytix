@@ -444,6 +444,16 @@ class ProfileResponse(BaseModel):
     created_at: str
 
 
+class ProfileUpdate(BaseModel):
+    """What a rater may change on their own profile later. Every field
+    optional; tier / validation_note / is_admin are admin-only and absent."""
+    display_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    years_climbing: Optional[int] = Field(default=None, ge=0, le=100)
+    coaching_cert: Optional[str] = None
+    highest_grade: Optional[str] = None
+    research_background: Optional[bool] = None
+
+
 class RaterUpdate(BaseModel):
     """Admin-only edits to a profile. Every field optional."""
     tier: Optional[str] = None  # validated | open
@@ -1638,6 +1648,30 @@ async def create_my_profile(
     return profile_to_response(created)
 
 
+@app.put("/api/me/profile", response_model=ProfileResponse)
+async def update_my_profile(
+    payload: ProfileUpdate,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Edit the caller's own profile. 404 if none yet (POST first).
+
+    tier, validation_note and is_admin are not accepted here; an admin sets
+    them through PUT /api/admin/raters/{user_id}.
+    """
+    db = get_db()
+    if not db.get_rater_profile(user_id):
+        raise _not_found('No profile for this user yet')
+    fields = payload.model_dump()
+    if fields.get('display_name') is not None:
+        fields['display_name'] = fields['display_name'].strip()
+    # "" clears an optional text field; the db layer stores None.
+    for key in ('coaching_cert', 'highest_grade'):
+        if fields.get(key) is not None:
+            fields[key] = fields[key].strip()
+    updated = db.update_rater_profile_self(user_id, **fields)
+    return profile_to_response(updated)
+
+
 # ==================== RATER QUEUE / ASSIGNMENTS (Dataset A) ====================
 
 def _require_my_assignment(assignment_id: int, user_id: str) -> VideoAssignment:
@@ -1687,7 +1721,7 @@ async def complete_assignment(assignment_id: int, user_id: str = Depends(get_cur
     Validates that every canonical move on the video has BOTH an environment
     and an outcome written by this rater. Strategy lives on the canonical
     move row (filled in prep), so it always counts as present. On failure:
-    400 with {"detail": ..., "missing": [{move_id, move_index, missing: [...]}]}.
+    422 with {"detail": ..., "missing": [{move_id, move_index, missing: [...]}]}.
     """
     db = get_db()
     assignment = _require_my_assignment(assignment_id, user_id)
@@ -1697,7 +1731,7 @@ async def complete_assignment(assignment_id: int, user_id: str = Depends(get_cur
     moves = db.get_moves_for_video_any(assignment.video_id)
     if not moves:
         return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content={'detail': 'Video has no canonical moves to rate', 'missing': []},
         )
 
@@ -1713,7 +1747,7 @@ async def complete_assignment(assignment_id: int, user_id: str = Depends(get_cur
 
     if missing:
         return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content={
                 'detail': f'{len(missing)} of {len(moves)} moves are incomplete',
                 'missing': missing,
@@ -1876,10 +1910,13 @@ async def admin_export_long(
     dataset: Optional[str] = 'A',
     _admin: str = Depends(require_admin),
 ):
-    """Long-format CSV, the IRR input: one row per (rater, move, lens, field).
+    """Long-format CSV, the IRR input: one row per (video, move, rater, lens,
+    field), sorted by video, move, rater, lens, field.
 
     Columns: video_id, dataset, move_id, move_index, rater_user_id,
     rater_tier, cohort, lens, field, value, taxonomy_version, is_gold.
+    Lenses: environment, strategy, outcome, frame_tags (field = tag_type,
+    value = frame:level:side:locations). Multi-selects are pipe-delimited.
     Defaults to Dataset A; ?dataset=all for everything, ?video_id= for one
     video regardless of dataset.
     """
@@ -1898,9 +1935,10 @@ async def admin_export_full(
     dataset: Optional[str] = None,
     _admin: str = Depends(require_admin),
 ):
-    """Full CSV: one row per (video, move, rater) with every label column the
-    per-video export carries, across all users. No pose rows (see
-    AdminExporter). Defaults to every dataset."""
+    """Full CSV: the per-video export's shape (one row per pose frame with the
+    label columns appended) for every video and every rater across all users,
+    with identity columns in front. Defaults to every dataset; ?dataset=A|B
+    or ?video_id= narrow it. Large: frames repeat once per rater."""
     if dataset in ('all', ''):
         dataset = None
     if dataset is not None and dataset not in DATASETS:

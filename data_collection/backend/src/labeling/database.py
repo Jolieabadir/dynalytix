@@ -1025,6 +1025,34 @@ class Database:
             row = cursor.fetchone()
             return self._row_to_rater_profile(row) if row else None
 
+    def update_rater_profile_self(self, user_id: str, **fields) -> Optional[RaterProfile]:
+        """Set the rater-editable fields on a profile. Returns the row, or None.
+
+        tier / validation_note / is_admin are deliberately not in the allowed
+        list: those are update_rater_profile (admin) only. An empty string on
+        a nullable text field clears it.
+        """
+        allowed = ('display_name', 'years_climbing', 'coaching_cert',
+                   'highest_grade', 'research_background')
+        updates = {}
+        for key, value in fields.items():
+            if key not in allowed or value is None:
+                continue
+            if key in ('coaching_cert', 'highest_grade') and value == '':
+                value = None
+            updates[key] = value
+        if not updates:
+            return self.get_rater_profile(user_id)
+        assignments = ', '.join(f'{k} = %s' for k in updates)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'UPDATE rater_profiles SET {assignments} WHERE user_id = %s RETURNING *',
+                (*updates.values(), user_id)
+            )
+            row = cursor.fetchone()
+            return self._row_to_rater_profile(row) if row else None
+
     # ==================== ASSIGNMENT OPERATIONS ====================
 
     def create_assignment(self, assignment: VideoAssignment) -> VideoAssignment:
