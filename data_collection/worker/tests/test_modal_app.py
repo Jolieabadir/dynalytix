@@ -177,6 +177,101 @@ def test_report_result_callback_mode_posts_with_secret_header(monkeypatch):
     assert seen['headers'] == {'X-Webhook-Secret': 's'}
 
 
+# ==================== the enqueue web endpoint, through real FastAPI ====================
+#
+# Regression for the production 422: `enqueue` was annotated `request: 'Request'`
+# with no `Request` in module scope, so FastAPI could not resolve the annotation
+# and treated `request` as a required query parameter. Every POST from the
+# backend got `{"detail":[{"type":"missing","loc":["query","request"],...}]}`.
+# Building the app exactly as Modal does (`add_api_route('/', fn, methods=[...])`)
+# and hitting it with TestClient catches that class of bug locally.
+
+
+def _raw_function(fn):
+    """The plain Python function behind a `modal.Function` (or the function itself)."""
+    raw = getattr(fn, '_raw_f_', None)
+    if raw is None and hasattr(fn, 'get_raw_f'):  # older/newer modal
+        raw = fn.get_raw_f()
+    return raw or fn
+
+
+@pytest.fixture
+def enqueue_client(monkeypatch):
+    """A TestClient for `enqueue`, with the GPU function's spawn and R2 key check stubbed."""
+    fastapi = pytest.importorskip('fastapi')
+    from fastapi.testclient import TestClient
+
+    spawned = []
+
+    class FakeCall:
+        object_id = 'fc-test-123'
+
+    class FakeExtractPose:
+        @staticmethod
+        def spawn(video_id, user_id, r2_key):
+            spawned.append((video_id, user_id, r2_key))
+            return FakeCall()
+
+    import sys
+    monkeypatch.setitem(sys.modules, 'storage', FakeStorage())
+    monkeypatch.setattr(modal_app, 'extract_pose', FakeExtractPose())
+    monkeypatch.setenv('MODAL_WEBHOOK_SECRET', 'topsecret')
+
+    app = fastapi.FastAPI()
+    app.add_api_route('/', _raw_function(modal_app.enqueue), methods=['POST'])
+    return TestClient(app), spawned
+
+
+VALID_BODY = {'video_id': 12, 'user_id': 'user-1', 'r2_key': 'videos/user-1/12/clip.mov'}
+
+
+def test_enqueue_without_secret_is_401(enqueue_client):
+    client, spawned = enqueue_client
+    response = client.post('/', json=VALID_BODY)
+    assert response.status_code == 401, response.text
+    assert response.json()['detail'] == 'bad or missing worker secret'
+    assert spawned == []
+
+
+def test_enqueue_with_wrong_secret_is_401(enqueue_client):
+    client, spawned = enqueue_client
+    response = client.post('/', json=VALID_BODY, headers={'X-Webhook-Secret': 'nope'})
+    assert response.status_code == 401, response.text
+    assert spawned == []
+
+
+def test_enqueue_with_secret_and_missing_fields_is_400(enqueue_client):
+    client, spawned = enqueue_client
+    response = client.post('/', json={'video_id': 12}, headers={'X-Webhook-Secret': 'topsecret'})
+    assert response.status_code == 400, response.text
+    assert response.json()['detail'] == 'video_id, user_id and r2_key are required'
+    assert spawned == []
+
+
+def test_enqueue_rejects_r2_key_of_another_user(enqueue_client):
+    client, spawned = enqueue_client
+    body = {**VALID_BODY, 'r2_key': 'videos/someone-else/12/clip.mov'}
+    response = client.post('/', json=body, headers={'X-Webhook-Secret': 'topsecret'})
+    assert response.status_code == 400, response.text
+    assert response.json()['detail'] == 'r2_key does not belong to user_id'
+    assert spawned == []
+
+
+def test_enqueue_with_secret_and_valid_body_spawns_and_returns_200(enqueue_client):
+    client, spawned = enqueue_client
+    response = client.post('/', json=VALID_BODY, headers={'X-Webhook-Secret': 'topsecret'})
+    assert response.status_code == 200, response.text
+    assert response.json() == {'accepted': True, 'video_id': 12, 'call_id': 'fc-test-123'}
+    assert spawned == [(12, 'user-1', 'videos/user-1/12/clip.mov')]
+
+
+def test_enqueue_accepts_bearer_authorization_header(enqueue_client):
+    client, spawned = enqueue_client
+    response = client.post('/', json=VALID_BODY, headers={'Authorization': 'Bearer topsecret'})
+    assert response.status_code == 200, response.text
+    assert len(spawned) == 1
+
+
 def test_vendored_model_is_present():
     model = WORKER_ROOT / 'models' / 'pose_landmarker_full.task'
     assert model.exists()

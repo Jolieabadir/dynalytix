@@ -1542,3 +1542,61 @@ The migration is additive and can stay. Videos uploaded during the window
 have `pose_status='pending'` rows with no CSV; the old browser flow cannot
 fill them — re-upload, or run the worker on them with `modal run` once it is
 back.
+
+### 11.8 Post-deploy fix: `enqueue` returned 422 for every call
+
+**What was wrong.** `data_collection/worker/modal_app.py` declared the web
+endpoint as `def enqueue(body: dict, request: 'Request')` with the annotation
+as a string and no `Request` name importable at module scope (fastapi was only
+imported inside the function body). When Modal builds the FastAPI app for the
+endpoint inside the container, FastAPI evaluates parameter annotations against
+the module's globals; `Request` did not resolve, so FastAPI fell back to
+treating `request` as a required **query** parameter. The deployed endpoint
+answered every POST with
+
+```
+422 {"detail":[{"type":"missing","loc":["query","request"],"msg":"Field required","input":null}]}
+```
+
+and the backend, seeing a non-2xx from the worker, marked every upload's pose
+job `failed` at confirm-upload (and on retry-pose). The unit tests in §11.4
+could not catch this: they exercised `run_job` and `_secret_matches` directly
+and never built the FastAPI route.
+
+**How it was caught.** Probing the deployed `enqueue` URL with a `curl -X
+POST` (with and without the secret header) returned the 422 above instead of
+401/400/200. The GPU function itself was fine (`modal run` had passed).
+
+**The fix** (branch `fix/worker-enqueue-request`): import `Request` at module
+scope with a guarded import so the module still imports on a laptop without
+fastapi, and annotate the parameter with the real class:
+
+```python
+try:
+    from fastapi import Request
+except ImportError:
+    Request = None
+
+@app.function(image=image, secrets=[secret], timeout=30)
+@modal.fastapi_endpoint(method='POST')
+def enqueue(body: dict, request: Request):
+```
+
+The secret check, body validation and `key_belongs_to` check are unchanged.
+`typing.get_type_hints(enqueue._raw_f_)` now resolves `request` to
+`starlette.requests.Request`; the module still imports and builds its `App`
+under modal 1.5.5 with fastapi installed (as in the deploy venv). Redeploy
+with `modal deploy data_collection/worker/modal_app.py` (the URL is stable).
+
+**New tests** (`data_collection/worker/tests/test_modal_app.py`, six tests):
+an `enqueue_client` fixture takes the plain function behind the
+`modal.Function` (`enqueue._raw_f_`), mounts it on a real `fastapi.FastAPI`
+exactly as Modal does (`app.add_api_route('/', fn, methods=['POST'])`), stubs
+`extract_pose.spawn` and `storage.key_belongs_to`, sets `MODAL_WEBHOOK_SECRET`,
+and drives it with `fastapi.testclient.TestClient`: no secret → 401; wrong
+secret → 401; secret + missing fields → 400; secret + another user's `r2_key`
+→ 400; secret + valid body → 200 `{"accepted": true, "video_id": 12,
+"call_id": ...}` and exactly one spawn; `Authorization: Bearer <secret>` also
+accepted. Against the old code all six fail with the production 422 (`loc:
+["query","request"]`); on the fix the worker suite is `78 passed, 1 skipped`
+and the backend suite is unchanged at `148 passed`.
