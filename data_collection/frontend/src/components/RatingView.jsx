@@ -19,7 +19,6 @@ import {
   getVideo,
   getHolds,
   getMoves,
-  getVideoCsvText,
   getVideoPlaybackUrl,
   getEnvironmentForMove,
   getOutcomeForMove,
@@ -30,7 +29,6 @@ import VideoPlayer from './VideoPlayer';
 import MovesList from './MovesList';
 import RaterMoveForm from './RaterMoveForm';
 import TaggingMode from './TaggingMode';
-import { parsePoseCsv } from '../utils/csv';
 
 const STATUS_LABEL = {
   assigned: 'Not started',
@@ -49,7 +47,6 @@ function RatingView({ onExit }) {
     moves,
     setMoves,
     setHolds,
-    setCsvData,
     setVideoPlaybackUrl,
     setReadOnlyStructure,
     mode,
@@ -115,14 +112,9 @@ function RatingView({ onExit }) {
         setMoves(moveList);
         setVideoPlaybackUrl(playbackUrl);
 
-        // Pose rows: needed by the hold suggestions. Best-effort.
-        try {
-          const text = await getVideoCsvText(videoId);
-          if (active) setCsvData(parsePoseCsv(text));
-        } catch (err) {
-          console.warn('[RatingView] Pose CSV unavailable; suggestions disabled.', err);
-          if (active) setCsvData([]);
-        }
+        // Pose rows (skeleton + hold suggestions) arrive through
+        // usePoseStatus: the header chip polls /status for this video and
+        // loads the CSV once the worker has finished.
 
         await refreshLabelStatus(moveList);
 

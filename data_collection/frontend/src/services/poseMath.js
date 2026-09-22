@@ -1,10 +1,15 @@
 /**
- * Pure pose math: fps inference, frame indexing, angle geometry, CSV shaping.
+ * Pure pose math: frame indexing, angle geometry, CSV shaping.
  *
- * Deliberately free of any MediaPipe or DOM import. Everything here is a pure
- * function of its arguments, so the frame/timestamp math and the CSV contract
- * can be tested in Node without a browser or a WASM runtime — which matters,
- * because these are exactly the parts that were silently wrong before.
+ * Pose extraction now runs server-side (data_collection/worker, a Modal app),
+ * and the worker's angles.py is a line-for-line port of this file. This file
+ * is therefore the CONTRACT: the golden test (scripts/test_pose_math.mjs +
+ * scripts/fixtures/golden_pose.csv) pins its bytes on the JS side, and the
+ * worker's tests/test_golden.py pins the same bytes on the Python side. Change
+ * one and the other must change with it.
+ *
+ * Deliberately free of any MediaPipe or DOM import. The browser still uses
+ * normalizeLandmark(s) for hold matching against the worker's CSV.
  */
 
 /**
@@ -98,9 +103,6 @@ export const ANGLE_DEFINITIONS = [
   ['right_ankle', 'right_knee', 'right_ankle', 'right_heel'],
 ];
 
-/** fps values a phone or camera actually produces. Detection snaps to these. */
-export const KNOWN_FPS = [24, 25, 30, 48, 50, 60, 120];
-
 // ==================== GEOMETRY ====================
 
 export function angleBetween(a, b, c) {
@@ -149,50 +151,9 @@ export function distance(a, b) {
   return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
 }
 
-// ==================== fps DETECTION ====================
+// ==================== FRAME INDEX MATH ====================
 
-/**
- * Infer fps from the intervals between presented frames.
- *
- * Median rather than mean: a single long interval (a stalled decode, a
- * backgrounded tab) would drag a mean badly, but moves a median barely at all.
- * The result snaps to the nearest plausible capture rate, since a measured
- * 59.94 and a measured 60.02 are both a 60fps camera.
- *
- * @param {number[]} mediaTimes presentation times in seconds, in order
- * @returns {number|null} null when there is too little to measure
- */
-export function detectFps(mediaTimes) {
-  if (!mediaTimes || mediaTimes.length < 3) return null;
-
-  const deltas = [];
-  for (let i = 1; i < mediaTimes.length; i++) {
-    const d = mediaTimes[i] - mediaTimes[i - 1];
-    if (d > 0) deltas.push(d);
-  }
-  if (deltas.length === 0) return null;
-
-  deltas.sort((a, b) => a - b);
-  const mid = Math.floor(deltas.length / 2);
-  const median =
-    deltas.length % 2 === 0 ? (deltas[mid - 1] + deltas[mid]) / 2 : deltas[mid];
-  if (!(median > 0)) return null;
-
-  const measured = 1 / median;
-
-  let best = KNOWN_FPS[0];
-  let bestDiff = Infinity;
-  for (const candidate of KNOWN_FPS) {
-    const diff = Math.abs(candidate - measured);
-    if (diff < bestDiff) {
-      bestDiff = diff;
-      best = candidate;
-    }
-  }
-  return best;
-}
-
-/** frame_index for a presentation time, per the detected rate. */
+/** frame_index for a presentation time at the video's fps (the worker does the same). */
 export function frameIndexFor(mediaTimeSeconds, fps) {
   return Math.round(mediaTimeSeconds * fps);
 }

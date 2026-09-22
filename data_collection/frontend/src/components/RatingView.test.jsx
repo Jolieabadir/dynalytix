@@ -13,7 +13,11 @@ vi.mock('../api/client', () => ({
   getVideo: vi.fn(),
   getHolds: vi.fn(),
   getMoves: vi.fn(),
-  getVideoCsvText: vi.fn(),
+  // Pose rows now arrive through usePoseStatus (header chip), not this view.
+  getPoseStatus: vi.fn(),
+  fetchPoseCsvText: vi.fn(),
+  retryPose: vi.fn(),
+  updateMove: vi.fn(),
   getVideoPlaybackUrl: vi.fn(),
   getEnvironmentForMove: vi.fn(),
   getOutcomeForMove: vi.fn(),
@@ -42,7 +46,6 @@ import {
   getVideo,
   getHolds,
   getMoves,
-  getVideoCsvText,
   getVideoPlaybackUrl,
   getEnvironmentForMove,
   getOutcomeForMove,
@@ -117,7 +120,6 @@ beforeEach(() => {
   vi.mocked(getVideo).mockResolvedValue(VIDEO);
   vi.mocked(getHolds).mockResolvedValue(HOLDS);
   vi.mocked(getMoves).mockResolvedValue(MOVES);
-  vi.mocked(getVideoCsvText).mockResolvedValue('frame_number\n0\n1\n');
   vi.mocked(getVideoPlaybackUrl).mockResolvedValue('https://r2.test/video.mp4');
   vi.mocked(getEnvironmentForMove).mockResolvedValue(null);
   vi.mocked(getOutcomeForMove).mockResolvedValue(null);

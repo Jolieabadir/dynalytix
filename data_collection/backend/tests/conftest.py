@@ -26,6 +26,7 @@ os.environ.setdefault('SUPABASE_JWT_SECRET', TEST_JWT_SECRET)
 
 import jwt  # noqa: E402
 
+from src.labeling import pose_queue  # noqa: E402
 from src.labeling.database import Database  # noqa: E402
 from src.storage import r2  # noqa: E402
 
@@ -167,3 +168,23 @@ def fake_r2(monkeypatch):
     monkeypatch.setattr(r2, 'is_configured', lambda: True)
     monkeypatch.setattr(r2, 'bucket_name', lambda: 'fake-bucket')
     yield fake
+
+
+# ==================== POSE WORKER ====================
+
+@pytest.fixture
+def enqueued(monkeypatch):
+    """Capture pose jobs instead of calling Modal. Returns the list of calls.
+
+    Any API client fixture that confirms an upload should use this: without
+    it the real enqueue runs, finds no MODAL_ENDPOINT_URL and marks the video
+    'failed' (harmless, but not what a test usually means).
+    """
+    calls = []
+
+    def fake_enqueue(video_id, user_id, r2_key):
+        calls.append({'video_id': video_id, 'user_id': user_id, 'r2_key': r2_key})
+        return {'accepted': True}
+
+    monkeypatch.setattr(pose_queue, 'enqueue_pose_job', fake_enqueue)
+    return calls

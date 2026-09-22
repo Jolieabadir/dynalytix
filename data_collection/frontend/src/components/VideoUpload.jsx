@@ -1,11 +1,21 @@
 /**
  * VideoUpload component.
  *
- * Pose extraction runs client-side; the video itself is uploaded straight to R2
- * through a presigned URL. The server only ever receives the pose CSV plus the
- * metadata measured here.
+ * Zero-wait start. Picking a file:
+ *
+ *   1. makes an object URL and reads duration/size off a <video> element
+ *      (tens of milliseconds);
+ *   2. registers the video with that provisional metadata (fps assumed 30 —
+ *      the browser cannot measure it; the worker corrects it);
+ *   3. hands the labeler the player IMMEDIATELY (currentVideo is set);
+ *   4. uploads the file to R2 in the background with a progress chip, then
+ *      confirms, which enqueues the pose worker.
+ *
+ * Pose extraction happens on the server. The skeleton, hold suggestions and
+ * export switch on by themselves when the worker reports done (see
+ * hooks/usePoseStatus and components/PoseStatusChip).
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import {
   getMoves,
   registerVideo,
@@ -16,34 +26,9 @@ import {
 import { detectHolds, HOLD_DETECTION_ENABLED } from '../services/holdDetector';
 import { NotSignedInError } from '../api/auth';
 import useStore from '../store/useStore';
-import PoseExtractor, {
-  ExtractionCancelledError,
-  supportsFrameCallback,
-} from '../services/PoseExtractor';
+import { readVideoMetadata, provisionalRegisterPayload } from '../utils/videoMeta';
 
-const STATE_LABEL = {
-  loading: 'Loading pose model…',
-  'detecting-fps': 'Measuring frame rate…',
-  extracting: 'Extracting poses…',
-  'paused-hidden': 'Paused — this tab is in the background',
-};
-
-function parseCsv(csvString) {
-  const lines = csvString.split('\n');
-  const headers = lines[0].split(',');
-  return lines
-    .slice(1)
-    .map((line) => {
-      const values = line.split(',');
-      const row = {};
-      headers.forEach((header, i) => {
-        row[header.trim()] = values[i]?.trim();
-      });
-      return row;
-    })
-    .filter((row) => row.frame_number !== undefined && row.frame_number !== '');
-}
-
+const VALID_TYPES = ['video/quicktime', 'video/mp4', 'video/x-msvideo'];
 
 /**
  * Grab the first frame of the clip and run the detector over it.
@@ -72,215 +57,158 @@ async function detectFirstFrameHolds(blobUrl) {
   return detectHolds(video);
 }
 
+/**
+ * The background half: upload → confirm (enqueues the worker) → holds.
+ * Runs after the labeler already has the player. Never throws: every failure
+ * is reported through the store so the chip can show it.
+ */
+async function runBackgroundJobs(videoId, file, blobUrl) {
+  const store = useStore.getState();
+
+  store.setUpload({ state: 'uploading', fraction: 0, error: null });
+  try {
+    const confirmed = await uploadOriginalVideo(videoId, file, {
+      onProgress: (fraction) => {
+        const current = useStore.getState().upload;
+        if (current.state === 'uploading') {
+          useStore.getState().setUpload({ fraction });
+        }
+      },
+    });
+    useStore.getState().setUpload({ state: 'done', fraction: 1, error: null });
+    // confirm-upload answers with the row, including whether the worker took
+    // the job; showing that now saves a poll.
+    if (useStore.getState().currentVideo?.id === videoId) {
+      useStore.getState().setPoseStatus({
+        video_id: videoId,
+        pose_status: confirmed.pose_status,
+        pose_error: confirmed.pose_error ?? null,
+        pose_started_at: confirmed.pose_started_at ?? null,
+        pose_finished_at: confirmed.pose_finished_at ?? null,
+        fps: confirmed.fps,
+        total_frames: confirmed.total_frames,
+        duration_ms: confirmed.duration_ms,
+        width: confirmed.width,
+        height: confirmed.height,
+        r2_pose_csv_key: confirmed.r2_pose_csv_key ?? null,
+      });
+    }
+  } catch (uploadErr) {
+    console.error('[VideoUpload] Upload failed:', uploadErr);
+    useStore.getState().setUpload({
+      state: 'failed',
+      error: uploadErr?.message || 'The upload failed. Pick the file again to retry.',
+    });
+    return;
+  }
+
+  // Holds: detect on the first frame and post them, if the detector is
+  // enabled. Best-effort — a missing or failing detector must never cost the
+  // labeler anything, and every hold can be placed by hand.
+  try {
+    let holds = [];
+    if (HOLD_DETECTION_ENABLED) {
+      const boxes = await detectFirstFrameHolds(blobUrl);
+      if (boxes.length) {
+        holds = await createHoldsBulk(videoId, boxes);
+      }
+    }
+    if (useStore.getState().currentVideo?.id === videoId) {
+      useStore.getState().setHolds(holds.length ? holds : await getHolds(videoId));
+    }
+  } catch (holdErr) {
+    console.warn('[VideoUpload] Hold detection skipped:', holdErr);
+  }
+}
+
 function VideoUpload() {
-  const [processing, setProcessing] = useState(false);
-  const [phase, setPhase] = useState(null);
+  const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
-  const [progressPercent, setProgressPercent] = useState(0);
-  const [timeInfo, setTimeInfo] = useState(null);
-  const [detectedFps, setDetectedFps] = useState(null);
   const [error, setError] = useState(null);
-  const extractorRef = useRef(null);
 
-  const browserSupported = supportsFrameCallback();
-
-  const {
-    setCurrentVideo,
-    setHolds,
-    setMoves,
-    setVideoBlobUrl,
-    setCsvData,
-    setCsvString,
-  } = useStore();
-
-  // Unmounting mid-extraction should not leave the loop and its object URL alive.
-  useEffect(() => {
-    return () => {
-      if (extractorRef.current) extractorRef.current.cancel();
-    };
-  }, []);
-
-  const handleCancel = useCallback(() => {
-    if (extractorRef.current) extractorRef.current.cancel();
-  }, []);
-
-  const resetUi = () => {
-    setProcessing(false);
-    setPhase(null);
-    setStatus('');
-    setProgressPercent(0);
-    setTimeInfo(null);
-    setDetectedFps(null);
-  };
+  const setCurrentVideo = useStore((s) => s.setCurrentVideo);
+  const setHolds = useStore((s) => s.setHolds);
+  const setMoves = useStore((s) => s.setMoves);
+  const setVideoBlobUrl = useStore((s) => s.setVideoBlobUrl);
+  const setCsvData = useStore((s) => s.setCsvData);
+  const setUpload = useStore((s) => s.setUpload);
+  const setPoseStatus = useStore((s) => s.setPoseStatus);
 
   const handleFileSelect = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    // Let the same file be chosen again after a cancel or an error.
+    // Let the same file be chosen again after an error.
     e.target.value = '';
 
-    const validTypes = ['video/quicktime', 'video/mp4', 'video/x-msvideo'];
-    if (!validTypes.includes(file.type) && !file.name.match(/\.(mov|mp4|avi)$/i)) {
+    if (!VALID_TYPES.includes(file.type) && !file.name.match(/\.(mov|mp4|avi)$/i)) {
       setError({ title: 'Unsupported file', message: 'Please upload a .mov, .mp4, or .avi file' });
       return;
     }
 
-    const extractor = new PoseExtractor();
-    extractorRef.current = extractor;
+    setBusy(true);
+    setError(null);
+    setStatus('Reading video…');
 
-    const startedAt = performance.now();
-
+    const blobUrl = URL.createObjectURL(file);
     try {
-      setProcessing(true);
-      setError(null);
-      setPhase('loading');
-      setStatus(STATE_LABEL.loading);
-      setProgressPercent(0);
+      const meta = await readVideoMetadata(blobUrl);
 
-      // Blob URL for later playback. Owned by the store, not the extractor.
-      const blobUrl = URL.createObjectURL(file);
-      setVideoBlobUrl(blobUrl);
-
-      const { rows, fps, totalFrames, duration, width, height } = await extractor.extractFromFile(file, {
-        onState: (state) => {
-          setPhase(state);
-          setStatus(STATE_LABEL[state] || '');
-        },
-        onProgress: ({ progress, currentTime, duration: total, fps: measuredFps }) => {
-          setProgressPercent(Math.round(progress * 100));
-          setTimeInfo({ currentTime, duration: total });
-          if (measuredFps) setDetectedFps(measuredFps);
+      setStatus('Registering…');
+      const videoData = await registerVideo(provisionalRegisterPayload(file, meta), {
+        onRetry: (attempt, delayMs) => {
+          setStatus(`Network problem — retrying (${attempt}/3) in ${Math.round(delayMs / 1000)}s…`);
         },
       });
 
-      const elapsedMs = performance.now() - startedAt;
-      console.log(
-        `[PoseExtractor] ${rows.length} frames in ${(elapsedMs / 1000).toFixed(1)}s ` +
-          `(clip ${duration.toFixed(1)}s at ${fps}fps, ` +
-          `${(elapsedMs / 1000 / duration).toFixed(2)}x realtime)`
-      );
-
-      setPhase(null);
-      setStatus('Building CSV…');
-      const csvString = extractor.framesToCSV(rows);
-      setCsvString(csvString);
-      setCsvData(parseCsv(csvString));
-      extractor.close();
-
-      setStatus('Saving…');
-      const videoData = await registerVideo(
-        {
-          filename: file.name,
-          fps,
-          total_frames: totalFrames,
-          duration_ms: duration * 1000,
-          // Landmarks are stored as pixels at this resolution; without these,
-          // they can never be normalized against hold boxes after the fact.
-          width,
-          height,
-          csv_data: csvString,
-        },
-        {
-          onRetry: (attempt, delayMs) => {
-            setStatus(
-              `Network problem — retrying (${attempt}/3) in ${Math.round(delayMs / 1000)}s…`
-            );
-          },
-        }
-      );
-
-      // The pose data is safe at this point. The original video is a bonus, so
-      // a failure here must not discard a successful extraction.
-      setStatus('Uploading video…');
-      try {
-        await uploadOriginalVideo(videoData.id, file);
-      } catch (uploadErr) {
-        console.warn('[VideoUpload] Original video upload failed; pose data is saved.', uploadErr);
-      }
-
-      // Holds: detect on the first frame and post them, if the detector is
-      // enabled. Best-effort — a missing or failing detector must never cost
-      // the labeler their extraction, and every hold can be placed by hand.
-      setStatus('Finding holds…');
-      try {
-        let holds = [];
-        if (HOLD_DETECTION_ENABLED) {
-          const boxes = await detectFirstFrameHolds(blobUrl);
-          if (boxes.length) {
-            holds = await createHoldsBulk(videoData.id, boxes);
-          }
-        }
-        setHolds(holds.length ? holds : await getHolds(videoData.id));
-      } catch (holdErr) {
-        console.warn('[VideoUpload] Hold detection skipped:', holdErr);
-        setHolds([]);
-      }
-
-      // Fall back to the measured values: a backend that predates the
-      // dimensions migration echoes them back as null, and both the hold
-      // overlay and the suggesters read the source resolution from here to
-      // normalize pixel landmarks against normalized hold boxes.
+      // The labeler gets the player now. Everything below runs behind it.
+      setVideoBlobUrl(blobUrl);
+      setCsvData(null);
+      setHolds([]);
+      setMoves([]);
+      setUpload({ state: 'idle', fraction: 0, error: null });
+      setPoseStatus({ video_id: videoData.id, pose_status: videoData.pose_status || 'pending', pose_error: null });
       setCurrentVideo({
         ...videoData,
-        width: videoData.width ?? width,
-        height: videoData.height ?? height,
+        // A backend that predates the dimensions column echoes null; keep the
+        // measured size so hold matching can normalize once the CSV lands.
+        width: videoData.width ?? (meta.width || null),
+        height: videoData.height ?? (meta.height || null),
       });
-      setMoves(await getMoves(videoData.id));
+
+      runBackgroundJobs(videoData.id, file, blobUrl);
+      getMoves(videoData.id)
+        .then((moves) => {
+          if (useStore.getState().currentVideo?.id === videoData.id) setMoves(moves);
+        })
+        .catch((err) => console.warn('[VideoUpload] Could not load moves:', err));
     } catch (err) {
-      if (err instanceof ExtractionCancelledError || err?.name === 'ExtractionCancelled') {
-        resetUi();
-        extractorRef.current = null;
-        return;
-      }
-
       console.error('Processing error:', err);
-
-      if (err?.name === 'DecodeUnsupported') {
-        setError({ title: "This video can't be read", message: err.message });
-      } else if (err?.name === 'FrameCallbackUnsupported') {
-        setError({ title: 'Unsupported browser', message: err.message });
-      } else if (err instanceof NotSignedInError || err?.name === 'NotSignedIn') {
+      URL.revokeObjectURL(blobUrl);
+      if (err instanceof NotSignedInError || err?.name === 'NotSignedIn') {
         setError({ title: 'Not signed in', message: err.message });
       } else {
         setError({
-          title: 'Processing failed',
-          message: err?.message || 'Processing failed. Please try again.',
+          title: 'Could not start',
+          message: err?.message || 'Something went wrong. Please try again.',
         });
       }
-      resetUi();
-    } finally {
-      extractorRef.current = null;
+      setBusy(false);
+      setStatus('');
     }
   };
-
-  if (!browserSupported) {
-    return (
-      <div className="video-upload">
-        <div className="upload-container">
-          <h2>Upload Climbing Video</h2>
-          <div className="error-message">
-            <p>
-              <strong>This browser can&apos;t step through video frames.</strong>
-            </p>
-            <p>Please use Chrome, Edge, or Safari to upload a video.</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="video-upload">
       <div className="upload-container">
         <h2>Upload Climbing Video</h2>
-        <p>Upload a video to begin labeling climbing movements</p>
+        <p>Pick a video to begin labeling climbing movements</p>
 
-        {!processing ? (
+        {!busy ? (
           <div className="upload-area">
             <input
               type="file"
               id="video-upload"
-              accept=".mov,.mp4,.avi"
+              accept=".mov,.mp4,.avi,video/*"
               onChange={handleFileSelect}
               style={{ display: 'none' }}
             />
@@ -289,41 +217,14 @@ function VideoUpload() {
             </label>
             <p className="upload-hint">Supports .mov, .mp4, .avi</p>
             <p className="upload-hint" style={{ marginTop: '8px', fontSize: '12px', color: '#888' }}>
-              Video is processed locally in your browser
-            </p>
-            <p className="upload-hint" style={{ marginTop: '4px', fontSize: '12px', color: '#888' }}>
-              Best on a computer — phone browsers are slow for this step.
+              You can start labeling right away. The video uploads in the background and the
+              pose skeleton appears when the server has processed it.
             </p>
           </div>
         ) : (
           <div className="upload-progress">
             <div className="spinner"></div>
             <p>{status}</p>
-
-            <div className="progress-bar-container">
-              <div className="progress-bar" style={{ width: `${progressPercent}%` }} />
-            </div>
-
-            <p className="progress-detail">
-              {progressPercent}%
-              {timeInfo &&
-                ` — ${timeInfo.currentTime.toFixed(1)}s of ${timeInfo.duration.toFixed(1)}s`}
-              {detectedFps && ` · ${detectedFps} fps`}
-            </p>
-
-            {phase === 'paused-hidden' ? (
-              <p className="progress-detail" style={{ color: '#eab308' }}>
-                Paused because this tab is in the background. Switch back to continue.
-              </p>
-            ) : (
-              <p className="progress-detail" style={{ color: '#888' }}>
-                Keep this tab open — extraction stops if you switch away.
-              </p>
-            )}
-
-            <button type="button" className="cancel-button" onClick={handleCancel}>
-              Cancel
-            </button>
           </div>
         )}
 

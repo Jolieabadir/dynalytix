@@ -5,14 +5,14 @@
  * The parent component handles the export logic.
  */
 
-function DoneButton({ onClick, disabled }) {
+function DoneButton({ onClick, disabled, busy = false }) {
   return (
-    <button 
-      onClick={onClick} 
+    <button
+      onClick={onClick}
       className="done-btn"
-      disabled={disabled}
+      disabled={disabled || busy}
     >
-      {disabled ? 'Exporting...' : 'Done'}
+      {busy ? 'Exporting...' : 'Done'}
     </button>
   );
 }

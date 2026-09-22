@@ -2694,3 +2694,62 @@ body {
     overflow-x: auto;
   }
 }
+
+/* ---------- Pose status chip (header) ---------- */
+.pose-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  line-height: 1.2;
+  border: 1px solid #475569;
+  color: #cbd5e1;
+  background: rgba(30, 41, 59, 0.6);
+  max-width: 28rem;
+}
+.pose-chip-processing { border-color: #3b82f6; color: #bfdbfe; }
+.pose-chip-done { border-color: #22c55e; color: #bbf7d0; }
+.pose-chip-failed { border-color: #ef4444; color: #fecaca; }
+.pose-chip-text { white-space: nowrap; }
+.pose-chip-detail {
+  font-size: 0.7rem;
+  opacity: 0.8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 14rem;
+}
+.pose-chip-spinner {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: pose-chip-spin 0.9s linear infinite;
+  flex: none;
+}
+@keyframes pose-chip-spin { to { transform: rotate(360deg); } }
+.pose-chip-bar {
+  width: 5rem;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.3);
+  overflow: hidden;
+  flex: none;
+}
+.pose-chip-bar-fill { display: block; height: 100%; background: #3b82f6; transition: width 0.2s; }
+.pose-chip-retry {
+  padding: 0.15rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+.pose-chip-retry:disabled { opacity: 0.6; cursor: default; }
+@media (max-width: 768px) {
+  .pose-chip { max-width: 100%; flex-wrap: wrap; }
+}

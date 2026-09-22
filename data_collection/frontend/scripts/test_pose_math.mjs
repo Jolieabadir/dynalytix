@@ -3,15 +3,12 @@
  *
  * Run: node --test scripts/test_pose_math.mjs
  *
- * These cover the parts that were silently wrong before — fps inference, the
- * frame_number/timestamp_ms relationship, and row shaping — using real frame
+ * poseMath.js is the CSV contract the server-side worker
+ * (data_collection/worker/angles.py) reproduces byte for byte; the golden
+ * file here is the shared fixture. The frame-index tests use real frame
  * presentation times recorded from the clips scripts/make_test_video.sh
- * generates, read back with ffprobe. The fixtures stand in for
- * requestVideoFrameCallback's mediaTime, which is the same quantity.
- *
- * What this canNOT cover: MediaPipe inference itself, the play/pause capture
- * loop, decode failure, and the visibilitychange handling. Those need a real
- * browser with a GPU and are listed as manual checks in REPORT.md.
+ * generates, read back with ffprobe — the same quantity the worker reads from
+ * ffmpeg's showinfo filter.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,7 +17,6 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import {
-  detectFps,
   frameIndexFor,
   totalFramesFor,
   buildRows,
@@ -57,61 +53,6 @@ const loadFixture = (name) =>
 
 const fixture30 = loadFixture('frame_times_30fps.json');
 const fixture60 = loadFixture('frame_times_60fps.json');
-
-/** Evenly spaced presentation times, as an ideal camera would produce. */
-const evenTimes = (fps, seconds) =>
-  Array.from({ length: Math.round(fps * seconds) }, (_, i) => i / fps);
-
-// ==================== fps DETECTION ====================
-
-test('detectFps recovers each supported rate from ideal timings', () => {
-  for (const fps of [24, 25, 30, 48, 50, 60, 120]) {
-    assert.equal(detectFps(evenTimes(fps, 2)), fps, `failed at ${fps}fps`);
-  }
-});
-
-test('detectFps snaps NTSC rates to their nominal neighbour', () => {
-  // 29.97 and 59.94 are what a US phone actually writes; both must land on the
-  // round number, or frame_index drifts by a frame every ~33 seconds.
-  assert.equal(detectFps(evenTimes(30000 / 1001, 2)), 30);
-  assert.equal(detectFps(evenTimes(60000 / 1001, 2)), 60);
-  assert.equal(detectFps(evenTimes(24000 / 1001, 2)), 24);
-});
-
-test('detectFps survives a stalled interval', () => {
-  // One long gap (a backgrounded tab, a decode hiccup) must not move the
-  // answer. This is the reason for a median rather than a mean.
-  const times = evenTimes(60, 2);
-  const stalled = times.map((t, i) => (i >= 60 ? t + 0.8 : t));
-  assert.equal(detectFps(stalled), 60);
-
-  const mean = 1 / ((stalled.at(-1) - stalled[0]) / (stalled.length - 1));
-  assert.ok(mean < 45, `a mean would have given ~${mean.toFixed(1)}fps`);
-});
-
-test('detectFps tolerates jitter within a rate', () => {
-  let t = 0;
-  const times = [];
-  for (let i = 0; i < 120; i++) {
-    times.push(t);
-    t += 1 / 60 + (Math.sin(i) * 0.0008); // sub-millisecond wobble
-  }
-  assert.equal(detectFps(times), 60);
-});
-
-test('detectFps returns null when there is too little to measure', () => {
-  assert.equal(detectFps([]), null);
-  assert.equal(detectFps([0]), null);
-  assert.equal(detectFps([0, 1 / 30]), null);
-  assert.equal(detectFps(null), null);
-});
-
-test('detectFps identifies the real recorded clips', () => {
-  assert.equal(detectFps(fixture30.mediaTimes.slice(0, 60)), 30);
-  assert.equal(detectFps(fixture60.mediaTimes.slice(0, 120)), 60);
-  // And the 60fps clip must not be mistaken for 30, which was the original bug.
-  assert.notEqual(detectFps(fixture60.mediaTimes.slice(0, 120)), 30);
-});
 
 // ==================== FRAME INDEX MATH ====================
 

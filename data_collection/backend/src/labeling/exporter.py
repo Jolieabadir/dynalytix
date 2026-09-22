@@ -460,8 +460,9 @@ class AdminExporter:
         return columns, rows
 
     def _pose_rows(self, video: Video) -> List[dict]:
-        """The video's pose CSV as dict rows, or [] when it is not in R2."""
-        if not video.r2_pose_csv_key:
+        """The video's pose CSV as dict rows, or [] when it is not in R2 or
+        the pose worker has not finished it (pose_status != 'done')."""
+        if not video.r2_pose_csv_key or getattr(video, 'pose_status', 'done') != 'done':
             return []
         try:
             source = r2.get_object_stream(video.r2_pose_csv_key)

@@ -19,7 +19,7 @@ from src.labeling.models import TAXONOMY_VERSION, HOLD_SLOTS
 from src.web import api as api_module
 from tests.conftest import make_jwt, requires_db
 from tests.test_api_scoping import (
-    POSE_CSV, auth, create_move, register_video,
+    POSE_CSV, WORKER_SECRET, auth, create_move, register_video, ready_video,
 )
 
 pytestmark = requires_db
@@ -28,10 +28,13 @@ pytestmark = requires_db
 # ==================== FIXTURES / HELPERS ====================
 
 @pytest.fixture
-def client(clean_db, fake_r2, monkeypatch):
+def client(clean_db, fake_r2, enqueued, monkeypatch):
+    """`enqueued` stubs the pose worker hand-off; `ready_video` plays the
+    worker so a prepped video has its pose CSV (the exports need it)."""
     monkeypatch.setattr(api_module, '_db', clean_db)
     monkeypatch.setattr(api_module, '_exporter', None)
     monkeypatch.setattr(api_module, '_admin_exporter', None)
+    monkeypatch.setenv('MODAL_WEBHOOK_SECRET', WORKER_SECRET)
     with TestClient(api_module.app) as test_client:
         yield test_client
 
@@ -132,8 +135,9 @@ def post_tag(client, user_id, move_id, frame=1):
 
 
 def prepped_video(client, admin, n_moves=3):
-    """Admin uploads, draws one hold, defines n canonical moves, marks ready."""
-    video = register_video(client, admin, filename='prep.mp4')
+    """Admin uploads (pose extracted), draws one hold, defines n canonical
+    moves, marks ready."""
+    video = ready_video(client, admin, filename='prep.mp4')
     hold = create_hold(client, admin, video['id'])
     moves = [create_move(client, admin, video['id']) for _ in range(n_moves)]
     mark_ready(client, admin, video['id'])
@@ -555,7 +559,7 @@ def test_long_export_shape(client, admin, rater_a, rater_b):
     # ?video_id= narrows; ?dataset=all widens to B videos too.
     assert len(parse_csv(client.get(f'/api/admin/export/long?video_id={video["id"]}',
                                     headers=auth(admin)).text)) == expected
-    b_video = register_video(client, rater_b, filename='mine.mp4')
+    b_video = ready_video(client, rater_b, filename='mine.mp4')
     create_move(client, rater_b, b_video['id'])
     default_rows = parse_csv(client.get('/api/admin/export/long', headers=auth(admin)).text)
     assert {r['video_id'] for r in default_rows} == {str(video['id'])}
@@ -570,7 +574,7 @@ def test_full_export_covers_every_user(client, fake_r2, admin, rater_a, rater_b)
     video, hold, moves = prepped_video(client, admin, n_moves=1)
     assign(client, admin, video['id'], rater_a)
     _label_everything(client, hold, moves, rater_a, 'steep', 'success')
-    b_video = register_video(client, rater_b, filename='mine.mp4')
+    b_video = ready_video(client, rater_b, filename='mine.mp4')
     b_move = create_move(client, rater_b, b_video['id'])
     assert post_outcome(client, rater_b, b_move['id'], 'fall').status_code == 201
 
@@ -654,15 +658,14 @@ def test_admin_metadata_update(client, admin):
 
 def test_playback_url_for_owner_rater_admin_and_404_otherwise(client, fake_r2, admin, rater_a, rater_b):
     """A rater never had the file in their browser: the rating view needs a URL."""
+    # Nothing uploaded yet: 404 even for the owner.
+    unuploaded = register_video(client, admin, filename='later.mp4')
+    assert client.get(f'/api/videos/{unuploaded["id"]}/video-url', headers=auth(admin)).status_code == 404
+
+    # prepped_video has been through upload-url -> confirm-upload (ready_video).
     video, _, _ = prepped_video(client, admin)
     assign(client, admin, video['id'], rater_a)
-
-    # Nothing uploaded yet: 404 even for the owner.
-    assert client.get(f'/api/videos/{video["id"]}/video-url', headers=auth(admin)).status_code == 404
-
     key = f'videos/{admin}/{video["id"]}/prep.mp4'
-    res = client.post(f'/api/videos/{video["id"]}/confirm-upload', json={'key': key}, headers=auth(admin))
-    assert res.status_code == 200, res.text
 
     for user in (admin, rater_a):
         res = client.get(f'/api/videos/{video["id"]}/video-url', headers=auth(user))
@@ -673,3 +676,55 @@ def test_playback_url_for_owner_rater_admin_and_404_otherwise(client, fake_r2, a
 
     # Unassigned rater: indistinguishable from missing.
     assert client.get(f'/api/videos/{video["id"]}/video-url', headers=auth(rater_b)).status_code == 404
+
+
+# ==================== POSE WORKER x DATASET A (runbook-w1-worker) ====================
+
+def test_rater_can_poll_pose_status_and_fetch_csv_url_but_not_retry(client, admin, rater_a, rater_b, enqueued):
+    """The rating view waits on the same skeleton the prepper does."""
+    video, _, _ = prepped_video(client, admin)
+    assign(client, admin, video['id'], rater_a)
+
+    res = client.get(f'/api/videos/{video["id"]}/status', headers=auth(rater_a))
+    assert res.status_code == 200, res.text
+    assert res.json()['pose_status'] == 'done'
+    assert client.get(f'/api/videos/{video["id"]}/pose-csv-url', headers=auth(rater_a)).status_code == 200
+    # Unassigned: indistinguishable from missing.
+    assert client.get(f'/api/videos/{video["id"]}/status', headers=auth(rater_b)).status_code == 404
+    assert client.get(f'/api/videos/{video["id"]}/pose-csv-url', headers=auth(rater_b)).status_code == 404
+
+    # A failed job: the rater sees it, but only owner/admin may re-run it.
+    client.post(f'/api/videos/{video["id"]}/pose-result',
+                json={'status': 'failed', 'error': 'gpu hiccup'},
+                headers={'X-Webhook-Secret': WORKER_SECRET})
+    assert client.get(f'/api/videos/{video["id"]}/status', headers=auth(rater_a)).json()['pose_status'] == 'failed'
+    assert client.get(f'/api/videos/{video["id"]}/pose-csv-url', headers=auth(rater_a)).status_code == 409
+    assert client.post(f'/api/videos/{video["id"]}/retry-pose', headers=auth(rater_a)).status_code == 403
+    assert client.post(f'/api/videos/{video["id"]}/retry-pose', headers=auth(rater_b)).status_code == 404
+    enqueued.clear()
+    assert client.post(f'/api/videos/{video["id"]}/retry-pose', headers=auth(admin)).status_code == 200
+    assert [c['video_id'] for c in enqueued] == [video['id']]
+
+
+def test_admin_full_export_gates_on_pose(client, fake_r2, admin, rater_a):
+    """?video_id= for a pending video is 409; the multi-video export skips it."""
+    done_video, _, moves = prepped_video(client, admin, n_moves=1)
+    pending = register_video(client, admin, filename='pending.mp4')
+    create_move(client, admin, pending['id'])
+
+    res = client.get(f'/api/admin/export/full?video_id={pending["id"]}', headers=auth(admin))
+    assert res.status_code == 409
+    assert res.json()['detail'] == 'pose extraction not finished (status=pending)'
+    assert client.get('/api/admin/export/full?video_id=999999', headers=auth(admin)).status_code == 404
+
+    # The multi-video export keeps the pending video as label-only rows (its
+    # existing behaviour for a video with no CSV), so one slow job never
+    # blocks the whole dataset; its pose columns are simply empty.
+    rows = parse_csv(client.get('/api/admin/export/full?dataset=all', headers=auth(admin)).text)
+    assert {r['video_id'] for r in rows} == {str(done_video['id']), str(pending['id'])}
+    pending_rows = [r for r in rows if r['video_id'] == str(pending['id'])]
+    assert all(r['left_elbow_angle'] == '' for r in pending_rows)
+    assert all(r['left_elbow_angle'] != '' for r in rows if r['video_id'] == str(done_video['id']))
+
+    # The long (label-only) export needs no pose CSV and is not gated.
+    assert client.get(f'/api/admin/export/long?video_id={pending["id"]}', headers=auth(admin)).status_code == 200

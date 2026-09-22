@@ -15,7 +15,7 @@ import useStore from '../store/useStore';
 import { fpsOf, timeToFrame, frameToTime } from '../utils/frames';
 import SkeletonOverlay from './SkeletonOverlay';
 import HoldOverlay from './HoldOverlay';
-import { getVideoCsvText, createHold, deleteHold } from '../api/client';
+import { createHold, deleteHold } from '../api/client';
 
 /**
  * True only for elements where a keystroke means text, not a shortcut.
@@ -31,27 +31,8 @@ function isTextEntry(element) {
   return ['text', 'email', 'password', 'search', 'url', 'tel', 'number'].includes(type);
 }
 
-/** Parse the pose CSV into row objects keyed by column name. */
-function parseCsv(csvText) {
-  const lines = csvText.split('\n');
-  const headers = lines[0].split(',').map((h) => h.trim());
-  return lines
-    .slice(1)
-    .map((line) => {
-      const values = line.split(',');
-      const row = {};
-      headers.forEach((header, i) => {
-        row[header] = values[i]?.trim();
-      });
-      return row;
-    })
-    .filter((row) => row.frame_number);
-}
-
 function VideoPlayer() {
   const videoRef = useRef(null);
-  // Pose rows fetched from the server, for a video not extracted this session.
-  const [fetchedCsv, setFetchedCsv] = useState(null);
   const [showSkeleton, setShowSkeleton] = useState(true);
   const [holdError, setHoldError] = useState(null);
 
@@ -63,7 +44,8 @@ function VideoPlayer() {
     moveEnd,
     videoBlobUrl,
     videoPlaybackUrl,
-    csvData: storeCsvData,
+    csvData,
+    poseStatus,
     holds,
     showHoldOverlay,
     holdPickSlot,
@@ -88,23 +70,13 @@ function VideoPlayer() {
   // draw, delete, or mark move boundaries.
   const readOnly = Boolean(readOnlyStructure);
 
-  // This session's extraction wins; anything else is fetched. Derived rather
-  // than copied into state, so there is no effect that just mirrors the store.
-  const hasStoreCsv = Boolean(storeCsvData && storeCsvData.length > 0);
-  const csvData = hasStoreCsv ? storeCsvData : fetchedCsv;
-
-  useEffect(() => {
-    if (!currentVideo || hasStoreCsv) return;
-
-    let active = true;
-    getVideoCsvText(currentVideo.id)
-      .then((text) => active && setFetchedCsv(parseCsv(text)))
-      .catch((error) => console.error('Failed to load CSV:', error));
-
-    return () => {
-      active = false;
-    };
-  }, [currentVideo, hasStoreCsv]);
+  // The skeleton exists only once the server-side worker has finished and
+  // usePoseStatus (mounted in the header chip for every view that opens a
+  // video) has parsed its CSV into the store.
+  const poseReady =
+    poseStatus?.video_id === currentVideo?.id &&
+    poseStatus?.pose_status === 'done' &&
+    Boolean(csvData && csvData.length > 0);
 
   // Frame counter follows playback.
   useEffect(() => {
@@ -245,9 +217,9 @@ function VideoPlayer() {
     <div className="video-player">
       <div className="video-container">
         <div className="video-wrapper">
-          <video ref={videoRef} src={videoBlobUrl || videoPlaybackUrl || undefined} />
+          <video ref={videoRef} src={videoBlobUrl || videoPlaybackUrl || undefined} playsInline />
 
-          {showSkeleton && csvData && (
+          {showSkeleton && poseReady && (
             <SkeletonOverlay
               videoRef={videoRef}
               currentFrame={currentFrame}
@@ -287,9 +259,10 @@ function VideoPlayer() {
         <button
           onClick={() => setShowSkeleton(!showSkeleton)}
           className={`toggle-skeleton ${showSkeleton ? 'active' : ''}`}
-          title="Toggle skeleton (S key)"
+          title={poseReady ? 'Toggle skeleton (S key)' : 'The skeleton appears once the server has extracted the pose'}
+          disabled={!poseReady}
         >
-          {showSkeleton ? '👁️ Hide' : '👁️ Show'} Skeleton
+          {showSkeleton ? '👁️ Hide' : '👁️ Show'} Skeleton{poseReady ? '' : ' (waiting for pose)'}
         </button>
 
         <button

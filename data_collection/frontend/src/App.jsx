@@ -21,9 +21,7 @@ import {
   getMyAssignments,
   getVideoPlaybackUrl,
   getHolds,
-  getVideoCsvText,
 } from './api/client';
-import { parsePoseCsv } from './utils/csv';
 import { exportVideo, getExportDownloadUrl } from './api/client';
 import { getSession, onAuthChange, signOut } from './api/auth';
 import AuthGate from './components/AuthGate';
@@ -40,6 +38,7 @@ import MoveForm from './components/MoveForm';
 import TaggingMode from './components/TaggingMode';
 import ThankYouModal from './components/ThankYouModal';
 import ProgressStrip from './components/ProgressStrip';
+import PoseStatusChip from './components/PoseStatusChip';
 import OnboardingBanner, { BANNER_DEFINE } from './components/OnboardingBanner';
 import './App.css';
 
@@ -60,7 +59,6 @@ function App() {
   const setCurrentVideo = useStore((s) => s.setCurrentVideo);
   const setVideoPlaybackUrl = useStore((s) => s.setVideoPlaybackUrl);
   const setHolds = useStore((s) => s.setHolds);
-  const setCsvData = useStore((s) => s.setCsvData);
 
   const [authChecked, setAuthChecked] = useState(false);
   const [configError, setConfigError] = useState(null);
@@ -208,16 +206,18 @@ function App() {
 
   /**
    * From Admin: open any video in the prep (Define) flow. Nothing of it is in
-   * this session, so the holds, the pose rows and a playback URL are fetched
-   * the way the upload path would have produced them. Each is best-effort:
-   * a missing original still leaves the skeleton and the moves list usable.
+   * this session, so the holds and a playback URL are fetched the way the
+   * upload path would have produced them; the pose rows arrive through
+   * usePoseStatus (the header chip polls /status and loads the CSV once the
+   * worker is done). Each is best-effort: a missing original still leaves
+   * the moves list usable.
    */
   const handleOpenVideoForPrep = useCallback(
     async (video) => {
       resetVideoState();
       setCurrentVideo(video);
       setView('videos');
-      const [holds, playbackUrl, csvText] = await Promise.all([
+      const [holds, playbackUrl] = await Promise.all([
         getHolds(video.id).catch((error) => {
           console.warn('Could not load holds for video', video.id, error);
           return [];
@@ -226,18 +226,13 @@ function App() {
           console.warn('No playback URL for video', video.id, error);
           return null;
         }),
-        getVideoCsvText(video.id).catch((error) => {
-          console.warn('No pose CSV for video', video.id, error);
-          return '';
-        }),
       ]);
       // The user may have moved on while these loaded.
       if (useStore.getState().currentVideo?.id !== video.id) return;
       setHolds(holds ?? []);
       setVideoPlaybackUrl(playbackUrl);
-      setCsvData(parsePoseCsv(csvText));
     },
-    [resetVideoState, setCurrentVideo, setView, setVideoPlaybackUrl, setHolds, setCsvData]
+    [resetVideoState, setCurrentVideo, setView, setVideoPlaybackUrl, setHolds]
   );
 
   if (!authChecked) {
@@ -319,6 +314,7 @@ function App() {
         </div>
         <AppNav />
         <div className="app-header-account">
+          <PoseStatusChip />
           <span className="account-email" title={session.user?.email}>
             {profile?.display_name || session.user?.email}
             {profile?.tier === 'validated' && <span className="tier-badge">validated</span>}
@@ -347,6 +343,7 @@ function DefineMode() {
   const moveStart = useStore((s) => s.moveStart);
   const moveEnd = useStore((s) => s.moveEnd);
   const clearMoveSelection = useStore((s) => s.clearMoveSelection);
+  const poseStatus = useStore((s) => s.poseStatus);
 
   const [showThankYou, setShowThankYou] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -356,6 +353,14 @@ function DefineMode() {
   if (!currentVideo) {
     return <VideoUpload />;
   }
+
+  const poseDone =
+    poseStatus?.video_id === currentVideo.id && poseStatus?.pose_status === 'done';
+  const exportBlockedReason = poseDone
+    ? ''
+    : poseStatus?.pose_status === 'failed'
+      ? 'Pose extraction failed — retry it from the chip in the header, then export.'
+      : 'Export is available once the server has finished extracting the pose.';
 
   /**
    * Finish & Export: run the export, then resolve the presigned download link
@@ -399,6 +404,8 @@ function DefineMode() {
         onFinish={handleFinish}
         busy={exporting}
         canSaveNext={moveStart !== null || moveEnd !== null || showMoveForm}
+        canExport={poseDone}
+        exportBlockedReason={exportBlockedReason}
       />
 
       <VideoMetadataPanel />

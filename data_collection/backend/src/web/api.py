@@ -24,6 +24,10 @@ Anyone else gets 404, so ids stay private. 403 is reserved for "you can see
 this but may not change it": structure writes on a locked video, rater writes
 on a finished assignment, admin routes for non-admins.
 """
+import hmac
+import logging
+import os
+
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -36,6 +40,7 @@ from datetime import datetime, timezone
 import psycopg
 
 from ..labeling.database import Database, SchemaNotApplied
+from ..labeling import pose_queue
 from ..labeling.models import (
     Video, Hold, Move, Environment, Outcome, FrameTag,
     RaterProfile, VideoAssignment,
@@ -50,8 +55,11 @@ from ..labeling.exporter import Exporter, AdminExporter
 from ..storage import r2
 from .auth import get_current_user_id
 
-# Largest body accepted on register, which carries the pose CSV inline.
-MAX_REGISTER_BYTES = 60 * 1024 * 1024
+log = logging.getLogger(__name__)
+
+# fps the browser reports at register when it cannot measure one. The worker
+# overwrites it from ffprobe; see VideoRegister.
+PROVISIONAL_FPS = 30.0
 
 # Most holds accepted in one bulk create. A bouldering wall in frame is tens of
 # holds; anything past this is a runaway detector, not a real wall.
@@ -79,24 +87,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.middleware("http")
-async def limit_register_body(request: Request, call_next):
-    """Reject oversized register bodies before FastAPI buffers the form."""
-    if request.method == 'POST' and request.url.path == '/api/videos/register':
-        content_length = request.headers.get('content-length')
-        if content_length and content_length.isdigit() and int(content_length) > MAX_REGISTER_BYTES:
-            return JSONResponse(
-                status_code=413,
-                content={
-                    'detail': (
-                        f'Body exceeds {MAX_REGISTER_BYTES} bytes. '
-                        'Downsample the pose CSV before registering.'
-                    )
-                },
-            )
-    return await call_next(request)
 
 
 # Lazily built so the module imports without DATABASE_URL (tests, tooling).
@@ -136,17 +126,21 @@ def get_admin_exporter() -> AdminExporter:
 # ==================== PYDANTIC SCHEMAS ====================
 
 class VideoRegister(BaseModel):
-    """Schema for registering a client-processed video."""
+    """Schema for registering a video before its upload.
+
+    Everything here is PROVISIONAL. The browser knows duration and dimensions
+    from the <video> element the moment the file is picked, but not the frame
+    rate, so it sends fps=30 (PROVISIONAL_FPS) and total_frames derived from
+    it. The pose worker overwrites fps, total_frames, duration_ms, width and
+    height from ffprobe when it finishes; until pose_status is 'done', frame
+    numbers computed from these are approximate on a non-30fps clip.
+    """
     filename: str
-    fps: float
-    total_frames: int
-    duration_ms: float
-    # Intrinsic frame size. Optional so a client that predates the dimensions
-    # migration still registers; pose landmarks are stored as pixels, so
-    # without these they cannot later be normalized against hold boxes.
+    fps: float = Field(default=PROVISIONAL_FPS, gt=0)
+    total_frames: int = Field(default=0, ge=0)
+    duration_ms: float = Field(default=0, ge=0)
     width: Optional[int] = Field(default=None, gt=0)
     height: Optional[int] = Field(default=None, gt=0)
-    csv_data: str
 
 
 class VideoResponse(BaseModel):
@@ -177,6 +171,12 @@ class VideoResponse(BaseModel):
     notes: Optional[str] = None
     # The caller's relationship to this video: owner | rater | admin.
     access_role: str = "owner"
+    # Server-side pose job (runbook-w1-worker). fps/total_frames/duration_ms/
+    # width/height above are provisional until pose_status is 'done'.
+    pose_status: str = 'pending'
+    pose_error: Optional[str] = None
+    pose_started_at: Optional[str] = None
+    pose_finished_at: Optional[str] = None
 
 
 class VideoMetadataUpdate(BaseModel):
@@ -201,6 +201,39 @@ class AdminVideoListItem(BaseModel):
     video: VideoResponse
     assignment_count: int
     done_count: int
+
+
+class PoseStatusResponse(BaseModel):
+    """What the header chip polls."""
+    video_id: int
+    pose_status: str
+    pose_error: Optional[str] = None
+    pose_started_at: Optional[str] = None
+    pose_finished_at: Optional[str] = None
+    fps: float
+    total_frames: int
+    duration_ms: float
+    width: Optional[int] = None
+    height: Optional[int] = None
+    r2_pose_csv_key: Optional[str] = None
+
+
+class PoseResult(BaseModel):
+    """Worker -> backend callback body (fallback to the worker writing Postgres)."""
+    status: str
+    error: Optional[str] = None
+    fps: Optional[float] = Field(default=None, gt=0)
+    total_frames: Optional[int] = Field(default=None, ge=0)
+    duration_ms: Optional[float] = Field(default=None, ge=0)
+    width: Optional[int] = Field(default=None, gt=0)
+    height: Optional[int] = Field(default=None, gt=0)
+    r2_pose_csv_key: Optional[str] = None
+
+
+class PoseCsvUrlResponse(BaseModel):
+    """Presigned GET URL for the pose CSV, for the browser to fetch directly."""
+    url: str
+    expires_in: int
 
 
 class UploadUrlRequest(BaseModel):
@@ -583,6 +616,10 @@ def video_to_response(video: Video, access_role: str = 'owner') -> VideoResponse
         gym=video.gym,
         notes=video.notes,
         access_role=access_role,
+        pose_status=video.pose_status or 'pending',
+        pose_error=video.pose_error,
+        pose_started_at=_iso(video.pose_started_at) or None,
+        pose_finished_at=_iso(video.pose_finished_at) or None,
     )
 
 
@@ -613,6 +650,57 @@ def assignment_to_response(assignment: VideoAssignment) -> AssignmentResponse:
         assigned_at=_iso(assignment.assigned_at),
         completed_at=_iso(assignment.completed_at) or None,
     )
+
+
+def pose_status_to_response(video: Video) -> PoseStatusResponse:
+    return PoseStatusResponse(
+        video_id=video.id,
+        pose_status=video.pose_status or 'pending',
+        pose_error=video.pose_error,
+        pose_started_at=_iso(video.pose_started_at) or None,
+        pose_finished_at=_iso(video.pose_finished_at) or None,
+        fps=video.fps,
+        total_frames=video.total_frames,
+        duration_ms=video.duration_ms,
+        width=video.width,
+        height=video.height,
+        r2_pose_csv_key=video.r2_pose_csv_key,
+    )
+
+
+def _enqueue_or_fail(video: Video) -> Video:
+    """Hand the job to the worker; on any failure mark the row 'failed'.
+
+    Never raises: the upload has already succeeded and the labeler can keep
+    working. The failure lands in pose_error and the retry-pose route
+    re-attempts it.
+    """
+    db = get_db()
+    if not video.r2_video_key:
+        db.set_pose_status(video.id, 'failed', 'no video uploaded yet', user_id=video.user_id)
+        video.pose_status, video.pose_error = 'failed', 'no video uploaded yet'
+        return video
+
+    try:
+        pose_queue.enqueue_pose_job(video.id, video.user_id, video.r2_video_key)
+    except pose_queue.PoseQueueError as exc:
+        log.warning('video %s: pose job not enqueued: %s', video.id, exc)
+        db.set_pose_status(video.id, 'failed', str(exc)[:500], user_id=video.user_id)
+        video.pose_status, video.pose_error = 'failed', str(exc)[:500]
+        return video
+
+    db.set_pose_status(video.id, 'pending', user_id=video.user_id)
+    video.pose_status, video.pose_error = 'pending', None
+    video.pose_started_at = video.pose_finished_at = None
+    return video
+
+
+def _require_worker_secret(request: Request) -> None:
+    """Authenticate the worker callback with the shared secret header."""
+    expected = os.environ.get('MODAL_WEBHOOK_SECRET', '').strip()
+    provided = (request.headers.get(pose_queue.SECRET_HEADER) or '').strip()
+    if not expected or not provided or not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='bad worker secret')
 
 
 def hold_to_response(hold: Hold) -> HoldResponse:
@@ -733,6 +821,15 @@ def _require_video(video_id: int, user_id: str) -> Video:
     if not video:
         raise _not_found(f"Video {video_id} not found")
     return video
+
+
+def _require_pose_done(video: Video) -> None:
+    """409 until the worker has written the pose CSV."""
+    if video.pose_status != 'done' or not video.r2_pose_csv_key:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f'pose extraction not finished (status={video.pose_status or "pending"})',
+        )
 
 
 @dataclass
@@ -968,21 +1065,13 @@ async def register_video(
     user_id: str = Depends(get_current_user_id),
 ):
     """
-    Register a video that was processed client-side.
+    Register a video the browser is about to upload.
 
-    The browser sends pose CSV text plus the metadata it measured (fps,
-    total_frames, duration_ms). The CSV goes straight to R2; the original video
-    is uploaded separately through a presigned URL.
+    Creates the row with the browser's provisional metadata (see
+    VideoRegister) and pose_status 'pending'. No CSV is accepted any more:
+    the flow is register -> upload-url -> PUT to R2 -> confirm-upload, and
+    confirm-upload enqueues the pose worker, which writes the CSV.
     """
-    if len(payload.csv_data.encode('utf-8')) > MAX_REGISTER_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f'Pose CSV exceeds {MAX_REGISTER_BYTES} bytes',
-        )
-
-    db = get_db()
-
-    # Insert first so the R2 key can carry the real video id.
     video = Video(
         user_id=user_id,
         filename=payload.filename,
@@ -992,21 +1081,9 @@ async def register_video(
         width=payload.width,
         height=payload.height,
         uploaded_at=datetime.now(timezone.utc),
+        pose_status='pending',
     )
-    video.id = db.create_video(video)
-
-    key = r2.pose_csv_key(user_id, video.id)
-    try:
-        r2.put_object(key, payload.csv_data, content_type='text/csv')
-    except r2.R2NotConfigured as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f'Object storage unavailable: {exc}',
-        )
-
-    db.set_video_r2_keys(video.id, user_id, r2_pose_csv_key=key)
-    video.r2_pose_csv_key = key
-
+    video.id = get_db().create_video(video)
     return video_to_response(video)
 
 
@@ -1038,7 +1115,13 @@ async def confirm_upload(
     payload: ConfirmUploadRequest,
     user_id: str = Depends(get_current_user_id),
 ):
-    """Record the R2 key once the browser's direct upload has finished."""
+    """Record the R2 key once the browser's direct upload has finished, then
+    enqueue pose extraction.
+
+    Always 200 once the key is recorded: an enqueue failure (worker down or not
+    configured) is reported through pose_status='failed' + pose_error rather
+    than failing the confirm, because the upload itself succeeded.
+    """
     video = _require_video(video_id, user_id)
 
     key = payload.key or r2.video_key(user_id, video_id, video.filename)
@@ -1049,7 +1132,93 @@ async def confirm_upload(
 
     get_db().set_video_r2_keys(video_id, user_id, r2_video_key=key)
     video.r2_video_key = key
-    return video_to_response(video)
+    return video_to_response(_enqueue_or_fail(video))
+
+
+@app.get("/api/videos/{video_id}/status", response_model=PoseStatusResponse)
+async def get_pose_status(video_id: int, user_id: str = Depends(get_current_user_id)):
+    """Pose job state, polled by the header chip until done/failed.
+
+    Owner, assigned rater or admin: a rater's rating view waits on the same
+    skeleton the owner does.
+    """
+    return pose_status_to_response(_require_video_access(video_id, user_id).video)
+
+
+@app.post("/api/videos/{video_id}/retry-pose", response_model=PoseStatusResponse)
+async def retry_pose(video_id: int, user_id: str = Depends(get_current_user_id)):
+    """Re-enqueue a failed (or stuck pending) job. 409 while processing or done.
+
+    Owner or admin. A rater can see the failure on /status but 403s here:
+    re-running the worker is the prepper's (or admin's) call.
+    """
+    access = _require_video_access(video_id, user_id)
+    if access.role == 'rater':
+        raise _forbidden('Only the video owner or an admin can retry pose extraction')
+    video = access.video
+    if video.pose_status in ('processing', 'done'):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f'pose extraction is {video.pose_status}; nothing to retry',
+        )
+    if not video.r2_video_key:
+        raise _bad_request('Upload the video before retrying pose extraction')
+    return pose_status_to_response(_enqueue_or_fail(video))
+
+
+@app.post("/api/videos/{video_id}/pose-result", response_model=PoseStatusResponse)
+async def pose_result(video_id: int, payload: PoseResult, request: Request):
+    """Worker callback (secret-authenticated, no user JWT).
+
+    Fallback to the worker writing Postgres directly: the same row update,
+    behind the backend's connection pool. `status` moves the job and the
+    measured fps/total_frames/duration_ms/width/height overwrite the
+    browser's provisional values.
+    """
+    _require_worker_secret(request)
+    if payload.status not in ('processing', 'done', 'failed'):
+        raise _bad_request(f'Invalid status: {payload.status}')
+    if payload.status == 'done' and not payload.r2_pose_csv_key:
+        raise _bad_request('done requires r2_pose_csv_key')
+
+    db = get_db()
+    updated = db.record_pose_result(
+        video_id,
+        payload.status,
+        error=payload.error,
+        fps=payload.fps,
+        total_frames=payload.total_frames,
+        duration_ms=payload.duration_ms,
+        width=payload.width,
+        height=payload.height,
+        r2_pose_csv_key=payload.r2_pose_csv_key,
+    )
+    if not updated:
+        raise _not_found(f"Video {video_id} not found")
+
+    with db.get_connection() as conn:
+        row = conn.execute('SELECT * FROM videos WHERE id = %s', (video_id,)).fetchone()
+    return pose_status_to_response(db._row_to_video(row))
+
+
+@app.get("/api/videos/{video_id}/pose-csv-url", response_model=PoseCsvUrlResponse)
+async def get_pose_csv_url(video_id: int, user_id: str = Depends(get_current_user_id)):
+    """Presigned GET URL for the pose CSV, as JSON (no redirect to unwrap).
+
+    Owner, assigned rater or admin. 409 until the worker has finished, like
+    export.
+    """
+    video = _require_video_access(video_id, user_id).video
+    _require_pose_done(video)
+    expires_in = 3600
+    try:
+        url = r2.presigned_get_url(video.r2_pose_csv_key, expires_in=expires_in)
+    except r2.R2NotConfigured as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f'Object storage unavailable: {exc}',
+        )
+    return PoseCsvUrlResponse(url=url, expires_in=expires_in)
 
 
 @app.get("/api/videos", response_model=List[VideoResponse])
@@ -1067,10 +1236,10 @@ async def get_video(video_id: int, user_id: str = Depends(get_current_user_id)):
 
 @app.get("/api/videos/{video_id}/csv")
 async def get_video_csv(video_id: int, user_id: str = Depends(get_current_user_id)):
-    """Redirect to a presigned URL for the raw pose CSV. Owner, rater or admin."""
+    """Redirect to a presigned URL for the raw pose CSV. Owner, rater or admin.
+    409 until the pose worker has finished."""
     video = _require_video_access(video_id, user_id).video
-    if not video.r2_pose_csv_key:
-        raise _not_found("No pose CSV stored for this video")
+    _require_pose_done(video)
 
     url = r2.presigned_get_url(
         video.r2_pose_csv_key,
@@ -1109,9 +1278,10 @@ async def export_video_endpoint(video_id: int, user_id: str = Depends(get_curren
     Export labeled data for a video.
 
     Streams the pose CSV out of R2, joins the labels from Postgres and writes
-    the result back to R2, recording the key on the video row.
+    the result back to R2, recording the key on the video row. 409 until the
+    pose worker has finished.
     """
-    _require_video(video_id, user_id)
+    _require_pose_done(_require_video(video_id, user_id))
 
     try:
         key = get_exporter().export_video(video_id, user_id)
@@ -1130,6 +1300,7 @@ async def export_video_endpoint(video_id: int, user_id: str = Depends(get_curren
 async def download_export(video_id: int, user_id: str = Depends(get_current_user_id)):
     """Redirect to a presigned URL for the labeled export."""
     video = _require_video(video_id, user_id)
+    _require_pose_done(video)
     if not video.r2_export_key:
         raise _not_found("Export not found. Run export first.")
 
@@ -1973,6 +2144,15 @@ async def admin_export_full(
         dataset = None
     if dataset is not None and dataset not in DATASETS:
         raise _bad_request(f"Invalid dataset: {dataset}. Must be one of: {DATASETS} or 'all'")
+    if video_id is not None:
+        # One video: refuse loudly while its pose CSV does not exist yet. The
+        # multi-video export instead keeps such videos as label-only rows
+        # (AdminExporter._pose_rows returns [] until pose_status is done) so
+        # one pending upload never blocks the whole dataset.
+        video = get_db().get_video_any(video_id)
+        if not video:
+            raise _not_found(f"Video {video_id} not found")
+        _require_pose_done(video)
     text = get_admin_exporter().full_csv(video_id=video_id, dataset=dataset)
     suffix = f'_video{video_id}' if video_id is not None else ''
     return _csv_response(text, f'dynalytix_full{suffix}.csv')

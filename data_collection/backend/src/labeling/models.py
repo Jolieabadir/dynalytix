@@ -59,6 +59,14 @@ class Video:
     r2_pose_csv_key: Optional[str] = None
     r2_export_key: Optional[str] = None
     uploaded_at: Optional[datetime] = None
+    # Server-side pose extraction job state. fps/total_frames/duration_ms/
+    # width/height above are PROVISIONAL (client-measured from the <video>
+    # element, fps defaulting to 30) until pose_status is 'done', at which
+    # point the worker has overwritten them from ffprobe.
+    pose_status: str = 'pending'
+    pose_error: Optional[str] = None
+    pose_started_at: Optional[datetime] = None
+    pose_finished_at: Optional[datetime] = None
 
     # Dataset A / B split. ``user_id`` above is the owner / prepper
     # (owner_user_id semantics): the uploader on B, the admin who prepped on A.
@@ -81,16 +89,21 @@ class Video:
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         data = asdict(self)
-        if self.uploaded_at:
-            data['uploaded_at'] = self.uploaded_at.isoformat()
+        for key in ('uploaded_at', 'pose_started_at', 'pose_finished_at'):
+            if getattr(self, key):
+                data[key] = getattr(self, key).isoformat()
         return data
 
     @classmethod
     def from_dict(cls, data: dict) -> 'Video':
         """Create from dictionary."""
-        if 'uploaded_at' in data and isinstance(data['uploaded_at'], str):
-            data['uploaded_at'] = datetime.fromisoformat(data['uploaded_at'])
+        for key in ('uploaded_at', 'pose_started_at', 'pose_finished_at'):
+            if key in data and isinstance(data[key], str):
+                data[key] = datetime.fromisoformat(data[key])
         return cls(**data)
+
+
+POSE_STATUSES = ('pending', 'processing', 'done', 'failed')
 
 
 @dataclass
