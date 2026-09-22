@@ -15,7 +15,8 @@ import useStore from '../store/useStore';
 import { fpsOf, timeToFrame, frameToTime } from '../utils/frames';
 import SkeletonOverlay from './SkeletonOverlay';
 import HoldOverlay from './HoldOverlay';
-import { createHold, deleteHold } from '../api/client';
+import { createHold, deleteHold, updateHold } from '../api/client';
+import { useCoarsePointer } from '../utils/pointer';
 
 /**
  * True only for elements where a keystroke means text, not a shortcut.
@@ -64,6 +65,10 @@ function VideoPlayer() {
   } = useStore();
 
   const fps = fpsOf(currentVideo);
+
+  // One UI, two input models. See utils/pointer — this is the primary
+  // pointer, re-read when it changes (an iPad gaining a trackpad mid-session).
+  const touch = useCoarsePointer();
 
   // Rating view, or an owner on a locked video: holds and moves are the
   // canonical set. The player still scrubs and picks holds; it just cannot
@@ -211,6 +216,26 @@ function VideoPlayer() {
     setHoldPickSlot({ ...holdPickSlot, assignedHoldId: hold.id });
   };
 
+  /** Pinch-to-resize on touch. Optimistic, and reverted if the server says no. */
+  const handleResizeHold = async (hold, box) => {
+    setHoldError(null);
+    removeHold(hold.id);
+    addHold({ ...hold, ...box });
+    try {
+      const saved = await updateHold(hold.id, box);
+      removeHold(hold.id);
+      addHold(saved);
+    } catch (err) {
+      console.error('Failed to resize hold:', err);
+      removeHold(hold.id);
+      addHold(hold);
+      setHoldError(err.response?.data?.detail || 'Could not resize that hold.');
+    }
+  };
+
+  /** Swipe on the video steps frames — the phone has no arrow keys. */
+  const handleSwipeFrames = (delta) => seekToFrame(currentFrame + delta);
+
   if (!currentVideo) return null;
 
   return (
@@ -234,7 +259,10 @@ function VideoPlayer() {
               onCreate={handleCreateHold}
               onDelete={handleDeleteHold}
               onPick={handlePickHold}
+              onResize={handleResizeHold}
+              onSwipeFrames={handleSwipeFrames}
               readOnly={readOnly}
+              touch={touch}
             />
           )}
         </div>
@@ -242,14 +270,22 @@ function VideoPlayer() {
 
       {holdError && <div className="error-message">{holdError}</div>}
 
-      <div className="video-controls">
-        <button onClick={() => seekToFrame(currentFrame - 10)}>⏮ -10</button>
-        <button onClick={() => seekToFrame(currentFrame - 1)}>◀</button>
-        <button onClick={togglePlay} className="play-btn">
+      <div className={`video-controls ${touch ? 'touch' : ''}`}>
+        <button onClick={() => seekToFrame(currentFrame - 10)} aria-label="Back ten frames">
+          ⏮ -10
+        </button>
+        <button onClick={() => seekToFrame(currentFrame - 1)} aria-label="Back one frame">
+          ◀ -1
+        </button>
+        <button onClick={togglePlay} className="play-btn" aria-label={isPlaying ? 'Pause' : 'Play'}>
           {isPlaying ? '⏸' : '▶'}
         </button>
-        <button onClick={() => seekToFrame(currentFrame + 1)}>▶▶</button>
-        <button onClick={() => seekToFrame(currentFrame + 10)}>+10 ⏭</button>
+        <button onClick={() => seekToFrame(currentFrame + 1)} aria-label="Forward one frame">
+          +1 ▶
+        </button>
+        <button onClick={() => seekToFrame(currentFrame + 10)} aria-label="Forward ten frames">
+          +10 ⏭
+        </button>
 
         <span className="frame-counter">
           Frame: {currentFrame} / {currentVideo.total_frames} (
@@ -276,7 +312,9 @@ function VideoPlayer() {
 
       {showHoldOverlay && !readOnly && (
         <p className="hold-hint">
-          Drag on the video to add a hold; click a hold to delete it.
+          {touch
+            ? 'Tap the video to add a hold; tap it again to select, pinch to resize, press and hold to delete. Swipe left or right to step a frame.'
+            : 'Drag on the video to add a hold; click a hold to delete it.'}
         </p>
       )}
       {showHoldOverlay && readOnly && (

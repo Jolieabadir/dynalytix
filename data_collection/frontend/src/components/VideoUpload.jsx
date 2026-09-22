@@ -24,6 +24,11 @@ import {
   getHolds,
 } from '../api/client';
 import { detectHolds, HOLD_DETECTION_ENABLED } from '../services/holdDetector';
+import {
+  uploadResumable,
+  resumableSessionFor,
+  RESUMABLE_THRESHOLD_BYTES,
+} from '../services/resumableUpload';
 import { NotSignedInError } from '../api/auth';
 import useStore from '../store/useStore';
 import { readVideoMetadata, provisionalRegisterPayload } from '../utils/videoMeta';
@@ -65,17 +70,30 @@ async function detectFirstFrameHolds(blobUrl) {
 async function runBackgroundJobs(videoId, file, blobUrl) {
   const store = useStore.getState();
 
-  store.setUpload({ state: 'uploading', fraction: 0, error: null });
+  const onProgress = (fraction) => {
+    const current = useStore.getState().upload;
+    if (current.state === 'uploading') {
+      useStore.getState().setUpload({ fraction });
+    }
+  };
+
+  // Anything big enough that losing it would hurt goes up in resumable parts.
+  // A small clip is cheaper to simply re-PUT than to orchestrate.
+  const resumable = file.size >= RESUMABLE_THRESHOLD_BYTES;
+  const resuming = resumable && Boolean(resumableSessionFor(videoId, file));
+
+  store.setUpload({
+    state: 'uploading',
+    fraction: 0,
+    error: null,
+    resumable,
+    resumed: resuming,
+  });
   try {
-    const confirmed = await uploadOriginalVideo(videoId, file, {
-      onProgress: (fraction) => {
-        const current = useStore.getState().upload;
-        if (current.state === 'uploading') {
-          useStore.getState().setUpload({ fraction });
-        }
-      },
-    });
-    useStore.getState().setUpload({ state: 'done', fraction: 1, error: null });
+    const confirmed = resumable
+      ? await uploadResumable(videoId, file, { onProgress })
+      : await uploadOriginalVideo(videoId, file, { onProgress });
+    useStore.getState().setUpload({ state: 'done', fraction: 1, error: null, resumed: false });
     // confirm-upload answers with the row, including whether the worker took
     // the job; showing that now saves a poll.
     if (useStore.getState().currentVideo?.id === videoId) {
@@ -97,7 +115,13 @@ async function runBackgroundJobs(videoId, file, blobUrl) {
     console.error('[VideoUpload] Upload failed:', uploadErr);
     useStore.getState().setUpload({
       state: 'failed',
-      error: uploadErr?.message || 'The upload failed. Pick the file again to retry.',
+      // On the resumable path the finished parts are kept, so picking the same
+      // file again carries on rather than starting over.
+      error:
+        uploadErr?.message ||
+        (resumable
+          ? 'The upload stopped. Pick the same file again to carry on from where it got to.'
+          : 'The upload failed. Pick the file again to retry.'),
     });
     return;
   }

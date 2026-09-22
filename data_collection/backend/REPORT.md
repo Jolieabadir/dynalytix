@@ -1640,3 +1640,116 @@ secret → 401; secret + missing fields → 400; secret + another user's `r2_key
 accepted. Against the old code all six fail with the production 422 (`loc:
 ["query","request"]`); on the fix the worker suite is `78 passed, 1 skipped`
 and the backend suite is unchanged at `148 passed`.
+
+---
+
+## 12. Resumable multipart upload (runbook-w3-mobile, backend half)
+
+**Branch:** `feat/mobile-first-labeling` · **Lane:** Mobile · runbook §Constraints: "Backend changes only if resumable multipart needs new presign endpoints."
+
+That is the whole of the backend's part in W3. No migration, no schema change, no change to any existing route.
+
+### Why
+
+iOS Safari evicts a backgrounded page. A single presigned `PUT` of a 300 MB phone clip dies with the page and restarts from zero, which on a gym's wifi is the difference between a labeler finishing a session and giving up. R2 speaks the S3 multipart API, so the file goes up in independently signed parts and the browser resumes from the first part it has no ETag for.
+
+### Per-file changes
+
+**`src/storage/r2.py`** — four functions and one constant, all thin wrappers over boto3:
+
+| Added | Notes |
+|---|---|
+| `MULTIPART_PART_SIZE = 8 MiB` | R2 requires every part but the last to be ≥ 5 MiB. A part is also the unit of retry, so bigger parts mean a costlier retry on a flaky phone radio. 8 MiB keeps a 2-minute 1080p30 clip under ~40 parts. |
+| `create_multipart_upload(key, content_type)` | Returns the upload id. |
+| `presigned_upload_part_url(key, upload_id, part_number, expires_in)` | **No Content-Type is signed.** A part is a byte range, not a typed object, and R2 rejects the signature if the browser sends a header that was not signed. This is the same class of bug as the `9659289` hotfix — a signature that only fails at runtime. |
+| `complete_multipart_upload(key, upload_id, parts)` | Sorts by part number server-side rather than trusting the client's order. |
+| `abort_multipart_upload(key, upload_id)` | So an abandoned upload stops being billed. |
+
+**`src/web/api.py`** — four endpoints, six Pydantic models:
+
+- `POST /api/videos/{id}/upload/create-multipart` → `{key, upload_id, part_size}`
+- `POST /api/videos/{id}/upload/sign-part` → `{url, part_number, expires_in}`
+- `POST /api/videos/{id}/upload/complete-multipart` → the video row
+- `POST /api/videos/{id}/upload/abort-multipart` → `{aborted, key}`
+
+`complete-multipart` is `confirm-upload` for this path: it records the key and enqueues the pose worker in **one** round trip, because a phone may not get another. Post-conditions are identical, so `pose_status` comes back `'pending'` exactly as before.
+
+### Access model
+
+`_guard_multipart_key` pins every call to `r2.video_key(user_id, video.id, video.filename)` — the one key this video may write. Without it a client could assemble its own parts into another user's object key, which the ownership check on the video alone would not catch. `_require_video` still answers 404 (never 403) for another user's video, so an id's existence stays private.
+
+### Defaults taken (not asked)
+
+- 8 MiB parts; concurrency and retry policy live in the browser, not here.
+- Part presigns expire in 3600s, matching the single-shot presign. The client re-signs on every attempt rather than reusing a URL, so a long lock screen cannot outlive a signature.
+- No server-side record of in-flight uploads. The upload id and ETags live in the browser; R2 is the only other party that needs them, and a server-side table would be one more thing to reconcile after an eviction.
+
+### What could not be verified here, and why
+
+- **Against real R2.** The suite's `fake_r2` fixture defers to the real bucket when credentials work, so these tests exercise real multipart on a machine with R2 credentials — but this run had none, so the multipart path was exercised against the in-memory fake. The single-shot path has the same shape and is known good in production.
+- **ETag exposure.** The browser must read the `ETag` response header off each part, which needs `ExposeHeaders: ["ETag"]` on the bucket CORS rule. `r2-cors.json` already sets it (applied in §6), so no change was needed — but it is now load-bearing for uploads, not just for exports. If parts start failing with "R2 did not return an ETag", that rule is what to check.
+
+### Tests
+
+`tests/test_multipart_upload.py`, 14 tests: the create/sign/complete/abort contract, part numbers out of order, part number 0 rejected, another user's video 404, a foreign key 400 on sign / complete / abort, and one that asserts the **single-shot `upload-url` → `confirm-upload` path still works** — the runbook's "one backend, one worker, one UI" constraint, as a test rather than a promise.
+
+`tests/conftest.py`: `FakeR2` grew `create_multipart_upload` / `presigned_upload_part_url` / `complete_multipart_upload` / `abort_multipart_upload` and a `multipart` dict, and the `fake_r2` fixture patches them.
+
+**Backend suite: 162 passed** (148 before this runbook), scratch Postgres 16 + `auth_shim.sql`.
+
+### Manual steps for Jolie
+
+None on the backend. No migration to push; `supabase migration list` is unchanged by this branch.
+
+---
+
+## 13. Destructive-schema guard (follow-up, shipped with W3)
+
+Not from a runbook. Found while auditing `feat/rater-bio` and folded into the W3 branch rather than shipped on its own.
+
+### The hazard
+
+`Database.apply_schema_sql()` drops and recreates the labeling tables. Migration `20260922150000_rater_bio.sql` needed a clean replay after dropping `coaching_cert`, so that helper also gained:
+
+```python
+conn.execute('DROP TABLE IF EXISTS public.video_assignments CASCADE')
+conn.execute('DROP TABLE IF EXISTS public.rater_profiles CASCADE')
+```
+
+Correct for its purpose, and marked "test-only" in a comment. But *nothing enforced it*, and `tests/conftest.py` read:
+
+```python
+return os.environ.get('TEST_DATABASE_URL') or os.environ.get('DATABASE_URL') or ''
+```
+
+So `pytest` run with production's `DATABASE_URL` in the environment — the variable the real API uses, and the one sitting in `backend/.env` — would drop and recreate the labeling tables **plus rater identities and the entire Paper A assignment structure**. The blast radius grew with that migration: before it, `rater_profiles` and `video_assignments` survived.
+
+The only thing standing in the way was a line under **Never** in `MAILBOX.md`. `scripts/setup_test_db.sh` does refuse hosted-looking *database names*, but the conftest fallback bypasses it entirely.
+
+A comment is not a safeguard.
+
+### The guard
+
+Two layers, both test-path only — no production code calls `apply_schema_sql`.
+
+1. **At the destructive site.** `_refuse_destructive_dsn(dsn, operation)` raises `DestructiveSchemaRefused` when the DSN contains a managed-provider marker (`supabase.co`, `pooler.supabase`, `railway.app`, `rds.amazonaws`, `neon.tech`, …). `apply_schema_sql` calls it first, before any connection is used. The message names what would be destroyed and points at `setup_test_db.sh`.
+2. **At the fallback.** `_dsn()` still takes `TEST_DATABASE_URL` at its word — setting it *is* the statement that the database is disposable — but no longer accepts a hosted `DATABASE_URL`. That is reported as "no test database configured", so the DB tests skip instead of running somewhere they shouldn't.
+
+`DYNALYTIX_ALLOW_DESTRUCTIVE_SCHEMA=1` is the deliberate way through, for rebuilding a staging database on purpose. It must be exactly `1`; a truthy-looking `yes` does not count, and there is a test saying so.
+
+Local DSNs are untouched, so the normal path never sees any of this.
+
+### Demonstrated, not asserted
+
+| Command | Before | After |
+|---|---|---|
+| `TEST_DATABASE_URL=<scratch> pytest` | 163 passed | **176 passed** (13 guard tests) |
+| `DATABASE_URL=<hosted> pytest` (no `TEST_DATABASE_URL`) | would connect and **drop tables** | **22 passed, 154 skipped** |
+
+### Tests
+
+`tests/test_destructive_guard.py`, 13 tests, none of which need a database — the refusal happens before a connection is used, which is the point. Covers three hosted shapes, two local shapes, the opt-in and a near-miss opt-in, an empty/None DSN, and all four `_dsn()` resolution cases including the one that matters: a hosted `DATABASE_URL` must not become the test database.
+
+### Manual steps for Jolie
+
+None. If you ever *do* want to rebuild a hosted database from the migrations, set `DYNALYTIX_ALLOW_DESTRUCTIVE_SCHEMA=1` for that one command.

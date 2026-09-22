@@ -13,7 +13,7 @@
  * Dataset A adds the profile gate, the nav, "My queue" + the rating view, and
  * the Admin view. "My videos" is the Dataset B flow and is unchanged.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import useStore from './store/useStore';
 import {
   getConfig,
@@ -39,7 +39,14 @@ import TaggingMode from './components/TaggingMode';
 import ThankYouModal from './components/ThankYouModal';
 import ProgressStrip from './components/ProgressStrip';
 import PoseStatusChip from './components/PoseStatusChip';
-import OnboardingBanner, { BANNER_DEFINE } from './components/OnboardingBanner';
+import OnboardingBanner, { BANNER_DEFINE, BANNER_CAPTURE } from './components/OnboardingBanner';
+import InstallPrompt from './components/InstallPrompt';
+import {
+  rememberSession,
+  readSession,
+  forgetSession,
+  restoreSession,
+} from './services/sessionResume';
 import './App.css';
 
 function App() {
@@ -66,6 +73,9 @@ function App() {
   const [profileState, setProfileState] = useState('loading');
   const [profileError, setProfileError] = useState(null);
   const [landed, setLanded] = useState(false);
+  // Safari can evict this page at any moment. A ref, not state: this only
+  // guards the effect from running twice and must not cause a render.
+  const resumeStarted = useRef(false);
 
   // Read the persisted session once, then follow it.
   useEffect(() => {
@@ -86,6 +96,7 @@ function App() {
         // same way the sign-out button does, so a different user signing in
         // on this tab never inherits the previous user's moves, holds,
         // labels, profile or queue. The next sign-in re-runs the gate.
+        forgetSession();
         resetForSignOut();
         setConfig(null);
         setProfileState('loading');
@@ -155,7 +166,9 @@ function App() {
   // Landing: once the profile exists, load the queue; a rater with at least
   // one assignment lands on it, everyone else on My videos (Dataset B).
   useEffect(() => {
-    if (profileState !== 'ready' || landed) return;
+    if (profileState !== 'ready' || landed || resumeStarted.current) return;
+    // A page that was evicted mid-session resumes instead of landing.
+    if (readSession()) return;
     let active = true;
     getMyAssignments()
       .then((items) => {
@@ -172,8 +185,86 @@ function App() {
     };
   }, [profileState, landed, setAssignments, setView]);
 
+  /**
+   * Remember which video is open, so an evicted page can come back to it.
+   *
+   * Only the pointer is stored — every label is already on the server. See
+   * services/sessionResume.
+   */
+  useEffect(() => {
+    if (!session) return;
+    const unsubscribe = useStore.subscribe((state) => {
+      const videoId = state.currentVideo?.id;
+      if (!videoId || state.view === 'admin') {
+        rememberSession(null);
+        return;
+      }
+      rememberSession({
+        videoId,
+        view: state.view,
+        assignmentId: state.currentAssignment?.id ?? null,
+      });
+    });
+    return unsubscribe;
+  }, [session]);
+
+  /**
+   * Rebuild the session the page was in the middle of.
+   *
+   * Runs once the profile is ready and before landing decides where to put
+   * the labeler, so a reload returns to the video rather than the queue. The
+   * server is the authority: a video it will not serve is simply forgotten.
+   */
+  useEffect(() => {
+    if (profileState !== 'ready' || landed || resumeStarted.current) return;
+    const saved = readSession();
+    if (!saved) return;
+
+    let active = true;
+    resumeStarted.current = true;
+    restoreSession(saved)
+      .then((restored) => {
+        if (!active || !restored) return;
+        resetVideoState();
+        setCurrentVideo(restored.video);
+        setHolds(restored.holds);
+        useStore.getState().setMoves(restored.moves);
+        setVideoPlaybackUrl(restored.playbackUrl);
+        if (saved.view === 'rating' && saved.assignmentId) {
+          setCurrentAssignment({ id: saved.assignmentId, video_id: saved.videoId });
+          useStore.getState().setReadOnlyStructure(true);
+        }
+        setView(saved.view === 'rating' ? 'rating' : 'videos');
+        // Already where we want to be; skip the queue landing.
+        setLanded(true);
+      })
+      .catch((error) => {
+        console.warn('Could not resume the previous session:', error);
+        forgetSession();
+      })
+      .finally(() => {
+        // Nothing to resume any more, whichever way it went.
+        if (active) setLanded(true);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [
+    profileState,
+    landed,
+    resetVideoState,
+    setCurrentVideo,
+    setHolds,
+    setVideoPlaybackUrl,
+    setCurrentAssignment,
+    setView,
+  ]);
+
   const handleSignOut = useCallback(async () => {
     await signOut();
+    // Never leave a pointer to this user's video for the next one.
+    forgetSession();
     resetForSignOut();
     setConfig(null);
     setProfileState('loading');
@@ -325,6 +416,8 @@ function App() {
         </div>
       </header>
 
+      <InstallPrompt />
+
       {body}
     </div>
   );
@@ -411,6 +504,8 @@ function DefineMode() {
       <VideoMetadataPanel />
 
       {!readOnlyStructure && <OnboardingBanner id={BANNER_DEFINE} />}
+      {/* Capture guidance: touch only, remembered once dismissed. */}
+      <OnboardingBanner id={BANNER_CAPTURE} />
 
       <div className={`main-area ${showMoveForm ? 'with-panel' : ''}`}>
         <VideoPlayer />

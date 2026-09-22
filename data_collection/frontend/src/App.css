@@ -2766,3 +2766,252 @@ body {
 @media (max-width: 768px) {
   .pose-chip { max-width: 100%; flex-wrap: wrap; }
 }
+
+/* ==========================================================================
+   MOBILE-FIRST LABELING (W3)
+   ==========================================================================
+
+   This is not a responsive stylesheet bolted onto the laptop layout — the
+   rules below are keyed on `(pointer: coarse)`, the same question the JS
+   asks, so a touchscreen laptop driven with a mouse keeps the pointer UI and
+   a phone gets the touch one. Width-based rules still handle small windows.
+
+   Three things drive the layout on a phone: the video must stay visible
+   while labeling, every target must be thumb-sized, and nothing may hide
+   under the notch or the home indicator.
+   ========================================================================== */
+
+:root {
+  /* Apple's minimum comfortable target. Everything tappable clears it. */
+  --touch-target: 44px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-top: env(safe-area-inset-top, 0px);
+}
+
+@media (pointer: coarse) {
+  /* The notch and the home indicator. */
+  .app-header {
+    padding-top: calc(8px + var(--safe-top));
+  }
+
+  /* Thumb-sized everything. */
+  .video-controls.touch button,
+  .move-selection-controls button,
+  .progress-strip button,
+  .tag-btn,
+  .quality-btn {
+    min-height: var(--touch-target);
+    min-width: var(--touch-target);
+    font-size: 16px; /* under 16px iOS zooms the page on focus */
+  }
+
+  .video-controls.touch {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+  }
+
+  /* The frame counter earns its own line rather than squeezing the buttons. */
+  .video-controls.touch .frame-counter {
+    flex-basis: 100%;
+    text-align: center;
+    order: 10;
+  }
+
+  /* A range input is a 4px-tall hit target by default; give the thumb
+     something it can actually catch. */
+  .timeline-slider,
+  .effort-slider {
+    height: var(--touch-target);
+  }
+
+  .timeline-slider::-webkit-slider-thumb,
+  .effort-slider::-webkit-slider-thumb {
+    width: 28px;
+    height: 28px;
+  }
+
+  /* The video owns the top of the screen; the panel is a sheet below it. */
+  .main-area,
+  .main-area.with-panel {
+    display: block;
+  }
+
+  .side-column {
+    width: 100%;
+  }
+
+  /* Text inputs at 16px, again to stop iOS zooming on focus. */
+  input[type='text'],
+  input[type='email'],
+  input[type='password'],
+  input[type='number'],
+  textarea,
+  select {
+    font-size: 16px;
+  }
+
+  /* Inside the video, a pinch means "resize this hold", so the browser must
+     not take it as a page zoom. Scoped to the overlay — never the page. */
+  .hold-overlay.touch {
+    touch-action: none;
+  }
+
+  /* Tapped holds are bigger targets than drawn ones, and the selected one
+     has to be obvious while it is being pinched. */
+  .hold-overlay.touch .hold-box {
+    border-width: 3px;
+  }
+
+  .hold-overlay.touch .hold-box.selected {
+    border-color: #ffd60a;
+    box-shadow: 0 0 0 2px rgba(255, 214, 10, 0.4);
+  }
+}
+
+/* ---------- The labeling panel as a bottom sheet ---------- */
+
+@media (pointer: coarse) {
+  .move-form-panel.sheet {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 60;
+    width: 100%;
+    max-height: 72vh;
+    display: flex;
+    flex-direction: column;
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.45);
+    padding-bottom: var(--safe-bottom);
+  }
+
+  .move-form-panel.sheet .move-form-content {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    flex: 1;
+  }
+
+  /* One lens per screen, so the footer is always reachable with a thumb. */
+  .move-form-panel.sheet .move-form-footer {
+    position: sticky;
+    bottom: 0;
+    display: flex;
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .move-form-panel.sheet .move-form-footer button {
+    flex: 1;
+    min-height: var(--touch-target);
+    font-size: 16px;
+  }
+
+  .sheet-stepper {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .sheet-step-label {
+    font-size: 14px;
+    font-weight: 600;
+    opacity: 0.85;
+  }
+
+  .sheet-step-dots {
+    display: flex;
+    gap: 6px;
+  }
+
+  .sheet-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.25);
+  }
+
+  .sheet-dot.active {
+    background: #5ac8fa;
+  }
+
+  /* On touch there is no hover, so a definition has to be tappable and open
+     in place rather than floating beside the cursor. */
+  .move-form-panel.sheet .info-tip-text {
+    position: static;
+    display: block;
+    max-width: none;
+    margin-top: 4px;
+    white-space: normal;
+  }
+
+  /* Radio and multi-select options become rows, not a wrapped cloud. */
+  .move-form-panel.sheet .radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .move-form-panel.sheet .radio-label {
+    min-height: var(--touch-target);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px;
+    border-radius: 8px;
+  }
+}
+
+/* ---------- Orientation ---------- */
+
+/*
+ * Landscape for video, portrait for forms — the runbook's split. Nothing is
+ * forced (a labeler who wants the form in landscape gets it); the sheet
+ * simply gives the video more room when the phone is on its side.
+ */
+@media (pointer: coarse) and (orientation: landscape) {
+  .move-form-panel.sheet {
+    max-height: 60vh;
+  }
+
+  .app-header-titles p {
+    display: none;
+  }
+}
+
+/* ---------- Install prompt and the capture tip ---------- */
+
+.install-prompt {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 8px 12px;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(90, 200, 250, 0.1);
+  border: 1px solid rgba(90, 200, 250, 0.3);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.install-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.install-btn {
+  min-height: var(--touch-target);
+  white-space: nowrap;
+}
+
+.onboarding-banner.capture {
+  background: rgba(255, 214, 10, 0.1);
+  border: 1px solid rgba(255, 214, 10, 0.3);
+}

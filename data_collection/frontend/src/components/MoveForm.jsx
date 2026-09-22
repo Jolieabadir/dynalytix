@@ -22,6 +22,22 @@ import { suggestHoldSlots } from '../services/holdAssignment';
 import InfoTip from './InfoTip';
 import { EnvironmentLens, OutcomeLens, RadioGroup } from './LensFields';
 import { createMove, createEnvironment, createOutcome, deleteMove } from '../api/client';
+import { useCoarsePointer } from '../utils/pointer';
+
+/**
+ * The three lenses, one per screen on a phone.
+ *
+ * A side panel with all three lenses stacked is fine next to a video on a
+ * laptop and unusable on a 390 px screen: the labeler loses their place, and
+ * the video disappears above the fold. On touch the panel becomes a bottom
+ * sheet showing one lens at a time with Back/Next, which is also the shape
+ * that makes definitions worth reading — there is room to expand them.
+ */
+const STEPS = [
+  { key: 'environment', title: 'Environment' },
+  { key: 'strategy', title: 'Strategy' },
+  { key: 'outcome', title: 'Outcome' },
+];
 
 // Form quality anchor text. Not taxonomy — these are scale anchors for a
 // 1-5 rating, and the backend stores the number.
@@ -78,6 +94,10 @@ function MoveForm() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  // One lens per screen on a phone; all three at once on a pointer device.
+  const touch = useCoarsePointer();
+  const [step, setStep] = useState(0);
 
   // Reset on open, prefilling environment from the previous move.
   useEffect(() => {
@@ -343,14 +363,35 @@ function MoveForm() {
     <RadioGroup config={config} taxonomyKey={taxonomyKey} name={name} value={value} onChange={onChange} />
   );
 
+  // On a pointer device every lens is on screen at once, so `shows` is always
+  // true and the stepper never renders.
+  const shows = (index) => !touch || step === index;
+  const onLastStep = step === STEPS.length - 1;
+
   return (
-    <aside className="move-form-panel" data-testid="move-form-panel">
+    <aside
+      className={`move-form-panel ${touch ? 'sheet' : ''}`}
+      data-testid="move-form-panel"
+    >
       <div className="move-form-header">
         <h2>Label Move</h2>
         <button onClick={handleClose} className="close-btn" aria-label="Close labeling panel">
           ✕
         </button>
       </div>
+
+      {touch && (
+        <div className="sheet-stepper" data-testid="sheet-stepper">
+          <span className="sheet-step-label">
+            Step {step + 1} of {STEPS.length} · {STEPS[step].title}
+          </span>
+          <div className="sheet-step-dots" aria-hidden="true">
+            {STEPS.map((s2, i) => (
+              <span key={s2.key} className={`sheet-dot ${i === step ? 'active' : ''}`} />
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="move-form-content">
         <div className="move-info">
@@ -362,6 +403,7 @@ function MoveForm() {
         {error && <div className="error-message">{error}</div>}
 
         {/* ---------- Lens 1: Environment ---------- */}
+        {shows(0) && (
         <EnvironmentLens
           config={config}
           wallAngle={wallAngle}
@@ -374,8 +416,10 @@ function MoveForm() {
           onClearSlot={clearSlot}
           noHands={noHandsSelected}
         />
+        )}
 
         {/* ---------- Lens 2: Strategy ---------- */}
+        {shows(1) && (
         <div className="lens-section">
           <h3 className="lens-title">🎯 Strategy</h3>
 
@@ -463,8 +507,10 @@ function MoveForm() {
             />
           </div>
         </div>
+        )}
 
         {/* ---------- Lens 3: Outcome ---------- */}
+        {shows(2) && (
         <OutcomeLens
           config={config}
           result={result}
@@ -474,15 +520,39 @@ function MoveForm() {
           confidence={confidence}
           onConfidence={setConfidence}
         />
+        )}
       </div>
 
       <div className="move-form-footer">
-        <button onClick={handleClose} className="btn-secondary">
-          Cancel
-        </button>
-        <button onClick={handleSubmit} className="btn-primary" disabled={loading}>
-          {loading ? 'Saving…' : 'Save Move'}
-        </button>
+        {touch ? (
+          <>
+            <button
+              type="button"
+              onClick={() => (step === 0 ? handleClose() : setStep(step - 1))}
+              className="btn-secondary"
+            >
+              {step === 0 ? 'Cancel' : 'Back'}
+            </button>
+            {onLastStep ? (
+              <button onClick={handleSubmit} className="btn-primary" disabled={loading}>
+                {loading ? 'Saving…' : 'Save Move'}
+              </button>
+            ) : (
+              <button type="button" onClick={() => setStep(step + 1)} className="btn-primary">
+                Next
+              </button>
+            )}
+          </>
+        ) : (
+          <>
+            <button onClick={handleClose} className="btn-secondary">
+              Cancel
+            </button>
+            <button onClick={handleSubmit} className="btn-primary" disabled={loading}>
+              {loading ? 'Saving…' : 'Save Move'}
+            </button>
+          </>
+        )}
       </div>
     </aside>
   );

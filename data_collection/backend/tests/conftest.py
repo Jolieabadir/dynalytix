@@ -27,17 +27,43 @@ os.environ.setdefault('SUPABASE_JWT_SECRET', TEST_JWT_SECRET)
 import jwt  # noqa: E402
 
 from src.labeling import pose_queue  # noqa: E402
-from src.labeling.database import Database  # noqa: E402
+from src.labeling.database import Database, HOSTED_DB_MARKERS  # noqa: E402
 from src.storage import r2  # noqa: E402
 
 
 def _dsn() -> str:
-    return os.environ.get('TEST_DATABASE_URL') or os.environ.get('DATABASE_URL') or ''
+    """The database these tests may rebuild.
+
+    `TEST_DATABASE_URL` is taken as given — setting it is an explicit
+    statement that the database is disposable. `DATABASE_URL` is accepted
+    only when it is NOT a hosted provider: it is the variable the real API
+    runs on, it is what a `.env` in this directory contains, and the suite
+    DROPs and recreates the labeling tables, `rater_profiles` and
+    `video_assignments`. Falling back to it silently is how a stray `pytest`
+    becomes an outage.
+
+    A hosted `DATABASE_URL` with no `TEST_DATABASE_URL` is treated as "no
+    test database configured", so the DB tests skip rather than run somewhere
+    they should not. `Database.apply_schema_sql` refuses the same DSNs, so
+    this is convenience and that is the actual safeguard.
+    """
+    explicit = os.environ.get('TEST_DATABASE_URL')
+    if explicit:
+        return explicit
+
+    fallback = os.environ.get('DATABASE_URL') or ''
+    if fallback and any(m in fallback.lower() for m in HOSTED_DB_MARKERS):
+        return ''
+    return fallback
 
 
 requires_db = pytest.mark.skipif(
     not _dsn(),
-    reason='Set TEST_DATABASE_URL (or DATABASE_URL) to a throwaway Postgres to run these tests',
+    reason=(
+        'Set TEST_DATABASE_URL to a throwaway Postgres to run these tests '
+        '(scripts/setup_test_db.sh builds one). A hosted DATABASE_URL is '
+        'ignored on purpose — the suite drops and recreates tables.'
+    ),
 )
 
 
@@ -110,6 +136,7 @@ class FakeR2:
 
     def __init__(self):
         self.objects = {}
+        self.multipart = {}
 
     def put_object(self, key, body, content_type=None):
         if isinstance(body, str):
@@ -132,6 +159,35 @@ class FakeR2:
 
     def presigned_get_url(self, key, expires_in=3600, download_filename=None):
         return f'https://fake-r2.local/{key}?sig=get&expires={expires_in}'
+
+    # --- multipart ---
+
+    def create_multipart_upload(self, key, content_type=None):
+        upload_id = f'upload-{len(self.multipart) + 1}'
+        self.multipart[upload_id] = {'key': key, 'parts': {}, 'completed': False}
+        return upload_id
+
+    def presigned_upload_part_url(self, key, upload_id, part_number, expires_in=3600):
+        return (
+            f'https://fake-r2.local/{key}'
+            f'?sig=part&uploadId={upload_id}&partNumber={part_number}&expires={expires_in}'
+        )
+
+    def complete_multipart_upload(self, key, upload_id, parts):
+        session = self.multipart.get(upload_id)
+        if session is None or session['key'] != key:
+            raise KeyError(f'no such multipart upload: {upload_id}')
+        session['completed'] = True
+        session['parts'] = {p['PartNumber']: p['ETag'] for p in parts}
+        # The assembled object stands in for the concatenated bytes.
+        self.objects[key] = b'multipart:' + ','.join(
+            str(p['PartNumber']) for p in sorted(parts, key=lambda x: x['PartNumber'])
+        ).encode()
+        return key
+
+    def abort_multipart_upload(self, key, upload_id):
+        self.multipart.pop(upload_id, None)
+        return True
 
 
 def real_r2_usable() -> bool:
@@ -163,6 +219,10 @@ def fake_r2(monkeypatch):
         'object_exists',
         'presigned_put_url',
         'presigned_get_url',
+        'create_multipart_upload',
+        'presigned_upload_part_url',
+        'complete_multipart_upload',
+        'abort_multipart_upload',
     ):
         monkeypatch.setattr(r2, name, getattr(fake, name))
     monkeypatch.setattr(r2, 'is_configured', lambda: True)

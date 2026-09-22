@@ -35,6 +35,55 @@ class SchemaNotApplied(RuntimeError):
     """Raised when the database has not had the v3 migration applied."""
 
 
+# Hosts that mean "this is somebody's real database". Matched against the
+# DSN before anything destructive runs — see _refuse_destructive_dsn.
+HOSTED_DB_MARKERS = (
+    'supabase.co', 'supabase.com', 'supabase.in', 'pooler.supabase',
+    'amazonaws.com', 'rds.amazonaws', 'railway.app', 'rlwy.net',
+    'neon.tech', 'render.com', 'azure.com', 'digitalocean.com',
+)
+
+#: Opt out of the guard when you genuinely mean to rebuild a hosted database.
+ALLOW_DESTRUCTIVE_ENV = 'DYNALYTIX_ALLOW_DESTRUCTIVE_SCHEMA'
+
+
+class DestructiveSchemaRefused(RuntimeError):
+    """Raised when a schema rebuild is pointed at something that looks real."""
+
+
+def _refuse_destructive_dsn(dsn: str, operation: str) -> None:
+    """Refuse to rebuild the schema on a hosted database.
+
+    `apply_schema_sql` drops and recreates the labeling tables, and since
+    20260922150000 it also drops `rater_profiles` and `video_assignments` —
+    rater identities and the Paper A assignment structure. The only thing that
+    previously stood between a stray `pytest` and that outcome was a line in
+    MAILBOX.md, plus the fact that tests/conftest.py falls back to
+    `DATABASE_URL` when `TEST_DATABASE_URL` is unset.
+
+    A comment is not a safeguard. This is: a DSN that points at a managed
+    Postgres provider is refused outright, and the caller has to say
+    `DYNALYTIX_ALLOW_DESTRUCTIVE_SCHEMA=1` to mean it. Local hosts are
+    unaffected, so the normal test path never sees this.
+    """
+    if os.environ.get(ALLOW_DESTRUCTIVE_ENV) == '1':
+        return
+
+    lowered = (dsn or '').lower()
+    hit = next((marker for marker in HOSTED_DB_MARKERS if marker in lowered), None)
+    if hit is None:
+        return
+
+    raise DestructiveSchemaRefused(
+        f'{operation} would DROP and recreate the labeling tables, including '
+        f'rater_profiles and video_assignments, and this connection points at '
+        f'a hosted database ({hit}). Refusing.\n'
+        f'Build a scratch database with scripts/setup_test_db.sh and set '
+        f'TEST_DATABASE_URL, or set {ALLOW_DESTRUCTIVE_ENV}=1 if you really '
+        f'mean to rebuild this one.'
+    )
+
+
 class Database:
     """
     Database handler with clean separation of concerns.
@@ -155,6 +204,8 @@ class Database:
         migrations land in their own files, and a test database built from the
         base alone would be missing their columns.
         """
+        _refuse_destructive_dsn(self.dsn, 'apply_schema_sql()')
+
         if sql_path is not None:
             paths = [Path(sql_path)]
         else:

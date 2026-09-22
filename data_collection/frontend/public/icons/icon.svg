@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Dynalytix">
+  <rect width="512" height="512" rx="96" fill="#12151a"/>
+  <!-- A climber's three points of contact: the mark the labeling is about. -->
+  <circle cx="176" cy="150" r="30" fill="#5ac8fa"/>
+  <circle cx="336" cy="196" r="30" fill="#5ac8fa"/>
+  <circle cx="232" cy="358" r="30" fill="#5ac8fa"/>
+  <path d="M176 150 L336 196 L232 358 Z" fill="none" stroke="#5ac8fa" stroke-width="16"
+        stroke-linejoin="round" opacity="0.55"/>
+</svg>
