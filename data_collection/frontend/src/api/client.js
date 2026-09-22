@@ -183,6 +183,51 @@ export const confirmUpload = async (videoId, key) => {
   return response.data;
 };
 
+// ==================== RESUMABLE MULTIPART (iPhone) ====================
+
+/**
+ * Begin a resumable upload. Answers the key, the upload id and the part size
+ * the browser must slice the file with.
+ */
+export const createMultipartUpload = async (videoId, contentType = 'video/mp4') => {
+  const response = await api.post(`/api/videos/${videoId}/upload/create-multipart`, {
+    content_type: contentType,
+  });
+  return response.data;
+};
+
+/** Presign exactly one part. Called again on every retry and on resume. */
+export const signUploadPart = async (videoId, { key, upload_id, part_number }) => {
+  const response = await api.post(`/api/videos/${videoId}/upload/sign-part`, {
+    key,
+    upload_id,
+    part_number,
+  });
+  return response.data;
+};
+
+/**
+ * Assemble the parts. Like confirm-upload, this records the key and enqueues
+ * the pose worker, and answers the video row.
+ */
+export const completeMultipartUpload = async (videoId, { key, upload_id, parts }) => {
+  const response = await api.post(`/api/videos/${videoId}/upload/complete-multipart`, {
+    key,
+    upload_id,
+    parts,
+  });
+  return response.data;
+};
+
+/** Discard an abandoned upload so R2 stops billing for its parts. */
+export const abortMultipartUpload = async (videoId, { key, upload_id }) => {
+  const response = await api.post(`/api/videos/${videoId}/upload/abort-multipart`, {
+    key,
+    upload_id,
+  });
+  return response.data;
+};
+
 /**
  * Full original-video upload: presign → PUT to R2 (with progress) → confirm.
  *
