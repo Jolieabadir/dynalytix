@@ -20,19 +20,85 @@ import { create } from 'zustand';
  */
 export const HOLD_SLOT_KEYS = ['start_left', 'start_right', 'end', 'foot'];
 
+/** Environment prefill in its empty state. */
+const EMPTY_PREVIOUS_ENVIRONMENT = {
+  wall_angle: '',
+  start_left: { hold_id: null, hold_type: '', hold_quality: [] },
+  start_right: { hold_id: null, hold_type: '', hold_quality: [] },
+  end: { hold_id: null, hold_type: '', hold_quality: [] },
+  foot: { hold_id: null, hold_type: '', hold_quality: [] },
+};
+
+/**
+ * Everything that belongs to one open video. Cleared whenever a different
+ * video (or a different user) takes its place, so nothing a rater saw on one
+ * assignment can leak into the next — the API never returns another rater's
+ * labels, and this keeps the client from caching its own across videos.
+ */
+const VIDEO_SCOPED_RESET = {
+  currentVideo: null,
+  videoBlobUrl: null,
+  videoPlaybackUrl: null,
+  csvData: null,
+  csvString: null,
+  moves: [],
+  currentMove: null,
+  frameTags: [],
+  holds: [],
+  holdPickSlot: null,
+  currentFrame: 0,
+  isPlaying: false,
+  moveStart: null,
+  moveEnd: null,
+  mode: 'define',
+  showMoveForm: false,
+  previousEnvironment: EMPTY_PREVIOUS_ENVIRONMENT,
+  readOnlyStructure: false,
+  currentAssignment: null,
+};
+
 const useStore = create((set, get) => ({
   // ==================== VIDEO STATE ====================
   currentVideo: null,
   videos: [],
   videoBlobUrl: null, // Local blob URL for client-side video
+  // Presigned URL for a video not extracted in this session (rating view,
+  // or an owner reopening an upload). videoBlobUrl wins when both exist.
+  videoPlaybackUrl: null,
   csvData: null, // Parsed CSV data from client-side extraction
   csvString: null, // Raw CSV string to send to server
 
   setCurrentVideo: (video) => set({ currentVideo: video }),
   setVideos: (videos) => set({ videos }),
   setVideoBlobUrl: (url) => set({ videoBlobUrl: url }),
+  setVideoPlaybackUrl: (url) => set({ videoPlaybackUrl: url }),
   setCsvData: (data) => set({ csvData: data }),
   setCsvString: (str) => set({ csvString: str }),
+
+  /** Drop everything tied to the open video. See VIDEO_SCOPED_RESET. */
+  resetVideoState: () => set({ ...VIDEO_SCOPED_RESET }),
+
+  // ==================== DATASET A: PROFILE / NAV / ASSIGNMENTS ====================
+  // The rater profile from /api/me/profile (null until loaded or created).
+  // `profile.is_admin` gates the Admin view; `profile.tier` is informational.
+  profile: null,
+  setProfile: (profile) => set({ profile }),
+
+  // Top-level view: 'videos' (Dataset B, the existing flow) | 'queue' | 'admin'
+  // | 'rating'. Only 'rating' carries video-scoped state.
+  view: 'videos',
+  setView: (view) => set({ view }),
+
+  // The rater's queue, as returned by /api/me/assignments.
+  assignments: [],
+  setAssignments: (assignments) => set({ assignments }),
+
+  // The assignment open in the rating view, and the flag that turns the
+  // labeling UI read-only on structure (holds + canonical moves).
+  currentAssignment: null,
+  setCurrentAssignment: (assignment) => set({ currentAssignment: assignment }),
+  readOnlyStructure: false,
+  setReadOnlyStructure: (flag) => set({ readOnlyStructure: Boolean(flag) }),
 
   // ==================== MOVES STATE ====================
   moves: [],
@@ -112,13 +178,7 @@ const useStore = create((set, get) => ({
   // wall angle plus four named hold slots. Only wall_angle and the hold types
   // and qualities carry over — hold_id never does, because the next move is on
   // different holds.
-  previousEnvironment: {
-    wall_angle: '',
-    start_left: { hold_id: null, hold_type: '', hold_quality: [] },
-    start_right: { hold_id: null, hold_type: '', hold_quality: [] },
-    end: { hold_id: null, hold_type: '', hold_quality: [] },
-    foot: { hold_id: null, hold_type: '', hold_quality: [] },
-  },
+  previousEnvironment: EMPTY_PREVIOUS_ENVIRONMENT,
 
   setPreviousEnvironment: (env) =>
     set({
@@ -175,24 +235,13 @@ const useStore = create((set, get) => ({
   // Everything video-scoped, cleared on sign-out so the next user starts clean.
   resetForSignOut: () =>
     set({
+      ...VIDEO_SCOPED_RESET,
       session: null,
-      currentVideo: null,
       videos: [],
-      videoBlobUrl: null,
-      csvData: null,
-      csvString: null,
-      moves: [],
-      currentMove: null,
-      frameTags: [],
-      holds: [],
-      holdPickSlot: null,
-      currentFrame: 0,
-      isPlaying: false,
-      moveStart: null,
-      moveEnd: null,
-      mode: 'define',
-      showMoveForm: false,
       dismissedBanners: {},
+      profile: null,
+      view: 'videos',
+      assignments: [],
     }),
 }));
 
