@@ -536,6 +536,15 @@ def test_long_export_shape(client, admin, rater_a, rater_b):
     assert {r['field'] for r in tag_rows} == {'sharp_pain'}
     assert '0:6:left:left_shoulder|left_elbow' in {r['value'] for r in tag_rows}
 
+    # The export feeds scripts/irr_alpha.py directly.
+    krippendorff = pytest.importorskip('krippendorff')  # noqa: F841
+    from scripts import irr_alpha
+    alpha = {(r['lens'], r['field']): r for r in irr_alpha.compute(parse_csv(res.text))}
+    assert alpha[('environment', 'wall_angle')]['alpha'] <= 0.0  # A always steep, B always slab
+    assert alpha[('outcome', 'result')]['n_units'] == 3
+    assert alpha[('strategy', 'approach')]['alpha'] == 1.0  # canonical, identical per rater
+    assert alpha[('frame_tags', 'sharp_pain')]['alpha'] == 1.0  # both raters tagged every move
+
     # Deterministic: same bytes twice.
     assert client.get('/api/admin/export/long', headers=auth(admin)).text == res.text
     # Sorted by video, move, rater, lens, field.
