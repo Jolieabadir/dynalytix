@@ -37,6 +37,21 @@ def test_build_result_update_processing_and_failed():
     assert params[1] is None
 
 
+def test_build_result_update_writes_camera_metrics():
+    sql, params = db.build_result_update(
+        7, 'done', r2_pose_csv_key='k', has_cut=True, cut_frames=[41, 90],
+        camera_motion_score=0.0123, camera_zoom_range=1.2, camera_motion_frames_pct=55.0,
+    )
+    assert 'has_cut = %s' in sql and 'cut_frames = %s' in sql
+    assert 'camera_motion_score = %s' in sql and 'camera_zoom_range = %s' in sql
+    assert 'camera_motion_frames_pct = %s' in sql
+    cut = next(p for p in params if hasattr(p, 'obj'))  # the psycopg Jsonb wrapper
+    assert cut.obj == [41, 90]
+    # None leaves the column untouched (the check failed or did not run).
+    sql, _ = db.build_result_update(7, 'done', r2_pose_csv_key='k', has_cut=None)
+    assert 'has_cut' not in sql
+
+
 def test_build_result_update_rejects_bad_input():
     with pytest.raises(ValueError):
         db.build_result_update(1, 'sideways')
@@ -73,6 +88,15 @@ def test_record_result_against_postgres():
         assert (video.width, video.height) == (1080, 1920)
         assert video.r2_pose_csv_key == f'pose/{user}/{video_id}.csv'
         assert video.pose_finished_at is not None
+
+        assert db.record_result(
+            dsn_for_tests(), video_id, 'done', r2_pose_csv_key=f'pose/{user}/{video_id}.csv',
+            has_cut=True, cut_frames=[12], camera_motion_score=0.004, camera_zoom_range=1.1,
+            camera_motion_frames_pct=40.0,
+        )
+        video = database.get_video(video_id, user)
+        assert video.has_cut is True and video.cut_frames == [12]
+        assert abs(video.camera_motion_score - 0.004) < 1e-6 and abs(video.camera_zoom_range - 1.1) < 1e-6
 
         assert db.record_result(dsn_for_tests(), video_id, 'failed', error='x')
         assert database.get_video(video_id, user).pose_error == 'x'

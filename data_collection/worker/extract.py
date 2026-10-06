@@ -24,11 +24,13 @@ Stages:
    them, showinfo does not).
 3. PoseLandmarker FULL in VIDEO mode, one call per frame.
 4. The 12 angles and the CSV via angles.py: the exact frontend contract.
+5. camera_check.CameraCheck on the same frames (camera motion, zoom, cuts).
+   Best effort: if it fails, the metrics are None and the pose result stands.
 
 Frame indexing follows the browser extractor's rules (poseMath.buildRows):
 frame_number = round(pts * fps), first writer wins on a duplicate index, any
 hole is filled with a pose-less row, and timestamp_ms = frame_number / fps *
-1000 exactly. SkeletonOverlay indexes the parsed CSV by position, so row N must
+1000 exactly. The frontend indexes the parsed CSV by position, so row N must
 be frame N with no gaps.
 """
 from __future__ import annotations
@@ -96,6 +98,8 @@ class ExtractionMeta:
     height: int
     frames_decoded: int
     frames_with_pose: int
+    #: camera_check.CameraCheck.summary(), or None when the check failed.
+    camera: Optional[dict] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -366,6 +370,26 @@ def frame_index_for(pts_seconds: float, fps: float) -> int:
 
 # ==================== DRIVER ====================
 
+def _make_camera_check(probe: VideoProbe):
+    """A CameraCheck for this clip, or None if it cannot be built."""
+    try:
+        from camera_check import CameraCheck
+        return CameraCheck(probe.width, probe.height)
+    except Exception as exc:  # noqa: BLE001
+        log.warning('camera check unavailable: %s: %s', type(exc).__name__, exc)
+        return None
+
+
+def _camera_summary(camera) -> Optional[dict]:
+    if camera is None:
+        return None
+    try:
+        return camera.summary()
+    except Exception as exc:  # noqa: BLE001
+        log.warning('camera check summary failed: %s: %s', type(exc).__name__, exc)
+        return None
+
+
 def extract_pose_csv(
     video_path: str,
     model_path: str = DEFAULT_MODEL_PATH,
@@ -381,6 +405,7 @@ def extract_pose_csv(
     )
 
     landmarker, mp = make_landmarker(model_path, use_gpu=use_gpu)
+    camera = _make_camera_check(probe)
     indexed: dict = {}
     prev_com = None
     prev_timestamp_ms = None
@@ -404,6 +429,13 @@ def extract_pose_csv(
 
             image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(frame))
             raw = landmarks_from_result(landmarker.detect_for_video(image, mp_ts))
+            if camera is not None:
+                try:
+                    camera.feed(frame, raw)
+                except Exception as exc:  # noqa: BLE001 - never fail pose over this
+                    log.warning('camera check disabled at frame %d: %s: %s',
+                                frame_num, type(exc).__name__, exc)
+                    camera = None
 
             result = compute_result(
                 raw, probe.width, probe.height, timestamp_ms,
@@ -434,6 +466,7 @@ def extract_pose_csv(
         height=probe.height,
         frames_decoded=decoded,
         frames_with_pose=with_pose,
+        camera=_camera_summary(camera),
     )
     log.info('done: %d rows, %d decoded, %d with a pose', len(rows), decoded, with_pose)
     return csv_text, meta

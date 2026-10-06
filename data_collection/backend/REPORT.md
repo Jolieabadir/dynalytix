@@ -1845,3 +1845,64 @@ Backend 204 passed (was 194 before the review fixes) on scratch Postgres (`tests
 2. Leave `SELF_UPLOAD_ENABLED` unset on `adorable-integrity`. Optionally set `IRR_OVERLAP_RATE`.
 3. Validate raters in the Admin view; add athletes from IFSC profiles (height, birth year).
 4. Prep one clip end to end: upload → Import metadata JSON → holds/moves → Mark ready → assign → rate.
+## 15. Camera-motion + cut check (runbook-w2-worker, 2026-10-06)
+
+Branch `feat/camera-check`, cut from `feat/single-dataset` (it gates the mark-ready
+route that branch rewrote). Merge **after** `feat/single-dataset`.
+
+### Files
+- `worker/camera_check.py` (new) — `CameraCheck`: per frame, downscale to 320 px wide,
+  HSV-histogram Bhattacharyya distance for cuts (> 0.5), Lucas-Kanade features outside the
+  climber's pose box (dilated 20%), RANSAC similarity transform → displacement of the frame
+  centre (fraction of the diagonal) and scale. Summary: `has_cut`, `cut_frames`,
+  `camera_motion_score` (p95 displacement), `camera_zoom_range` (max/min cumulative scale,
+  per-frame changes under 0.2% ignored so noise cannot compound into a fake zoom),
+  `camera_motion_frames_pct`. `python camera_check.py clip.mp4 ...` prints the metrics for calibration.
+- `worker/extract.py` — feeds every decoded frame + its landmarks to `CameraCheck`;
+  `ExtractionMeta.camera`. Any exception disables the check for that clip (metrics `None`),
+  the pose CSV is unaffected. Golden CSV test unchanged and passing.
+- `worker/modal_app.py` — camera metrics ride along with `done`; `camera_check` added to
+  `add_local_python_source` (without it the import fails in the image and every clip is unmeasured).
+- `worker/db.py` — `CAMERA_COLUMNS` written by `build_result_update` (`cut_frames` as jsonb).
+- `backend/supabase/migrations/20261006130000_camera_check.sql` — `has_cut`, `cut_frames`,
+  `camera_motion_score`, `camera_zoom_range`, `camera_motion_frames_pct`, `camera_override`,
+  `camera_override_note`. No grant to `authenticated`.
+- `backend/src/web/api.py` — `PoseResult` accepts the metrics (callback mode);
+  `VideoResponse.camera_problems`; mark-ready (paper clips) now also needs `pose_status = done`
+  and a passing camera check unless overridden; `PUT /api/admin/videos/{id}/camera-override`
+  `{override, note}` (note required to turn it on). Thresholds `CAMERA_MOTION_MAX` (0.002),
+  `CAMERA_ZOOM_MAX` (1.05), read per request. An unmeasured clip (check failed / pre-W2) is
+  blocked: "camera check did not run".
+- Exports: `has_cut`, `camera_motion_score`, `camera_zoom_range`, `camera_override` added to
+  the provenance columns (long + full).
+- Frontend `AdminView`: Camera column (steady / fails / overridden / waiting for pose /
+  not checked), problems list, override with note, undo.
+
+### Calibration (so far)
+
+| Clip | has_cut | motion (p95) | zoom | moving frames |
+|---|---|---|---|---|
+| Synthetic still wall (H.264, 30 fps) | no | 0.000001 | 1.00 | 0% |
+| Same wall panned 400 px/s at 640×360 | no | 0.0191 | 1.00 | 100% |
+| Real iPhone clip in repo (IMG_8524, 1080p30, gym, phone held) | no | 0.000234 | 1.00 | 0% |
+| testsrc2 (animated pattern, "static") | — | — | 1.42 | — |
+
+The last row is the important caveat: footage where most of the background itself moves
+(big screens, crowds filling the frame) can read as camera motion/zoom. Broadcast wide shots
+of a wall should be dominated by static texture, but **thresholds are still placeholders**:
+run `python camera_check.py` on ~10 real IFSC clips (steady wide shots and obvious
+pans/zooms) and set `CAMERA_MOTION_MAX` / `CAMERA_ZOOM_MAX` on Railway between the two groups.
+Real broadcast footage was not available in this session.
+
+### Tests
+- Worker: 90 passed (incl. 10 camera tests: static, pan, slow drift, zoom, spliced cut,
+  climber masked out, featureless frames skipped, end-to-end through `extract_pose_csv`, crash
+  isolation) + DB round trip.
+- Backend: 203 passed (9 camera-gate tests).
+- Frontend: 228 passed, lint clean, build green.
+
+### Manual steps for Jolie
+1. `supabase db push` (session pooler 5432) → `supabase migration list` clean.
+2. Redeploy the Modal app (`modal deploy data_collection/worker/modal_app.py`) so new clips get metrics.
+3. Calibrate thresholds as above; set `CAMERA_MOTION_MAX` / `CAMERA_ZOOM_MAX` on `adorable-integrity`.
+4. Clips processed before this deploy have no metrics: use **Retry pose** on them (or override with a note).

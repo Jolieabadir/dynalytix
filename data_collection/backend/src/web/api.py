@@ -68,6 +68,50 @@ PROVISIONAL_FPS = 30.0
 
 DEFAULT_IRR_OVERLAP_RATE = 0.25
 
+# Camera-check thresholds (runbook W2 Worker). Placeholders until calibrated
+# on real clips: see backend REPORT.md. Motion is the p95 per-frame background
+# displacement as a fraction of the frame diagonal; zoom is max/min scale.
+DEFAULT_CAMERA_MOTION_MAX = 0.002
+DEFAULT_CAMERA_ZOOM_MAX = 1.05
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name, '').strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        log.warning('%s=%r is not a number; using %s', name, raw, default)
+        return default
+
+
+def camera_thresholds() -> tuple:
+    """(CAMERA_MOTION_MAX, CAMERA_ZOOM_MAX), read per call."""
+    return (_float_env('CAMERA_MOTION_MAX', DEFAULT_CAMERA_MOTION_MAX),
+            _float_env('CAMERA_ZOOM_MAX', DEFAULT_CAMERA_ZOOM_MAX))
+
+
+def camera_problems(video: Video) -> List[str]:
+    """Why a clip fails the camera check ([] when it passes). Ignores the
+    override, so the admin view can still show what was overridden."""
+    if video.pose_status != 'done':
+        return []  # nothing measured yet; the ready gate reports pose separately
+    if video.camera_motion_score is None or video.camera_zoom_range is None or video.has_cut is None:
+        return ['camera check did not run on this clip']
+    motion_max, zoom_max = camera_thresholds()
+    problems = []
+    if video.has_cut:
+        frames = ', '.join(str(f) for f in (video.cut_frames or [])[:5])
+        problems.append(f'camera cut detected (frames {frames})' if frames else 'camera cut detected')
+    if video.camera_motion_score > motion_max:
+        problems.append(
+            f'camera moves too much (score {video.camera_motion_score:.4f} > {motion_max:.4f})'
+        )
+    if video.camera_zoom_range > zoom_max:
+        problems.append(f'camera zooms (range {video.camera_zoom_range:.3f} > {zoom_max:.3f})')
+    return problems
+
 
 def self_upload_enabled() -> bool:
     """SELF_UPLOAD_ENABLED: the dormant community self-upload flow.
@@ -206,6 +250,16 @@ class VideoResponse(BaseModel):
     event_name: Optional[str] = None
     event_date: Optional[str] = None
     athlete_id: Optional[str] = None
+    # Camera check (worker) and the admin override. camera_problems lists why
+    # the clip fails (empty = passes), whether or not it is overridden.
+    has_cut: Optional[bool] = None
+    cut_frames: List[int] = []
+    camera_motion_score: Optional[float] = None
+    camera_zoom_range: Optional[float] = None
+    camera_motion_frames_pct: Optional[float] = None
+    camera_override: bool = False
+    camera_override_note: Optional[str] = None
+    camera_problems: List[str] = []
     route_grade: Optional[str] = None
     wall_type: Optional[str] = None
     camera_angle: Optional[str] = None
@@ -240,6 +294,13 @@ class VideoMetadataUpdate(BaseModel):
     wall_type: Optional[str] = None
     camera_angle: Optional[str] = None
     notes: Optional[str] = None
+
+
+class CameraOverride(BaseModel):
+    """Admin accepts a clip that fails the camera check. A note is required
+    when turning the override on."""
+    override: bool
+    note: Optional[str] = None
 
 
 class OverlapUpdate(BaseModel):
@@ -305,6 +366,12 @@ class PoseResult(BaseModel):
     """Worker -> backend callback body (fallback to the worker writing Postgres)."""
     status: str
     error: Optional[str] = None
+    # Camera check (worker camera_check.py), sent with 'done'.
+    has_cut: Optional[bool] = None
+    cut_frames: Optional[List[int]] = None
+    camera_motion_score: Optional[float] = Field(default=None, ge=0)
+    camera_zoom_range: Optional[float] = Field(default=None, ge=1)
+    camera_motion_frames_pct: Optional[float] = Field(default=None, ge=0, le=100)
     fps: Optional[float] = Field(default=None, gt=0)
     total_frames: Optional[int] = Field(default=None, ge=0)
     duration_ms: Optional[float] = Field(default=None, ge=0)
@@ -799,6 +866,14 @@ def _video_response(video: Video, access_role: str) -> VideoResponse:
         event_name=video.event_name,
         event_date=video.event_date.isoformat() if video.event_date else None,
         athlete_id=video.athlete_id,
+        has_cut=video.has_cut,
+        cut_frames=list(video.cut_frames or []),
+        camera_motion_score=video.camera_motion_score,
+        camera_zoom_range=video.camera_zoom_range,
+        camera_motion_frames_pct=video.camera_motion_frames_pct,
+        camera_override=bool(video.camera_override),
+        camera_override_note=video.camera_override_note,
+        camera_problems=camera_problems(video),
         route_grade=video.route_grade,
         wall_type=video.wall_type,
         camera_angle=video.camera_angle,
@@ -1593,6 +1668,11 @@ async def pose_result(video_id: int, payload: PoseResult, request: Request):
         width=payload.width,
         height=payload.height,
         r2_pose_csv_key=payload.r2_pose_csv_key,
+        has_cut=payload.has_cut,
+        cut_frames=payload.cut_frames,
+        camera_motion_score=payload.camera_motion_score,
+        camera_zoom_range=payload.camera_zoom_range,
+        camera_motion_frames_pct=payload.camera_motion_frames_pct,
     )
     if not updated:
         raise _not_found(f"Video {video_id} not found")
@@ -2559,11 +2639,17 @@ def _ready_blockers(video: Video) -> List[str]:
 
     Provenance must be complete and the athlete must be an adult on the event
     date. Without full birth dates, (event year - birth year) >= 19 is the
-    conservative test that guarantees 18+.
+    conservative test that guarantees 18+. The pose must be extracted and the
+    clip must pass the camera check (no cut, motion and zoom under
+    CAMERA_MOTION_MAX / CAMERA_ZOOM_MAX) unless an admin has overridden it.
     """
     if video.is_community():
         return []
     problems = []
+    if video.pose_status != 'done':
+        problems.append(f'pose extraction not finished (status={video.pose_status or "pending"})')
+    elif not video.camera_override:
+        problems.extend(camera_problems(video))
     if not video.source_type:
         problems.append('source_type is missing')
     if video.source_type == 'research_dataset':
@@ -2630,6 +2716,28 @@ async def admin_set_overlap(
     updated = get_db().set_overlap_if_unassigned(video_id, payload.irr_overlap)
     if updated is None:
         raise _conflict('Overlap can only be changed before any rater is assigned')
+    return video_to_response(updated, 'admin')
+
+
+@app.put("/api/admin/videos/{video_id}/camera-override", response_model=VideoResponse)
+async def admin_set_camera_override(
+    video_id: int,
+    payload: CameraOverride,
+    _admin: str = Depends(require_admin),
+):
+    """Accept (or stop accepting) a clip that fails the camera check.
+
+    Turning it on needs a non-empty note saying why (e.g. "pan is before the
+    first labeled move"); the note and the flag go into the exports.
+    """
+    _require_any_video(video_id)
+    note = (payload.note or '').strip()
+    if payload.override and not note:
+        raise _bad_request('A note is required to override the camera check')
+    updated = get_db().update_video_fields(
+        video_id, camera_override=payload.override,
+        camera_override_note=note if payload.override else '',
+    )
     return video_to_response(updated, 'admin')
 
 

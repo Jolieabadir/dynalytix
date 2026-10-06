@@ -258,6 +258,8 @@ class Exporter:
 VIDEO_PROVENANCE_COLUMNS = [
     'source_type', 'source_url', 'clip_start_ms', 'clip_end_ms',
     'event_name', 'event_date', 'athlete_id', 'height_cm', 'height_source',
+    # Camera check (worker) and whether an admin overrode a failure.
+    'has_cut', 'camera_motion_score', 'camera_zoom_range', 'camera_override',
 ]
 
 LONG_COLUMNS = [
@@ -371,6 +373,10 @@ class AdminExporter:
                 'athlete_id': v.athlete_id or '',
                 'height_cm': _blank(athlete.height_cm) if athlete else '',
                 'height_source': athlete.height_source if athlete else '',
+                'has_cut': _cell(v.has_cut),
+                'camera_motion_score': _blank(v.camera_motion_score),
+                'camera_zoom_range': _blank(v.camera_zoom_range),
+                'camera_override': _cell(bool(v.camera_override)),
             }
         return out
 

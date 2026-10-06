@@ -99,6 +99,12 @@ def finish_pose(client, user_id, video, csv_text=POSE_CSV, **overrides):
         'width': 1920,
         'height': 1080,
         'r2_pose_csv_key': key,
+        # A static, uncut clip as the worker's camera check reports it.
+        'has_cut': False,
+        'cut_frames': [],
+        'camera_motion_score': 0.0001,
+        'camera_zoom_range': 1.0,
+        'camera_motion_frames_pct': 0.0,
     }
     body.update(overrides)
     response = client.post(

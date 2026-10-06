@@ -17,6 +17,7 @@ vi.mock('../api/client', () => ({
   adminCloseVideo: vi.fn(),
   adminReopenVideo: vi.fn(),
   adminSetOverlap: vi.fn(),
+  adminSetCameraOverride: vi.fn(),
   adminUpdateRater: vi.fn(),
   adminListAthletes: vi.fn(),
   adminCreateAthlete: vi.fn(),

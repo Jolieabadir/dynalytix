@@ -623,6 +623,18 @@ export const adminSetOverlap = async (videoId, irr_overlap) => {
   return response.data;
 };
 
+/**
+ * Accept (override=true, note required) or stop accepting a clip that fails
+ * the worker's camera check (pan / zoom / cut). 400 without a note.
+ */
+export const adminSetCameraOverride = async (videoId, override, note = '') => {
+  const response = await api.put(`/api/admin/videos/${videoId}/camera-override`, {
+    override: Boolean(override),
+    note: note || null,
+  });
+  return response.data;
+};
+
 export const adminReopenVideo = async (videoId) => {
   const response = await api.post(`/api/admin/videos/${videoId}/reopen`);
   return response.data;

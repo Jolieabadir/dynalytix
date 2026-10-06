@@ -97,6 +97,14 @@ class Video:
     event_name: Optional[str] = None
     event_date: Optional[date] = None
     athlete_id: Optional[str] = None
+    # Camera check (worker camera_check.py). None = not measured.
+    has_cut: Optional[bool] = None
+    cut_frames: list = field(default_factory=list)
+    camera_motion_score: Optional[float] = None
+    camera_zoom_range: Optional[float] = None
+    camera_motion_frames_pct: Optional[float] = None
+    camera_override: bool = False
+    camera_override_note: Optional[str] = None
     # Prep-pass metadata, all optional.
     route_grade: Optional[str] = None
     wall_type: Optional[str] = None

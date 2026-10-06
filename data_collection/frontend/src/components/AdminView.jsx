@@ -30,6 +30,7 @@ import {
   adminCloseVideo,
   adminReopenVideo,
   adminSetOverlap,
+  adminSetCameraOverride,
   adminUpdateRater,
   adminListAthletes,
   adminCreateAthlete,
@@ -131,6 +132,25 @@ function AdminView({ onOpenVideo }) {
     }
   };
 
+  const handleCameraOverride = async (video, override, note) => {
+    setError(null);
+    setProblems(null);
+    setNotice(null);
+    try {
+      const updated = await adminSetCameraOverride(video.id, override, note);
+      replaceVideo(updated);
+      setNotice(
+        `${updated.filename}: camera check ${updated.camera_override ? 'overridden' : 'enforced again'}.`
+      );
+    } catch (err) {
+      showError(
+        err?.response?.status === 400
+          ? 'Add a note saying why this clip is acceptable before overriding.'
+          : errorText(err, 'Could not change the camera override.')
+      );
+    }
+  };
+
   const athleteById = (id) => athletes.find((a) => a.athlete_id === id) ?? null;
 
   return (
@@ -177,6 +197,7 @@ function AdminView({ onOpenVideo }) {
                 <th>Video</th>
                 <th>Owner</th>
                 <th>Source</th>
+                <th>Camera</th>
                 <th>Athlete</th>
                 <th>Prep status</th>
                 <th>Overlap</th>
@@ -197,6 +218,7 @@ function AdminView({ onOpenVideo }) {
                   onClose={() => runVideoAction('Close', () => adminCloseVideo(item.video.id))}
                   onReopen={() => runVideoAction('Reopen', () => adminReopenVideo(item.video.id))}
                   onOverlap={(value) => handleOverlap(item.video, value)}
+                  onCameraOverride={(override, note) => handleCameraOverride(item.video, override, note)}
                   onAssignmentsChanged={reload}
                   onError={showError}
                 />
@@ -233,6 +255,7 @@ function VideoRow({
   onClose,
   onReopen,
   onOverlap,
+  onCameraOverride,
   onAssignmentsChanged,
   onError,
 }) {
@@ -320,6 +343,9 @@ function VideoRow({
         <td data-testid={`admin-source-${video.id}`}>
           {formatLabel(video.source_type) || '—'}
           {video.event_name && <div className="cell-sub">{video.event_name}</div>}
+        </td>
+        <td data-testid={`admin-camera-${video.id}`}>
+          <CameraCell video={video} onOverride={onCameraOverride} />
         </td>
         <td title={athlete ? athleteLabel(athlete) : video.athlete_id || undefined}>
           {video.athlete_id ? shortId(video.athlete_id) : '—'}
@@ -447,6 +473,72 @@ function VideoRow({
         </tr>
       )}
     </>
+  );
+}
+
+/**
+ * The worker's camera check for one clip (pan / zoom / cut). A failing clip
+ * cannot be marked ready unless an admin overrides it with a note; the
+ * problems stay listed after an override so it is clear what was accepted.
+ */
+function CameraCell({ video, onOverride }) {
+  const [note, setNote] = useState('');
+  if (video.source_type === 'community') return <span className="cell-sub">not checked</span>;
+  if (video.pose_status !== 'done') return <span className="cell-sub">waiting for pose</span>;
+
+  const problems = video.camera_problems ?? [];
+  const metrics =
+    video.camera_motion_score != null
+      ? `motion ${Number(video.camera_motion_score).toFixed(4)} · zoom ${Number(video.camera_zoom_range).toFixed(2)}`
+      : null;
+
+  if (problems.length === 0) {
+    return (
+      <>
+        <span className="status-pill camera-ok">steady</span>
+        {metrics && <div className="cell-sub">{metrics}</div>}
+      </>
+    );
+  }
+
+  return (
+    <div className="camera-cell">
+      <span className={`status-pill ${video.camera_override ? 'camera-overridden' : 'camera-fail'}`}>
+        {video.camera_override ? 'overridden' : 'fails'}
+      </span>
+      <ul className="missing-list" data-testid={`camera-problems-${video.id}`}>
+        {problems.map((p) => (
+          <li key={p}>{p}</li>
+        ))}
+      </ul>
+      {metrics && <div className="cell-sub">{metrics}</div>}
+      {video.camera_override ? (
+        <>
+          <div className="cell-sub">Note: {video.camera_override_note}</div>
+          <button type="button" className="btn-secondary" onClick={() => onOverride(false, '')}>
+            Undo override
+          </button>
+        </>
+      ) : (
+        <div className="camera-override-form">
+          <input
+            type="text"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Why is this clip OK?"
+            aria-label={`Camera override note for ${video.filename}`}
+          />
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={!note.trim()}
+            onClick={() => onOverride(true, note.trim())}
+          >
+            Override
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 

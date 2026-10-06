@@ -82,7 +82,7 @@ image = (
     .pip_install_from_requirements(str(HERE / 'requirements.txt'))
     # The vendored FULL model (9.4 MB) and the pipeline modules.
     .add_local_file(str(LOCAL_MODEL), MODEL_PATH)
-    .add_local_python_source('extract', 'angles', 'fdlibm', 'db', 'storage')
+    .add_local_python_source('extract', 'angles', 'fdlibm', 'db', 'storage', 'camera_check')
 )
 
 app = modal.App(APP_NAME)
@@ -149,6 +149,11 @@ def _post_callback(video_id: int, status: str, error: str | None, **fields) -> N
     raise RuntimeError(f'pose-result callback failed: {last_error}')
 
 
+#: camera_check.summary() keys that are written to the videos row.
+CAMERA_RESULT_FIELDS = ('has_cut', 'cut_frames', 'camera_motion_score',
+                        'camera_zoom_range', 'camera_motion_frames_pct')
+
+
 def _run_once(video_id: int, user_id: str, r2_key: str, use_gpu: bool) -> dict:
     """One attempt: download -> extract -> upload. Returns the 'done' fields."""
     import storage
@@ -162,7 +167,7 @@ def _run_once(video_id: int, user_id: str, r2_key: str, use_gpu: bool) -> dict:
 
     key = storage.pose_csv_key(user_id, video_id)
     storage.upload_csv(key, csv_text, client=client)
-    return {
+    fields = {
         'fps': meta.fps,
         'total_frames': meta.total_frames,
         'duration_ms': meta.duration_ms,
@@ -171,6 +176,12 @@ def _run_once(video_id: int, user_id: str, r2_key: str, use_gpu: bool) -> dict:
         'r2_pose_csv_key': key,
         'frames_with_pose': meta.frames_with_pose,
     }
+    # Camera-check metrics ride along with 'done'; absent when the check failed.
+    camera = meta.camera or {}
+    for column in CAMERA_RESULT_FIELDS:
+        if camera.get(column) is not None:
+            fields[column] = camera[column]
+    return fields
 
 
 def run_job(video_id: int, user_id: str, r2_key: str, use_gpu: bool = True) -> dict:

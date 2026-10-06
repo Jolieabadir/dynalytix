@@ -296,6 +296,7 @@ class Database:
         'source_type', 'source_url', 'clip_start_ms', 'clip_end_ms',
         'license', 'event_name', 'event_date', 'athlete_id',
         'route_grade', 'wall_type', 'camera_angle', 'notes',
+        'camera_override', 'camera_override_note',
     )
     # Never cleared by an empty string: these are NOT NULL.
     _VIDEO_NON_NULLABLE = ('prep_status', 'source_type')
@@ -502,6 +503,11 @@ class Database:
         width: Optional[int] = None,
         height: Optional[int] = None,
         r2_pose_csv_key: Optional[str] = None,
+        has_cut: Optional[bool] = None,
+        cut_frames: Optional[list] = None,
+        camera_motion_score: Optional[float] = None,
+        camera_zoom_range: Optional[float] = None,
+        camera_motion_frames_pct: Optional[float] = None,
     ) -> bool:
         """Apply the worker's outcome to the row.
 
@@ -527,6 +533,11 @@ class Database:
             ('width', width),
             ('height', height),
             ('r2_pose_csv_key', r2_pose_csv_key),
+            ('has_cut', has_cut),
+            ('cut_frames', Jsonb(list(cut_frames)) if cut_frames is not None else None),
+            ('camera_motion_score', camera_motion_score),
+            ('camera_zoom_range', camera_zoom_range),
+            ('camera_motion_frames_pct', camera_motion_frames_pct),
         ):
             if value is not None:
                 sets.append(f'{column} = %s')
@@ -1598,6 +1609,13 @@ class Database:
             event_name=row.get('event_name'),
             event_date=row.get('event_date'),
             athlete_id=str(row['athlete_id']) if row.get('athlete_id') else None,
+            has_cut=row.get('has_cut'),
+            cut_frames=list(row.get('cut_frames') or []),
+            camera_motion_score=row.get('camera_motion_score'),
+            camera_zoom_range=row.get('camera_zoom_range'),
+            camera_motion_frames_pct=row.get('camera_motion_frames_pct'),
+            camera_override=bool(row.get('camera_override')),
+            camera_override_note=row.get('camera_override_note'),
             route_grade=row.get('route_grade'),
             wall_type=row.get('wall_type'),
             camera_angle=row.get('camera_angle'),

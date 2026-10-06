@@ -26,6 +26,11 @@ POSE_STATUSES = ('pending', 'processing', 'done', 'failed')
 #: values at register time were provisional (fps defaulted to 30).
 MEASURED_COLUMNS = ('fps', 'total_frames', 'duration_ms', 'width', 'height')
 
+#: Camera-check metrics (camera_check.py) the worker writes alongside a 'done'.
+#: cut_frames is jsonb; the rest are scalars. None leaves the column as is.
+CAMERA_COLUMNS = ('has_cut', 'cut_frames', 'camera_motion_score',
+                  'camera_zoom_range', 'camera_motion_frames_pct')
+
 
 def _connect(dsn: str):
     import psycopg
@@ -43,7 +48,7 @@ def build_result_update(
     """The UPDATE statement and its parameters, pure so it can be unit tested."""
     if status not in POSE_STATUSES:
         raise ValueError(f'Unknown pose_status: {status}')
-    unknown = set(measured) - set(MEASURED_COLUMNS)
+    unknown = set(measured) - set(MEASURED_COLUMNS) - set(CAMERA_COLUMNS)
     if unknown:
         raise ValueError(f'Not a measured column: {sorted(unknown)}')
 
@@ -55,16 +60,21 @@ def build_result_update(
     elif status in ('done', 'failed'):
         sets.append('pose_finished_at = now()')
 
-    for column in MEASURED_COLUMNS:
+    for column in MEASURED_COLUMNS + CAMERA_COLUMNS:
         value = measured.get(column)
         if value is not None:
             sets.append(f'{column} = %s')
-            params.append(value)
+            params.append(_jsonb(value) if column == 'cut_frames' else value)
     if r2_pose_csv_key is not None:
         sets.append('r2_pose_csv_key = %s')
         params.append(r2_pose_csv_key)
     params.append(video_id)
     return f'UPDATE videos SET {", ".join(sets)} WHERE id = %s', params
+
+
+def _jsonb(value):
+    from psycopg.types.json import Jsonb
+    return Jsonb(list(value))
 
 
 def record_result(

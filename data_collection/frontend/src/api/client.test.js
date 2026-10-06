@@ -20,6 +20,7 @@ import {
   adminCreateAthlete,
   adminUpdateAthlete,
   adminSetOverlap,
+  adminSetCameraOverride,
   adminCreateAssignment,
 } from './client';
 import api from './client';
@@ -191,6 +192,15 @@ describe('admin video + assignment helpers', () => {
     const put = vi.spyOn(api, 'put').mockResolvedValue({ data: { id: 3, irr_overlap: true, rater_target: 3 } });
     expect(await adminSetOverlap(3, true)).toEqual({ id: 3, irr_overlap: true, rater_target: 3 });
     expect(put).toHaveBeenCalledWith('/api/admin/videos/3/overlap', { irr_overlap: true });
+    put.mockRestore();
+  });
+
+  it('adminSetCameraOverride PUTs the flag and the note (null when empty)', async () => {
+    const put = vi.spyOn(api, 'put').mockResolvedValue({ data: { id: 3, camera_override: true } });
+    await adminSetCameraOverride(3, true, 'pan before move 1');
+    expect(put).toHaveBeenCalledWith('/api/admin/videos/3/camera-override', { override: true, note: 'pan before move 1' });
+    await adminSetCameraOverride(3, false);
+    expect(put).toHaveBeenLastCalledWith('/api/admin/videos/3/camera-override', { override: false, note: null });
     put.mockRestore();
   });
 
