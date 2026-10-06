@@ -46,6 +46,7 @@ Exit codes: 0 ok, 2 validation error, 1 processing error (ffmpeg/ffprobe).
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import csv
 import hashlib
 import json
@@ -408,8 +409,12 @@ def prepare_clip(spec: ClipSpec, out_dir: Path, overwrite: bool = False) -> dict
     """Trim spec.input into out_dir/<name>.mp4 + .json. Returns a result dict:
     {'mp4', 'json', 'mode', 'sidecar'}."""
     require_tools()
-    out_dir = Path(out_dir)
+    # Absolute paths everywhere ffmpeg/ffprobe see them: a relative name that
+    # starts with '-' (e.g. a clip called "-final.mp4" with --out-dir .)
+    # would otherwise be parsed as an option.
+    out_dir = Path(out_dir).resolve()
     name = spec.output_name()
+    spec = dataclasses.replace(spec, input=Path(spec.input).resolve())
     mp4 = out_dir / f'{name}.mp4'
     sidecar_path = out_dir / f'{name}.json'
     if not overwrite:
@@ -436,6 +441,14 @@ def prepare_clip(spec: ClipSpec, out_dir: Path, overwrite: bool = False) -> dict
     tmp = out_dir / f'.{name}.partial.mp4'
     expected = expected_frame_count(spec.start_ms, spec.end_ms, src['fps'])
 
+    try:
+        return _trim_and_describe(spec, name, src, constant_rate, tmp, mp4, sidecar_path, expected)
+    finally:
+        # Never leave a half-written .partial.mp4 behind on failure.
+        tmp.unlink(missing_ok=True)
+
+
+def _trim_and_describe(spec, name, src, constant_rate, tmp, mp4, sidecar_path, expected) -> dict:
     mode = 'reencode'
     if constant_rate and start_is_keyframe(spec.input, spec.start_ms, src['fps'], src['start_time']):
         trim_copy(spec.input, tmp, spec.start_ms, spec.duration_ms)

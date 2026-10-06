@@ -404,3 +404,31 @@ def test_batch_and_input_together_rejected(videos, tmp_path, capsys):
     p = write_batch(tmp_path / 'clips.csv', [])
     code, _, err = run_cli([videos['30'], '--batch', p], capsys)
     assert code == pc.EXIT_VALIDATION and 'not both' in err
+
+
+
+ARGS = ['--source-type', 'cc_license', '--source-url', 'https://example.com/v',
+        '--license', 'CC BY 4.0', '--event-name', 'x', '--event-date', '2026-01-01']
+
+
+def test_dash_leading_name_and_no_partial_left_on_failure(tmp_path, monkeypatch):
+    """Review fixes: a clip named '-clip.mp4' trimmed into the current
+    directory works (the derived output name starts with '-', so paths must be
+    absolute when handed to ffmpeg), and a failed run leaves no .partial.mp4."""
+    import importlib
+    import subprocess
+    pc = importlib.import_module('scripts.prepare_clip')
+    subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-f', 'lavfi', '-i',
+                    'testsrc=size=160x120:rate=30:duration=2', '-c:v', 'libx264',
+                    '-pix_fmt', 'yuv420p', str(tmp_path / '-clip.mp4')], check=True)
+    monkeypatch.chdir(tmp_path)
+    assert pc.main(['./-clip.mp4', '--start', '0.5', '--end', '1.5', '--out-dir', '.', *ARGS]) == 0
+    outputs = sorted(p.name for p in tmp_path.glob('-clip_*'))
+    assert len(outputs) == 2 and outputs[0].endswith('.json') and outputs[1].endswith('.mp4')
+
+    def boom(*args, **kwargs):
+        raise pc.ProcessingError('ffmpeg died')
+    monkeypatch.setattr(pc, 'trim_reencode', boom)
+    monkeypatch.setattr(pc, 'start_is_keyframe', lambda *a, **k: False)
+    assert pc.main(['./-clip.mp4', '--start', '0.2', '--end', '0.9', '--out-dir', 'o2', *ARGS]) != 0
+    assert not list((tmp_path / 'o2').glob('.*partial*'))
