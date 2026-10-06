@@ -15,7 +15,7 @@ from src.web import api as api_module
 from tests.conftest import requires_db
 from tests.test_api_scoping import auth, finish_pose, register_video, upload_video
 from tests.test_single_dataset import (  # noqa: F401 - fixtures
-    client, admin, make_athlete, parse_csv, set_provenance, mark_ready,
+    client, admin, rater_a, make_athlete, parse_csv, set_provenance, mark_ready, assign,
 )
 
 pytestmark = requires_db
@@ -46,6 +46,7 @@ def test_static_clip_passes(client, admin):
     ({'has_cut': True, 'cut_frames': [41, 90]}, 'cut detected (frames 41, 90)'),
     ({'camera_motion_score': 0.01}, 'moves too much'),
     ({'camera_zoom_range': 1.4}, 'zooms'),
+    ({'camera_drift': 0.2}, 'drifts'),
 ])
 def test_failing_clip_is_blocked_until_overridden_with_a_note(client, admin, camera, needle):
     video = clip(client, admin, **camera)
@@ -71,7 +72,7 @@ def test_failing_clip_is_blocked_until_overridden_with_a_note(client, admin, cam
 
 def test_unmeasured_clip_and_unfinished_pose_are_blocked(client, admin):
     unmeasured = clip(client, admin, has_cut=None, cut_frames=None,
-                      camera_motion_score=None, camera_zoom_range=None,
+                      camera_motion_score=None, camera_drift=None, camera_zoom_range=None,
                       camera_motion_frames_pct=None)
     assert unmeasured['camera_problems'] == ['camera check did not run on this clip']
     assert ready(client, admin, unmeasured['id']).status_code == 422
@@ -91,7 +92,7 @@ def test_thresholds_come_from_env(client, admin, monkeypatch):
     assert 'zooms' in ' '.join(
         client.get(f'/api/videos/{video["id"]}', headers=auth(admin)).json()['camera_problems'])
     monkeypatch.setenv('CAMERA_ZOOM_MAX', 'wide')  # garbage -> default 1.05
-    assert api_module.camera_thresholds() == (0.005, 1.05)
+    assert api_module.camera_thresholds() == (0.005, 0.02, 1.05)
     assert ready(client, admin, video['id']).status_code == 200
 
 
@@ -116,15 +117,18 @@ def test_community_videos_are_not_gated(client, admin, monkeypatch):
     assert ready(client, admin, video['id']).status_code == 200  # no pose, no camera, still fine
 
 
-def test_camera_columns_in_exports_and_override_route_is_admin_only(client, admin):
+def test_camera_columns_in_exports_and_override_route_is_admin_only(client, admin, rater_a):
     video = clip(client, admin, has_cut=True, cut_frames=[3])
     client.put(f'/api/admin/videos/{video["id"]}/camera-override',
                json={'override': True, 'note': 'ok'}, headers=auth(admin))
     from tests.test_single_dataset import create_hold
     from tests.test_api_scoping import create_move
     create_hold(client, admin, video['id'])
-    create_move(client, admin, video['id'])
+    move = create_move(client, admin, video['id'])
     mark_ready(client, admin, video['id'])
+    assign(client, admin, video['id'], rater_a)  # paper exports list assigned raters
+    from tests.test_single_dataset import post_outcome
+    assert post_outcome(client, rater_a, move['id']).status_code == 201
     rows = parse_csv(client.get('/api/admin/export/long', headers=auth(admin)).text)
     assert rows and {r['has_cut'] for r in rows} == {'true'}
     assert {r['camera_override'] for r in rows} == {'true'}
@@ -135,3 +139,26 @@ def test_camera_columns_in_exports_and_override_route_is_admin_only(client, admi
     stranger = str(uuid.uuid4())
     assert client.put(f'/api/admin/videos/{video["id"]}/camera-override',
                       json={'override': False}, headers=auth(stranger)).status_code == 403
+
+
+def test_reextracting_forgets_old_metrics_and_override(client, admin, enqueued):
+    video = clip(client, admin, has_cut=True, cut_frames=[3])
+    client.put(f'/api/admin/videos/{video["id"]}/camera-override',
+               json={'override': True, 'note': 'ok'}, headers=auth(admin))
+
+    # An admin may re-run a finished job (pre-W2 clips have no metrics).
+    res = client.post(f'/api/videos/{video["id"]}/retry-pose', headers=auth(admin))
+    assert res.status_code == 200 and res.json()['pose_status'] == 'pending'
+    body = client.get(f'/api/videos/{video["id"]}', headers=auth(admin)).json()
+    assert body['has_cut'] is None and body['camera_motion_score'] is None and body['cut_frames'] == []
+    assert body['camera_override'] is False and body['camera_override_note'] is None
+
+    # The next worker run's (passing) metrics then apply.
+    finish_pose(client, admin, video)
+    assert ready(client, admin, video['id']).status_code == 200
+
+
+def test_drift_is_reported_and_exported(client, admin):
+    video = clip(client, admin, camera_drift=0.05)
+    assert any('drifts' in p for p in video['camera_problems'])
+    assert video['camera_drift'] == pytest.approx(0.05)

@@ -103,6 +103,7 @@ def finish_pose(client, user_id, video, csv_text=POSE_CSV, **overrides):
         'has_cut': False,
         'cut_frames': [],
         'camera_motion_score': 0.0001,
+        'camera_drift': 0.001,
         'camera_zoom_range': 1.0,
         'camera_motion_frames_pct': 0.0,
     }

@@ -489,7 +489,9 @@ function CameraCell({ video, onOverride }) {
   const problems = video.camera_problems ?? [];
   const metrics =
     video.camera_motion_score != null
-      ? `motion ${Number(video.camera_motion_score).toFixed(4)} · zoom ${Number(video.camera_zoom_range).toFixed(2)}`
+      ? `motion ${Number(video.camera_motion_score).toFixed(4)}` +
+        (video.camera_drift != null ? ` · drift ${Number(video.camera_drift).toFixed(3)}` : '') +
+        ` · zoom ${Number(video.camera_zoom_range).toFixed(2)}`
       : null;
 
   if (problems.length === 0) {

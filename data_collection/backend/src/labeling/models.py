@@ -101,6 +101,7 @@ class Video:
     has_cut: Optional[bool] = None
     cut_frames: list = field(default_factory=list)
     camera_motion_score: Optional[float] = None
+    camera_drift: Optional[float] = None
     camera_zoom_range: Optional[float] = None
     camera_motion_frames_pct: Optional[float] = None
     camera_override: bool = False

@@ -1880,26 +1880,36 @@ route that branch rewrote). Merge **after** `feat/single-dataset`.
 
 ### Calibration (so far)
 
-| Clip | has_cut | motion (p95) | zoom | moving frames |
-|---|---|---|---|---|
-| Synthetic still wall (H.264, 30 fps) | no | 0.000001 | 1.00 | 0% |
-| Same wall panned 400 px/s at 640×360 | no | 0.0191 | 1.00 | 100% |
-| Real iPhone clip in repo (IMG_8524, 1080p30, gym, phone held) | no | 0.000234 | 1.00 | 0% |
-| testsrc2 (animated pattern, "static") | — | — | 1.42 | — |
+| Clip | cut | motion p95 | drift | zoom | moving frames |
+|---|---|---|---|---|---|
+| Synthetic still wall (H.264, 30 fps) | no | 0.000001 | 0.000008 | 1.00 | 0% |
+| Same wall panned 400 px/s at 640×360 | no | 0.0191 | 0.80 | 1.00 | 100% |
+| Synthetic 1 px/frame pan, 150 frames (unit test) | no | < 0.002 | ≈0.20 | 1.00 | — |
+| Synthetic 0.15%/frame zoom, 150 frames (unit test) | no | — | — | ≈1.25 | — |
+| Real iPhone clip in repo (IMG_8524, 1080p30, gym, phone held) | no | 0.000234 | 0.0055 | 1.0035 | 0% |
 
-The last row is the important caveat: footage where most of the background itself moves
-(big screens, crowds filling the frame) can read as camera motion/zoom. Broadcast wide shots
-of a wall should be dominated by static texture, but **thresholds are still placeholders**:
-run `python camera_check.py` on ~10 real IFSC clips (steady wide shots and obvious
-pans/zooms) and set `CAMERA_MOTION_MAX` / `CAMERA_ZOOM_MAX` on Railway between the two groups.
+Defaults: `CAMERA_MOTION_MAX=0.002`, `CAMERA_DRIFT_MAX=0.02` (2% of the diagonal ≈ 44 px at
+1080p — about a hold's width), `CAMERA_ZOOM_MAX=1.05`.
+
+Review finding fixed: slow pans/zooms passed the original per-frame-only check. Drift and zoom
+now register each frame against an anchor frame of the shot (re-anchoring past 10% shift), so
+noise does not compound and slow movement adds up (`camera_drift`, migration column, gate).
+Re-extracting a clip (confirm-upload / retry) clears its camera metrics and any override; an
+admin may retry a `done` clip, which is how pre-W2 clips get metrics.
+
+Caveat: footage where most of the background itself moves (big screens, crowds filling the frame)
+can read as camera motion — animated `testsrc2` read as a 1.42 zoom in the first version. Broadcast
+wide shots of a wall should be dominated by static texture, but **thresholds are still placeholders**:
+run `python camera_check.py` on ~10 real IFSC clips (steady wide shots and obvious pans/zooms) and set
+`CAMERA_MOTION_MAX` / `CAMERA_DRIFT_MAX` / `CAMERA_ZOOM_MAX` on Railway between the two groups.
 Real broadcast footage was not available in this session.
 
 ### Tests
-- Worker: 90 passed (incl. 10 camera tests: static, pan, slow drift, zoom, spliced cut,
+- Worker: 94 passed (incl. 14 camera tests: slow pan drift, slow zoom, long pan re-anchoring,: static, pan, slow drift, zoom, spliced cut,
   climber masked out, featureless frames skipped, end-to-end through `extract_pose_csv`, crash
   isolation) + DB round trip.
-- Backend: 203 passed (9 camera-gate tests).
-- Frontend: 228 passed, lint clean, build green.
+- Backend: 216 passed (12 camera-gate tests, incl. drift, reset on re-extract, admin retry).
+- Frontend: 229 passed, lint clean, build green.
 
 ### Manual steps for Jolie
 1. `supabase db push` (session pooler 5432) → `supabase migration list` clean.

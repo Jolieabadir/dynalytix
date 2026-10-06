@@ -506,6 +506,7 @@ class Database:
         has_cut: Optional[bool] = None,
         cut_frames: Optional[list] = None,
         camera_motion_score: Optional[float] = None,
+        camera_drift: Optional[float] = None,
         camera_zoom_range: Optional[float] = None,
         camera_motion_frames_pct: Optional[float] = None,
     ) -> bool:
@@ -536,6 +537,7 @@ class Database:
             ('has_cut', has_cut),
             ('cut_frames', Jsonb(list(cut_frames)) if cut_frames is not None else None),
             ('camera_motion_score', camera_motion_score),
+            ('camera_drift', camera_drift),
             ('camera_zoom_range', camera_zoom_range),
             ('camera_motion_frames_pct', camera_motion_frames_pct),
         ):
@@ -551,6 +553,20 @@ class Database:
                 tuple(params),
             )
             return cursor.rowcount > 0
+
+    CAMERA_CHECK_COLUMNS = ('has_cut', 'cut_frames', 'camera_motion_score', 'camera_drift',
+                            'camera_zoom_range', 'camera_motion_frames_pct')
+
+    def reset_camera_check(self, video_id: int) -> None:
+        """Forget a clip's camera metrics and any override before its pose is
+        (re)extracted: the next worker run measures the bytes now in R2, and
+        an override granted for the old bytes no longer applies."""
+        sets = ', '.join(f'{c} = NULL' for c in self.CAMERA_CHECK_COLUMNS)
+        with self.get_connection() as conn:
+            conn.execute(
+                f'UPDATE videos SET {sets}, camera_override = false, camera_override_note = NULL '
+                'WHERE id = %s', (video_id,)
+            )
 
     def get_videos_with_exports(self, user_id: str) -> List[Video]:
         """Get this user's videos that have an export stored in R2."""
@@ -1612,6 +1628,7 @@ class Database:
             has_cut=row.get('has_cut'),
             cut_frames=list(row.get('cut_frames') or []),
             camera_motion_score=row.get('camera_motion_score'),
+            camera_drift=row.get('camera_drift'),
             camera_zoom_range=row.get('camera_zoom_range'),
             camera_motion_frames_pct=row.get('camera_motion_frames_pct'),
             camera_override=bool(row.get('camera_override')),

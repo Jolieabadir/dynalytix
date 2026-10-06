@@ -150,7 +150,7 @@ def _post_callback(video_id: int, status: str, error: str | None, **fields) -> N
 
 
 #: camera_check.summary() keys that are written to the videos row.
-CAMERA_RESULT_FIELDS = ('has_cut', 'cut_frames', 'camera_motion_score',
+CAMERA_RESULT_FIELDS = ('has_cut', 'cut_frames', 'camera_motion_score', 'camera_drift',
                         'camera_zoom_range', 'camera_motion_frames_pct')
 
 

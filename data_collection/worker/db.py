@@ -28,7 +28,7 @@ MEASURED_COLUMNS = ('fps', 'total_frames', 'duration_ms', 'width', 'height')
 
 #: Camera-check metrics (camera_check.py) the worker writes alongside a 'done'.
 #: cut_frames is jsonb; the rest are scalars. None leaves the column as is.
-CAMERA_COLUMNS = ('has_cut', 'cut_frames', 'camera_motion_score',
+CAMERA_COLUMNS = ('has_cut', 'cut_frames', 'camera_motion_score', 'camera_drift',
                   'camera_zoom_range', 'camera_motion_frames_pct')
 
 

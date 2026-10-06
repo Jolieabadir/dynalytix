@@ -176,3 +176,42 @@ def test_a_crash_in_the_check_never_fails_the_pose(monkeypatch):
     csv_text, meta = extract_pose_csv(str(static))
     assert csv_text.startswith('frame_number,') and meta.total_frames > 0
     assert meta.camera is None
+
+
+# ==================== slow drift (review finding) ====================
+
+def test_slow_pan_adds_up_in_drift_even_under_the_per_frame_threshold():
+    """1 px/frame for 150 frames = 149 px: per-frame motion stays under the
+    gate, but hold boxes drawn on frame 1 end up far off. Drift must see it."""
+    world = textured_world(10)
+    frames = [view(world, 200 + i, 400) for i in range(150)]
+    m = run(frames)
+    assert m['camera_motion_score'] < 0.002            # passes the per-frame gate...
+    assert m['camera_drift'] == pytest.approx(149 / np.hypot(W, H), rel=0.15)  # ...not this one
+    assert m['camera_drift'] > 0.02
+
+
+def test_slow_zoom_adds_up_in_zoom_range():
+    world = textured_world(11)
+    frames = []
+    for i in range(150):
+        zoom = 1.0015 ** i                              # 0.15%/frame, 1.25x total
+        cw, ch = int(W / zoom), int(H / zoom)
+        frames.append(view(world, 1200 - cw // 2, 700 - ch // 2, zoom))
+    m = run(frames)
+    assert m['camera_zoom_range'] == pytest.approx(1.0015 ** 149, rel=0.05)
+    assert m['camera_zoom_range'] > 1.05
+
+
+def test_static_long_clip_has_no_drift_or_zoom():
+    world = textured_world(12)
+    frames = [view(world, 500, 400) for _ in range(150)]
+    m = run(frames)
+    assert m['camera_drift'] < 0.002 and m['camera_zoom_range'] < 1.01
+
+
+def test_a_pan_longer_than_the_frame_reanchors_and_keeps_counting():
+    world = textured_world(13)
+    frames = [view(world, 50 + 12 * i, 400) for i in range(150)]   # 1788 px, ~2.8 frame widths
+    m = run(frames)
+    assert m['camera_drift'] == pytest.approx(12 * 149 / np.hypot(W, H), rel=0.15)

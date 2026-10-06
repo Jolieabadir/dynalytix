@@ -72,6 +72,7 @@ DEFAULT_IRR_OVERLAP_RATE = 0.25
 # on real clips: see backend REPORT.md. Motion is the p95 per-frame background
 # displacement as a fraction of the frame diagonal; zoom is max/min scale.
 DEFAULT_CAMERA_MOTION_MAX = 0.002
+DEFAULT_CAMERA_DRIFT_MAX = 0.02
 DEFAULT_CAMERA_ZOOM_MAX = 1.05
 
 
@@ -87,8 +88,9 @@ def _float_env(name: str, default: float) -> float:
 
 
 def camera_thresholds() -> tuple:
-    """(CAMERA_MOTION_MAX, CAMERA_ZOOM_MAX), read per call."""
+    """(CAMERA_MOTION_MAX, CAMERA_DRIFT_MAX, CAMERA_ZOOM_MAX), read per call."""
     return (_float_env('CAMERA_MOTION_MAX', DEFAULT_CAMERA_MOTION_MAX),
+            _float_env('CAMERA_DRIFT_MAX', DEFAULT_CAMERA_DRIFT_MAX),
             _float_env('CAMERA_ZOOM_MAX', DEFAULT_CAMERA_ZOOM_MAX))
 
 
@@ -97,9 +99,10 @@ def camera_problems(video: Video) -> List[str]:
     override, so the admin view can still show what was overridden."""
     if video.pose_status != 'done':
         return []  # nothing measured yet; the ready gate reports pose separately
-    if video.camera_motion_score is None or video.camera_zoom_range is None or video.has_cut is None:
+    if (video.camera_motion_score is None or video.camera_zoom_range is None
+            or video.camera_drift is None or video.has_cut is None):
         return ['camera check did not run on this clip']
-    motion_max, zoom_max = camera_thresholds()
+    motion_max, drift_max, zoom_max = camera_thresholds()
     problems = []
     if video.has_cut:
         frames = ', '.join(str(f) for f in (video.cut_frames or [])[:5])
@@ -107,6 +110,10 @@ def camera_problems(video: Video) -> List[str]:
     if video.camera_motion_score > motion_max:
         problems.append(
             f'camera moves too much (score {video.camera_motion_score:.4f} > {motion_max:.4f})'
+        )
+    if video.camera_drift > drift_max:
+        problems.append(
+            f'camera drifts during the clip (drift {video.camera_drift:.4f} > {drift_max:.4f})'
         )
     if video.camera_zoom_range > zoom_max:
         problems.append(f'camera zooms (range {video.camera_zoom_range:.3f} > {zoom_max:.3f})')
@@ -255,6 +262,7 @@ class VideoResponse(BaseModel):
     has_cut: Optional[bool] = None
     cut_frames: List[int] = []
     camera_motion_score: Optional[float] = None
+    camera_drift: Optional[float] = None
     camera_zoom_range: Optional[float] = None
     camera_motion_frames_pct: Optional[float] = None
     camera_override: bool = False
@@ -370,6 +378,7 @@ class PoseResult(BaseModel):
     has_cut: Optional[bool] = None
     cut_frames: Optional[List[int]] = None
     camera_motion_score: Optional[float] = Field(default=None, ge=0)
+    camera_drift: Optional[float] = Field(default=None, ge=0)
     camera_zoom_range: Optional[float] = Field(default=None, ge=1)
     camera_motion_frames_pct: Optional[float] = Field(default=None, ge=0, le=100)
     fps: Optional[float] = Field(default=None, gt=0)
@@ -835,8 +844,7 @@ def video_to_response(video: Video, access_role: str = 'owner') -> VideoResponse
         response.irr_overlap_set_by = None
         response.rater_target = 1
         response.notes = None
-        if hasattr(response, 'camera_override_note'):
-            response.camera_override_note = None
+        response.camera_override_note = None
     return response
 
 
@@ -869,6 +877,7 @@ def _video_response(video: Video, access_role: str) -> VideoResponse:
         has_cut=video.has_cut,
         cut_frames=list(video.cut_frames or []),
         camera_motion_score=video.camera_motion_score,
+        camera_drift=video.camera_drift,
         camera_zoom_range=video.camera_zoom_range,
         camera_motion_frames_pct=video.camera_motion_frames_pct,
         camera_override=bool(video.camera_override),
@@ -980,7 +989,11 @@ def _enqueue_or_fail(video: Video) -> Video:
         return video
 
     db.set_pose_status(video.id, 'pending', user_id=video.user_id)
+    db.reset_camera_check(video.id)
     video.pose_status, video.pose_error = 'pending', None
+    for column in db.CAMERA_CHECK_COLUMNS:
+        setattr(video, column, [] if column == 'cut_frames' else None)
+    video.camera_override, video.camera_override_note = False, None
     video.pose_started_at = video.pose_finished_at = None
     return video
 
@@ -1632,7 +1645,11 @@ async def retry_pose(video_id: int, user_id: str = Depends(get_current_user_id))
     if access.role == 'owner':
         _require_uploader(user_id)  # a non-admin owner needs SELF_UPLOAD_ENABLED
     video = access.video
-    if video.pose_status in ('processing', 'done'):
+    # An admin may re-run a finished job: clips extracted before the camera
+    # check existed have no metrics, and re-running is how they get them.
+    if video.pose_status == 'done' and get_db().is_admin(user_id):
+        pass
+    elif video.pose_status in ('processing', 'done'):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f'pose extraction is {video.pose_status}; nothing to retry',
@@ -1671,6 +1688,7 @@ async def pose_result(video_id: int, payload: PoseResult, request: Request):
         has_cut=payload.has_cut,
         cut_frames=payload.cut_frames,
         camera_motion_score=payload.camera_motion_score,
+        camera_drift=payload.camera_drift,
         camera_zoom_range=payload.camera_zoom_range,
         camera_motion_frames_pct=payload.camera_motion_frames_pct,
     )

@@ -47,7 +47,7 @@ const base = {
   camera_override_note: null,
 };
 
-const steady = { ...base, id: 1, filename: 'steady.mp4', camera_problems: [], camera_motion_score: 0.0002, camera_zoom_range: 1.0, has_cut: false };
+const steady = { ...base, id: 1, filename: 'steady.mp4', camera_problems: [], camera_motion_score: 0.0002, camera_drift: 0.004, camera_zoom_range: 1.0, has_cut: false };
 const panning = { ...base, id: 2, filename: 'pan.mp4', camera_problems: ['camera moves too much (score 0.0190 > 0.0020)'], camera_motion_score: 0.019, camera_zoom_range: 1.0, has_cut: false };
 const pending = { ...base, id: 3, filename: 'pending.mp4', pose_status: 'processing', camera_problems: [] };
 const community = { ...base, id: 4, filename: 'mine.mp4', source_type: 'community', camera_problems: [] };
@@ -66,7 +66,7 @@ describe('AdminView camera column', () => {
     render(<AdminView />);
     const steadyCell = await screen.findByTestId('admin-camera-1');
     expect(within(steadyCell).getByText('steady')).toBeInTheDocument();
-    expect(within(steadyCell).getByText(/motion 0\.0002 · zoom 1\.00/)).toBeInTheDocument();
+    expect(within(steadyCell).getByText(/motion 0\.0002 · drift 0\.004 · zoom 1\.00/)).toBeInTheDocument();
 
     const panCell = screen.getByTestId('admin-camera-2');
     expect(within(panCell).getByText('fails')).toBeInTheDocument();
