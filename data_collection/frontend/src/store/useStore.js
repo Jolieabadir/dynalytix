@@ -94,14 +94,16 @@ const useStore = create((set, get) => ({
   /** Drop everything tied to the open video. See VIDEO_SCOPED_RESET. */
   resetVideoState: () => set({ ...VIDEO_SCOPED_RESET }),
 
-  // ==================== DATASET A: PROFILE / NAV / ASSIGNMENTS ====================
+  // ==================== PROFILE / NAV / ASSIGNMENTS ====================
   // The rater profile from /api/me/profile (null until loaded or created).
-  // `profile.is_admin` gates the Admin view; `profile.tier` is informational.
+  // `profile.is_admin` gates the Admin view (and upload + prep);
+  // `profile.is_validated` (admin-set) gates the rating queue.
   profile: null,
   setProfile: (profile) => set({ profile }),
 
-  // Top-level view: 'videos' (Dataset B, the existing flow) | 'queue' | 'admin'
-  // | 'rating'. Only 'rating' carries video-scoped state.
+  // Top-level view: 'videos' (upload + prep; admins, or anyone when
+  // self_upload_enabled) | 'queue' | 'admin' | 'rating'. Only 'rating'
+  // carries video-scoped state.
   view: 'videos',
   setView: (view) => set({ view }),
 

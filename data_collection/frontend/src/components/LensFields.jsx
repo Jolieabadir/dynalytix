@@ -1,16 +1,15 @@
 /**
  * The three lenses as reusable field groups.
  *
- * Extracted from MoveForm so the rating view (Dataset A) renders the very
- * same Environment and Outcome controls a labeler sees when creating a move,
- * without duplicating them. MoveForm keeps owning its state and validation;
- * these components are presentational and take values plus callbacks.
- *
- * `StrategySummary` is the read-only face of Lens 2 for raters: the canonical
- * move's values, displayed, never edited.
+ * Extracted from MoveForm so the rating view renders the very same
+ * Environment, Strategy and Outcome controls (with the same definitions and
+ * tooltips) a prepper sees when creating a move, without duplicating them.
+ * The forms keep owning their state and validation; these components are
+ * presentational and take values plus callbacks.
  */
 import { HOLD_SLOT_KEYS } from '../store/useStore';
-import { optionLabel, optionDescription, formatLabel } from '../utils/taxonomy';
+import { optionLabel, optionDescription } from '../utils/taxonomy';
+import { FORM_QUALITY_LABELS } from '../utils/strategy';
 import InfoTip from './InfoTip';
 
 export const SLOT_ORDER = HOLD_SLOT_KEYS;
@@ -59,7 +58,7 @@ export function EnvironmentLens({
   disabled = false,
 }) {
   return (
-    <div className="lens-section">
+    <div className="lens-section" data-testid="environment-lens">
       <h3 className="lens-title">🏔️ Environment</h3>
 
       <div className="form-field">
@@ -202,7 +201,7 @@ export function OutcomeLens({
   disabled = false,
 }) {
   return (
-    <div className="lens-section">
+    <div className="lens-section" data-testid="outcome-lens">
       <h3 className="lens-title">📊 Outcome</h3>
 
       <div className="form-field">
@@ -248,38 +247,159 @@ export function OutcomeLens({
 }
 
 /**
- * Lens 2, read-only: the canonical move as the prepper defined it. Raters
- * see this and never change it — Strategy is what makes three ratings of the
- * same move comparable.
+ * Lens 2: approach, size, move tags, form quality — and, only where the
+ * caller passes them, effort, a strategy confidence and a free-text note.
+ *
+ * MoveForm (prep) passes effort + description; the rating view passes a
+ * confidence and no effort: raters label only what is observable, so
+ * effort_level is never shown to them.
  */
-export function StrategySummary({ config, move }) {
-  if (!move) return null;
-  const tags = (move.move_tags ?? []).map((t) => optionLabel(config, 'move_tags', t));
+export function StrategyLens({
+  config,
+  approach,
+  onApproach,
+  size,
+  onSize,
+  moveTags,
+  onToggleTag,
+  formQuality,
+  onFormQuality,
+  effortLevel,
+  onEffortLevel = null,
+  confidence,
+  onConfidence = null,
+  description,
+  onDescription = null,
+  disabled = false,
+}) {
   return (
-    <div className="lens-section strategy-summary" data-testid="strategy-summary">
-      <h3 className="lens-title">
-        🎯 Strategy <span className="readonly-flag">canonical — read only</span>
-      </h3>
-      <dl className="strategy-summary-grid">
-        <dt>Approach</dt>
-        <dd>{optionLabel(config, 'approaches', move.approach) || '—'}</dd>
-        <dt>Size</dt>
-        <dd>{optionLabel(config, 'sizes', move.size) || '—'}</dd>
-        <dt>Move tags</dt>
-        <dd>{tags.length ? tags.join(', ') : 'none'}</dd>
-        <dt>Form quality</dt>
-        <dd>{move.form_quality != null ? `${move.form_quality} / 5` : '—'}</dd>
-        <dt>Effort</dt>
-        <dd>{move.effort_level != null ? `${move.effort_level} / 10` : '—'}</dd>
-        <dt>Prepper confidence</dt>
-        <dd>{optionLabel(config, 'confidence_levels', move.confidence) || formatLabel(move.confidence) || '—'}</dd>
-        {move.description && (
-          <>
-            <dt>Notes</dt>
-            <dd>{move.description}</dd>
-          </>
-        )}
-      </dl>
+    <div className="lens-section" data-testid="strategy-lens">
+      <h3 className="lens-title">🎯 Strategy</h3>
+
+      <div className="form-field">
+        <label className="form-label">Approach</label>
+        <RadioGroup
+          config={config}
+          taxonomyKey="approaches"
+          name="approach"
+          value={approach}
+          onChange={onApproach}
+          disabled={disabled}
+        />
+      </div>
+
+      <div className="form-field">
+        <label className="form-label">
+          Size
+          <InfoTip text="How big the movement is — not the size of the hold." />
+        </label>
+        <RadioGroup
+          config={config}
+          taxonomyKey="sizes"
+          name="size"
+          value={size}
+          onChange={onSize}
+          disabled={disabled}
+        />
+      </div>
+
+      <div className="form-field">
+        <label className="form-label">Move Tags (multi-select)</label>
+        <div className="tags-group">
+          {(config.move_tags ?? []).map((tag) => {
+            const blocked =
+              (tag === 'no_feet_on' && moveTags.includes('no_hands')) ||
+              (tag === 'no_hands' && moveTags.includes('no_feet_on'));
+            const active = moveTags.includes(tag);
+            return (
+              <span key={tag} className="tag-with-info">
+                <button
+                  type="button"
+                  onClick={() => onToggleTag(tag)}
+                  className={`tag-btn ${active ? 'active' : ''} ${blocked ? 'disabled-mutual' : ''}`}
+                  aria-pressed={active}
+                  disabled={disabled || blocked}
+                >
+                  {optionLabel(config, 'move_tags', tag)}
+                </button>
+                <InfoTip text={optionDescription(config, 'move_tags', tag)} />
+              </span>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="form-field">
+        <label className="form-label">Form Quality</label>
+        <div className="quality-buttons" role="group" aria-label="Form quality">
+          {[1, 2, 3, 4, 5].map((q) => (
+            <button
+              key={q}
+              type="button"
+              onClick={() => onFormQuality(q)}
+              className={`quality-btn ${formQuality === q ? 'active' : ''}`}
+              title={FORM_QUALITY_LABELS[q]}
+              aria-pressed={formQuality === q}
+              disabled={disabled}
+            >
+              {q}
+            </button>
+          ))}
+        </div>
+        <div className="quality-description">
+          {formQuality != null ? FORM_QUALITY_LABELS[formQuality] : 'Pick 1–5'}
+        </div>
+      </div>
+
+      {onEffortLevel && (
+        <div className="form-field">
+          <label className="form-label">Effort Level: {effortLevel}/10</label>
+          <input
+            type="range"
+            min="0"
+            max="10"
+            value={effortLevel}
+            onChange={(e) => onEffortLevel(Number(e.target.value))}
+            className="effort-slider"
+            disabled={disabled}
+          />
+          <div className="effort-labels">
+            <span>Easy</span>
+            <span>Max Effort</span>
+          </div>
+        </div>
+      )}
+
+      {onConfidence && (
+        <div className="form-field">
+          <label className="form-label">
+            Strategy confidence (optional)
+            <InfoTip text="How confident you are in the Strategy labels above — not how confident the climber looked." />
+          </label>
+          <RadioGroup
+            config={config}
+            taxonomyKey="confidence_levels"
+            name="strategy_confidence"
+            value={confidence}
+            onChange={onConfidence}
+            disabled={disabled}
+          />
+        </div>
+      )}
+
+      {onDescription && (
+        <div className="form-field">
+          <label className="form-label">Description (optional)</label>
+          <textarea
+            value={description}
+            onChange={(e) => onDescription(e.target.value.slice(0, 500))}
+            placeholder="Add notes about this move…"
+            className="description-textarea"
+            rows="2"
+            disabled={disabled}
+          />
+        </div>
+      )}
     </div>
   );
 }

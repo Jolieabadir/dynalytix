@@ -1,15 +1,23 @@
 /**
- * AdminView — every video across all users, the rater roster, and the exports.
+ * AdminView — every video across all users, the rater roster, the athletes
+ * table, and the exports.
  *
  * Only rendered for a profile with `is_admin`; the API answers 403 to anyone
  * else on every route used here, so the guard in App is a courtesy, not the
  * security boundary.
  *
- * Row actions follow the prep_status state machine from API_DATASET_A.md:
+ * One dataset. Row actions follow the prep_status state machine:
  * draft → Mark ready → ready → Close → closed, and Reopen back to draft.
- * Assigning picks a rater from /api/admin/raters and a cohort; the API
- * refuses a duplicate (409) and a rater with no profile (404), both of which
- * are shown as they come back.
+ * Mark ready can be refused (422) with a `problems` list — missing
+ * provenance, no athlete / birth year, or an athlete who may be under 18 —
+ * which is shown as it comes back.
+ *
+ * Mark ready draws the video into the 3-rater reliability overlap subset at
+ * random (~25%); every other video gets 1 rater. The Overlap checkbox is the
+ * admin override, allowed only while the video has no assignments (409
+ * otherwise, so it is disabled here then). Assigning picks a validated rater;
+ * the API refuses (409) a duplicate, an unvalidated rater, a video that is
+ * not ready, and one already at its `rater_target`.
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -21,15 +29,20 @@ import {
   adminMarkReady,
   adminCloseVideo,
   adminReopenVideo,
+  adminSetOverlap,
   adminUpdateRater,
+  adminListAthletes,
+  adminCreateAthlete,
+  adminUpdateAthlete,
   downloadAdminExport,
 } from '../api/client';
+import { formatLabel } from '../utils/taxonomy';
+import { athleteLabel, shortId } from '../utils/prepMetadata';
 
-const COHORTS = ['validated', 'overlap'];
-const TIERS = ['open', 'validated'];
+const ATHLETE_CATEGORIES = ['men', 'women'];
 
-function shortId(id) {
-  return id ? `${String(id).slice(0, 8)}…` : '—';
+function shortUser(id) {
+  return id ? `${shortId(id)}…` : '—';
 }
 
 function errorText(err, fallback) {
@@ -39,21 +52,34 @@ function errorText(err, fallback) {
 function AdminView({ onOpenVideo }) {
   const [items, setItems] = useState([]);
   const [raters, setRaters] = useState([]);
+  const [athletes, setAthletes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [problems, setProblems] = useState(null);
   const [notice, setNotice] = useState(null);
 
   const raterName = useCallback(
-    (userId) => raters.find((r) => r.user_id === userId)?.display_name || shortId(userId),
+    (userId) => raters.find((r) => r.user_id === userId)?.display_name || shortUser(userId),
     [raters]
   );
 
+  const showError = useCallback((message, list = null) => {
+    setError(message);
+    setProblems(list);
+  }, []);
+
   const reload = useCallback(async () => {
     setError(null);
+    setProblems(null);
     try {
-      const [videos, roster] = await Promise.all([adminListVideos(), adminListRaters()]);
+      const [videos, roster, athleteList] = await Promise.all([
+        adminListVideos(),
+        adminListRaters(),
+        adminListAthletes(),
+      ]);
       setItems(videos);
       setRaters(roster);
+      setAthletes(athleteList);
     } catch (err) {
       setError(errorText(err, 'Could not load the admin data.'));
     } finally {
@@ -70,29 +96,64 @@ function AdminView({ onOpenVideo }) {
 
   const runVideoAction = async (label, fn) => {
     setError(null);
+    setProblems(null);
     setNotice(null);
     try {
       const video = await fn();
       replaceVideo(video);
       setNotice(`${label}: ${video.filename} is now ${video.prep_status}.`);
     } catch (err) {
-      setError(errorText(err, `${label} failed.`));
+      const list = err?.response?.data?.problems;
+      if (Array.isArray(list) && list.length) {
+        showError(`${label} refused:`, list);
+      } else {
+        showError(errorText(err, `${label} failed.`));
+      }
     }
   };
+
+  const handleOverlap = async (video, irrOverlap) => {
+    setError(null);
+    setProblems(null);
+    setNotice(null);
+    try {
+      const updated = await adminSetOverlap(video.id, irrOverlap);
+      replaceVideo(updated);
+      setNotice(
+        `${updated.filename}: overlap ${updated.irr_overlap ? 'on (3 raters)' : 'off (1 rater)'}.`
+      );
+    } catch (err) {
+      showError(
+        err?.response?.status === 409
+          ? 'Overlap can only be changed before any rater is assigned.'
+          : errorText(err, 'Could not change the overlap flag.')
+      );
+    }
+  };
+
+  const athleteById = (id) => athletes.find((a) => a.athlete_id === id) ?? null;
 
   return (
     <div className="admin-view">
       <div className="view-header">
         <h2>Admin</h2>
         <p className="view-subtitle">
-          Every video across all users. Prep a video in My videos, mark it ready here, assign
-          three raters, and export when they are done.
+          Every video across all users. Prep a video in Upload &amp; prep, mark it ready here
+          (a random ~25% are drawn into the 3-rater overlap subset; the rest get 1 rater), assign
+          validated raters, and export when they are done.
         </p>
       </div>
 
       {error && (
         <div className="error-message" role="alert">
           {error}
+          {problems && (
+            <ul className="missing-list" data-testid="ready-problems">
+              {problems.map((p) => (
+                <li key={p}>{p}</li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
       {notice && (
@@ -101,7 +162,7 @@ function AdminView({ onOpenVideo }) {
         </div>
       )}
 
-      <ExportPanel onError={setError} onNotice={setNotice} />
+      <ExportPanel onError={showError} onNotice={setNotice} />
 
       <section className="admin-section">
         <h3>Videos</h3>
@@ -115,9 +176,11 @@ function AdminView({ onOpenVideo }) {
               <tr>
                 <th>Video</th>
                 <th>Owner</th>
-                <th>Dataset</th>
+                <th>Source</th>
+                <th>Athlete</th>
                 <th>Prep status</th>
-                <th>Assignments</th>
+                <th>Overlap</th>
+                <th>Raters</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -128,12 +191,14 @@ function AdminView({ onOpenVideo }) {
                   item={item}
                   raters={raters}
                   raterName={raterName}
+                  athlete={athleteById(item.video.athlete_id)}
                   onOpen={onOpenVideo}
                   onReady={() => runVideoAction('Mark ready', () => adminMarkReady(item.video.id))}
                   onClose={() => runVideoAction('Close', () => adminCloseVideo(item.video.id))}
                   onReopen={() => runVideoAction('Reopen', () => adminReopenVideo(item.video.id))}
+                  onOverlap={(value) => handleOverlap(item.video, value)}
                   onAssignmentsChanged={reload}
-                  onError={setError}
+                  onError={showError}
                 />
               ))}
             </tbody>
@@ -141,18 +206,47 @@ function AdminView({ onOpenVideo }) {
         )}
       </section>
 
-      <RatersPanel raters={raters} onSaved={(p) => setRaters((prev) => prev.map((r) => (r.user_id === p.user_id ? p : r)))} onError={setError} />
+      <RatersPanel
+        raters={raters}
+        onSaved={(p) => setRaters((prev) => prev.map((r) => (r.user_id === p.user_id ? p : r)))}
+        onError={showError}
+      />
+
+      <AthletesPanel
+        athletes={athletes}
+        onCreated={(a) => setAthletes((prev) => [...prev, a])}
+        onSaved={(a) => setAthletes((prev) => prev.map((x) => (x.athlete_id === a.athlete_id ? a : x)))}
+        onError={showError}
+        onNotice={setNotice}
+      />
     </div>
   );
 }
 
-function VideoRow({ item, raters, raterName, onOpen, onReady, onClose, onReopen, onAssignmentsChanged, onError }) {
+function VideoRow({
+  item,
+  raters,
+  raterName,
+  athlete,
+  onOpen,
+  onReady,
+  onClose,
+  onReopen,
+  onOverlap,
+  onAssignmentsChanged,
+  onError,
+}) {
   const { video, assignment_count, done_count } = item;
   const [expanded, setExpanded] = useState(false);
   const [assignments, setAssignments] = useState(null);
   const [raterId, setRaterId] = useState('');
-  const [cohort, setCohort] = useState('validated');
   const [busy, setBusy] = useState(false);
+
+  const target = video.rater_target ?? (video.irr_overlap ? 3 : 1);
+  // The loaded list is fresher than the row count right after an assign.
+  const count = assignments ? assignments.length : assignment_count;
+  const atTarget = count >= target;
+  const overlapLocked = assignment_count > 0 || (assignments?.length ?? 0) > 0;
 
   const loadAssignments = useCallback(async () => {
     try {
@@ -171,20 +265,16 @@ function VideoRow({ item, raters, raterName, onOpen, onReady, onClose, onReopen,
       onError('Pick a rater to assign.');
       return;
     }
-    if (!COHORTS.includes(cohort)) {
-      onError(`Cohort must be one of: ${COHORTS.join(', ')}`);
-      return;
-    }
     setBusy(true);
     try {
-      await adminCreateAssignment({ video_id: video.id, rater_user_id: raterId, cohort });
+      await adminCreateAssignment({ video_id: video.id, rater_user_id: raterId });
       setRaterId('');
       await loadAssignments();
       onAssignmentsChanged();
     } catch (err) {
       onError(
         err.response?.status === 409
-          ? 'That rater is already assigned to this video.'
+          ? err.response?.data?.detail || 'That rater cannot be assigned to this video.'
           : errorText(err, 'Could not assign the rater.')
       );
     } finally {
@@ -209,7 +299,15 @@ function VideoRow({ item, raters, raterName, onOpen, onReady, onClose, onReopen,
   };
 
   const assignedIds = new Set((assignments ?? []).map((a) => a.rater_user_id));
-  const assignable = raters.filter((r) => !assignedIds.has(r.user_id));
+  // The API only assigns validated raters; offering anyone else would just 409.
+  const assignable = raters.filter((r) => r.is_validated === true && !assignedIds.has(r.user_id));
+
+  const assignBlockedReason =
+    video.prep_status !== 'ready'
+      ? `Mark the video ready before assigning (it is ${video.prep_status}).`
+      : atTarget
+        ? `Rater target reached (${count} / ${target}).`
+        : null;
 
   return (
     <>
@@ -219,12 +317,36 @@ function VideoRow({ item, raters, raterName, onOpen, onReady, onClose, onReopen,
           <div className="cell-sub">#{video.id}{video.route_grade ? ` · ${video.route_grade}` : ''}</div>
         </td>
         <td title={video.owner_user_id}>{raterName(video.owner_user_id)}</td>
-        <td>{video.dataset}</td>
+        <td data-testid={`admin-source-${video.id}`}>
+          {formatLabel(video.source_type) || '—'}
+          {video.event_name && <div className="cell-sub">{video.event_name}</div>}
+        </td>
+        <td title={athlete ? athleteLabel(athlete) : video.athlete_id || undefined}>
+          {video.athlete_id ? shortId(video.athlete_id) : '—'}
+        </td>
         <td>
           <span className={`status-pill prep-${video.prep_status}`}>{video.prep_status}</span>
         </td>
-        <td>
-          {assignment_count}
+        <td data-testid={`admin-overlap-${video.id}`}>
+          <label
+            className="checkbox-label"
+            title={overlapLocked ? 'Locked: raters are already assigned' : 'Override the random draw'}
+          >
+            <input
+              type="checkbox"
+              checked={Boolean(video.irr_overlap)}
+              onChange={(e) => onOverlap(e.target.checked)}
+              disabled={overlapLocked}
+              aria-label={`Overlap for ${video.filename}`}
+            />
+            <span>{video.irr_overlap ? 'yes' : 'no'}</span>
+          </label>
+          <div className="cell-sub">
+            {video.irr_overlap_set_by ? formatLabel(video.irr_overlap_set_by) : 'not drawn yet'}
+          </div>
+        </td>
+        <td data-testid={`admin-raters-${video.id}`}>
+          {assignment_count} / {target}
           {assignment_count > 0 && <span className="cell-sub"> ({done_count} done)</span>}
         </td>
         <td className="cell-actions">
@@ -254,13 +376,13 @@ function VideoRow({ item, raters, raterName, onOpen, onReady, onClose, onReopen,
             aria-expanded={expanded}
             onClick={() => setExpanded((v) => !v)}
           >
-            {expanded ? 'Hide raters' : 'Assign rater'}
+            {expanded ? 'Hide raters' : 'Raters'}
           </button>
         </td>
       </tr>
       {expanded && (
         <tr className="admin-assignments-row" data-testid={`admin-assignments-${video.id}`}>
-          <td colSpan={6}>
+          <td colSpan={8}>
             <div className="admin-assignments">
               <div className="assign-form">
                 <label>
@@ -268,46 +390,43 @@ function VideoRow({ item, raters, raterName, onOpen, onReady, onClose, onReopen,
                   <select
                     value={raterId}
                     onChange={(e) => setRaterId(e.target.value)}
-                    disabled={busy}
+                    disabled={busy || Boolean(assignBlockedReason)}
                     aria-label="Rater"
                   >
-                    <option value="">Choose a rater…</option>
+                    <option value="">Choose a validated rater…</option>
                     {assignable.map((r) => (
                       <option key={r.user_id} value={r.user_id}>
-                        {r.display_name} ({r.tier})
+                        {r.display_name}
                       </option>
                     ))}
                   </select>
                 </label>
-                <label>
-                  Cohort
-                  <select
-                    value={cohort}
-                    onChange={(e) => setCohort(e.target.value)}
-                    disabled={busy}
-                    aria-label="Cohort"
-                  >
-                    {COHORTS.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button type="button" className="btn-primary" onClick={handleAssign} disabled={busy || !raterId}>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={handleAssign}
+                  disabled={busy || !raterId || Boolean(assignBlockedReason)}
+                >
                   Assign
                 </button>
+                {assignBlockedReason && (
+                  <span className="cell-sub" data-testid={`assign-blocked-${video.id}`}>
+                    {assignBlockedReason}
+                  </span>
+                )}
               </div>
 
               {assignments === null ? (
                 <p>Loading assignments…</p>
               ) : assignments.length === 0 ? (
-                <p className="queue-empty">No raters assigned yet (aim for 3).</p>
+                <p className="queue-empty">
+                  No raters assigned yet (target {target}{video.irr_overlap ? ', overlap subset' : ''}).
+                </p>
               ) : (
                 <ul className="assignment-list">
                   {assignments.map((a) => (
                     <li key={a.id}>
-                      <strong>{raterName(a.rater_user_id)}</strong> · {a.cohort} ·{' '}
+                      <strong>{raterName(a.rater_user_id)}</strong> ·{' '}
                       <span className={`status-pill status-${a.status}`}>{a.status}</span>
                       <button
                         type="button"
@@ -332,14 +451,17 @@ function VideoRow({ item, raters, raterName, onOpen, onReady, onClose, onReopen,
 }
 
 function ExportPanel({ onError, onNotice }) {
-  const [dataset, setDataset] = useState('A');
+  const [includeCommunity, setIncludeCommunity] = useState(false);
+  const [overlapOnly, setOverlapOnly] = useState(false);
   const [busy, setBusy] = useState(null);
 
   const run = async (kind) => {
     setBusy(kind);
     onError(null);
     try {
-      const filename = await downloadAdminExport(kind, { dataset });
+      const params = { include_community: includeCommunity };
+      if (kind === 'long') params.overlap_only = overlapOnly;
+      const filename = await downloadAdminExport(kind, params);
       onNotice(`Downloaded ${filename}.`);
     } catch (err) {
       onError(errorText(err, 'Export failed.'));
@@ -352,24 +474,33 @@ function ExportPanel({ onError, onNotice }) {
     <section className="admin-section admin-exports">
       <h3>Exports</h3>
       <div className="export-controls">
-        <label>
-          Dataset
-          <select value={dataset} onChange={(e) => setDataset(e.target.value)} aria-label="Export dataset">
-            <option value="A">A</option>
-            <option value="B">B</option>
-            <option value="all">all</option>
-          </select>
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={includeCommunity}
+            onChange={(e) => setIncludeCommunity(e.target.checked)}
+          />
+          <span>Include community videos</span>
+        </label>
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={overlapOnly}
+            onChange={(e) => setOverlapOnly(e.target.checked)}
+          />
+          <span>Overlap subset only (long)</span>
         </label>
         <button type="button" className="btn-primary" onClick={() => run('long')} disabled={Boolean(busy)}>
-          {busy === 'long' ? 'Exporting…' : 'Export long CSV'}
+          {busy === 'long' ? 'Exporting…' : 'Long (IRR input)'}
         </button>
         <button type="button" className="btn-secondary" onClick={() => run('full')} disabled={Boolean(busy)}>
-          {busy === 'full' ? 'Exporting…' : 'Export full CSV'}
+          {busy === 'full' ? 'Exporting…' : 'Full'}
         </button>
       </div>
       <p className="cell-sub">
-        Long = one row per (video, move, rater, lens, field) — the Krippendorff input. Full = one
-        row per pose frame per rater, large.
+        Long = one row per (video, move, rater, lens, field) — the Krippendorff input; with
+        &quot;Overlap subset only&quot; it keeps just the 3-rater videos. Full = one row per pose
+        frame per rater, large. Community (self-upload) videos are left out unless included.
       </p>
     </section>
   );
@@ -388,7 +519,7 @@ function RatersPanel({ raters, onSaved, onError }) {
               <th>Name</th>
               <th>User</th>
               <th>Experience</th>
-              <th>Tier</th>
+              <th>Validated</th>
               <th>Validation note</th>
               <th />
             </tr>
@@ -405,16 +536,16 @@ function RatersPanel({ raters, onSaved, onError }) {
 }
 
 function RaterRow({ rater, onSaved, onError }) {
-  const [tier, setTier] = useState(rater.tier);
+  const [validated, setValidated] = useState(rater.is_validated === true);
   const [note, setNote] = useState(rater.validation_note || '');
   const [busy, setBusy] = useState(false);
 
-  const dirty = tier !== rater.tier || note !== (rater.validation_note || '');
+  const dirty = validated !== (rater.is_validated === true) || note !== (rater.validation_note || '');
 
   const handleSave = async () => {
     setBusy(true);
     try {
-      const saved = await adminUpdateRater(rater.user_id, { tier, validation_note: note });
+      const saved = await adminUpdateRater(rater.user_id, { is_validated: validated, validation_note: note });
       onSaved(saved);
     } catch (err) {
       onError(errorText(err, 'Could not update the rater.'));
@@ -429,7 +560,7 @@ function RaterRow({ rater, onSaved, onError }) {
         {rater.display_name}
         {rater.is_admin && <span className="cell-sub"> · admin</span>}
       </td>
-      <td title={rater.user_id}>{shortId(rater.user_id)}</td>
+      <td title={rater.user_id}>{shortUser(rater.user_id)}</td>
       <td>
         {rater.years_climbing != null ? `${rater.years_climbing} yrs` : '—'}
         {rater.highest_grade ? ` · ${rater.highest_grade}` : ''}
@@ -441,13 +572,16 @@ function RaterRow({ rater, onSaved, onError }) {
         )}
       </td>
       <td>
-        <select value={tier} onChange={(e) => setTier(e.target.value)} aria-label={`Tier for ${rater.display_name}`} disabled={busy}>
-          {TIERS.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </select>
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={validated}
+            onChange={(e) => setValidated(e.target.checked)}
+            aria-label={`Validated: ${rater.display_name}`}
+            disabled={busy}
+          />
+          <span>{validated ? 'yes' : 'no'}</span>
+        </label>
       </td>
       <td>
         <input
@@ -462,6 +596,262 @@ function RaterRow({ rater, onSaved, onError }) {
       <td>
         <button type="button" className="btn-primary" onClick={handleSave} disabled={busy || !dirty}>
           {busy ? 'Saving…' : 'Save'}
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+/** Form strings → the athlete payload. Empty numbers are omitted (no clear). */
+function athletePayload(form, { clearText }) {
+  const payload = {};
+  const url = form.ifsc_profile_url.trim();
+  if (url || clearText) payload.ifsc_profile_url = url;
+  for (const key of ['height_cm', 'birth_year']) {
+    if (form[key] === '') continue;
+    const n = Number(form[key]);
+    if (!Number.isInteger(n)) throw new Error(`${key === 'height_cm' ? 'Height' : 'Birth year'} must be a whole number.`);
+    payload[key] = n;
+  }
+  if (form.category || clearText) payload.category = form.category;
+  return payload;
+}
+
+const EMPTY_ATHLETE_FORM = { ifsc_profile_url: '', height_cm: '', birth_year: '', category: '' };
+
+function athleteToForm(a) {
+  return {
+    ifsc_profile_url: a.ifsc_profile_url ?? '',
+    height_cm: a.height_cm != null ? String(a.height_cm) : '',
+    birth_year: a.birth_year != null ? String(a.birth_year) : '',
+    category: a.category ?? '',
+  };
+}
+
+function AthleteFields({ form, onChange, disabled, idPrefix }) {
+  const set = (key) => (e) => onChange({ ...form, [key]: e.target.value });
+  return (
+    <>
+      <label>
+        IFSC profile URL
+        <input
+          className="note-input"
+          type="url"
+          value={form.ifsc_profile_url}
+          onChange={set('ifsc_profile_url')}
+          placeholder="https://ifsc.results.info/athlete/…"
+          aria-label={`${idPrefix} IFSC profile URL`}
+          disabled={disabled}
+        />
+      </label>
+      <label>
+        Height (cm)
+        <input
+          className="note-input"
+          type="number"
+          min="100"
+          max="250"
+          value={form.height_cm}
+          onChange={set('height_cm')}
+          aria-label={`${idPrefix} height (cm)`}
+          disabled={disabled}
+        />
+      </label>
+      <label>
+        Birth year
+        <input
+          className="note-input"
+          type="number"
+          min="1900"
+          max="2100"
+          value={form.birth_year}
+          onChange={set('birth_year')}
+          aria-label={`${idPrefix} birth year`}
+          disabled={disabled}
+        />
+      </label>
+      <label>
+        Category
+        <select
+          value={form.category}
+          onChange={set('category')}
+          aria-label={`${idPrefix} category`}
+          disabled={disabled}
+        >
+          <option value="">—</option>
+          {ATHLETE_CATEGORIES.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+      </label>
+    </>
+  );
+}
+
+function AthletesPanel({ athletes, onCreated, onSaved, onError, onNotice }) {
+  const [form, setForm] = useState(EMPTY_ATHLETE_FORM);
+  const [busy, setBusy] = useState(false);
+
+  const handleCreate = async () => {
+    let payload;
+    try {
+      payload = athletePayload(form, { clearText: false });
+    } catch (err) {
+      onError(err.message);
+      return;
+    }
+    if (!payload.ifsc_profile_url) {
+      onError('Add the athlete’s IFSC profile URL — it is how athletes are told apart (there is no name field).');
+      return;
+    }
+    setBusy(true);
+    onError(null);
+    try {
+      const created = await adminCreateAthlete(payload);
+      onCreated(created);
+      setForm(EMPTY_ATHLETE_FORM);
+      onNotice(`Athlete ${shortId(created.athlete_id)} added.`);
+    } catch (err) {
+      onError(
+        err?.response?.status === 409
+          ? 'An athlete with that IFSC profile URL already exists.'
+          : errorText(err, 'Could not add the athlete.')
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="admin-section admin-athletes" data-testid="admin-athletes">
+      <h3>Athletes</h3>
+      <p className="cell-sub">
+        Pseudonymous: no names. The IFSC profile URL is admin-only and never exported; height
+        and birth year are (birth year drives the 18+ check at Mark ready).
+      </p>
+
+      <div className="assign-form athlete-create-form" data-testid="athlete-create-form">
+        <AthleteFields form={form} onChange={setForm} disabled={busy} idPrefix="New athlete" />
+        <button type="button" className="btn-primary" onClick={handleCreate} disabled={busy}>
+          {busy ? 'Adding…' : 'Add athlete'}
+        </button>
+      </div>
+
+      {athletes.length === 0 ? (
+        <p className="queue-empty">No athletes yet.</p>
+      ) : (
+        <table className="data-table admin-athletes-table">
+          <thead>
+            <tr>
+              <th>Id</th>
+              <th>IFSC profile</th>
+              <th>Height</th>
+              <th>Birth year</th>
+              <th>Category</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {athletes.map((a) => (
+              <AthleteRow key={a.athlete_id} athlete={a} onSaved={onSaved} onError={onError} />
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
+
+function AthleteRow({ athlete, onSaved, onError }) {
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState(() => athleteToForm(athlete));
+  const [busy, setBusy] = useState(false);
+  const label = shortId(athlete.athlete_id);
+
+  const handleSave = async () => {
+    let payload;
+    try {
+      payload = athletePayload(form, { clearText: true });
+    } catch (err) {
+      onError(err.message);
+      return;
+    }
+    setBusy(true);
+    try {
+      const saved = await adminUpdateAthlete(athlete.athlete_id, payload);
+      onSaved(saved);
+      setEditing(false);
+    } catch (err) {
+      onError(
+        err?.response?.status === 409
+          ? 'An athlete with that IFSC profile URL already exists.'
+          : errorText(err, 'Could not update the athlete.')
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <tr data-testid={`admin-athlete-${athlete.athlete_id}`}>
+        <td title={athlete.athlete_id}>{label}</td>
+        <td colSpan={4}>
+          <div className="assign-form">
+            <AthleteFields form={form} onChange={setForm} disabled={busy} idPrefix={`Athlete ${label}`} />
+          </div>
+        </td>
+        <td className="cell-actions">
+          <button type="button" className="btn-primary" onClick={handleSave} disabled={busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => {
+              setForm(athleteToForm(athlete));
+              setEditing(false);
+            }}
+            disabled={busy}
+          >
+            Cancel
+          </button>
+        </td>
+      </tr>
+    );
+  }
+
+  return (
+    <tr data-testid={`admin-athlete-${athlete.athlete_id}`}>
+      <td title={athlete.athlete_id}>{label}</td>
+      <td>
+        {athlete.ifsc_profile_url ? (
+          <a href={athlete.ifsc_profile_url} target="_blank" rel="noreferrer noopener">
+            {athlete.ifsc_profile_url.replace(/^https?:\/\//, '')}
+          </a>
+        ) : (
+          '—'
+        )}
+      </td>
+      <td>
+        {athlete.height_cm != null ? `${athlete.height_cm} cm` : '—'}
+        <div className="cell-sub">{formatLabel(athlete.height_source)}</div>
+      </td>
+      <td>{athlete.birth_year ?? '—'}</td>
+      <td>{athlete.category ?? '—'}</td>
+      <td>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => {
+            setForm(athleteToForm(athlete));
+            setEditing(true);
+          }}
+          aria-label={`Edit athlete ${label}`}
+        >
+          Edit
         </button>
       </td>
     </tr>

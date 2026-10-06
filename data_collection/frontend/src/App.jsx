@@ -8,10 +8,16 @@
  *
  *   no session  → AuthGate
  *   session     → load config → load profile (404 → ProfileGate)
- *               → load assignments → land on My queue if any, else My videos
+ *               → not validated (and not admin) → "waiting for validation"
+ *               → load assignments → land on My queue
  *
- * Dataset A adds the profile gate, the nav, "My queue" + the rating view, and
- * the Admin view. "My videos" is the Dataset B flow and is unchanged.
+ * One dataset: every video is admin-prepped and rated by validated raters.
+ * Upload + prep (holds, moves, metadata, Mark ready) live behind the
+ * "Upload & prep" tab, which only admins see — unless the server's
+ * `self_upload_enabled` flag (config, read at runtime) is on, in which case
+ * non-admins also get the dormant community self-upload flow as "My videos".
+ * The self-upload UI code is kept; it is simply not rendered while the flag
+ * is off.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import useStore from './store/useStore';
@@ -37,6 +43,7 @@ import MovesList from './components/MovesList';
 import MoveForm from './components/MoveForm';
 import TaggingMode from './components/TaggingMode';
 import ThankYouModal from './components/ThankYouModal';
+import WaitingForValidation from './components/WaitingForValidation';
 import ProgressStrip from './components/ProgressStrip';
 import PoseStatusChip from './components/PoseStatusChip';
 import OnboardingBanner, { BANNER_DEFINE, BANNER_CAPTURE } from './components/OnboardingBanner';
@@ -163,8 +170,23 @@ function App() {
     };
   }, [session, setProfile]);
 
+  const isAdmin = Boolean(profile?.is_admin);
+  // Fail closed: anything but an explicit true is "not validated yet".
+  const awaitingValidation = Boolean(profile) && !isAdmin && profile.is_validated !== true;
+  // Upload + prep: always for admins; for everyone else only with the flag.
+  const canUseVideos = isAdmin || config?.self_upload_enabled === true;
+
+  // Without the videos flow there is nothing at 'videos' for this user (a
+  // stale view, or a resumed session): send them to My queue.
+  useEffect(() => {
+    if (!config || !profile) return;
+    if (!canUseVideos && view === 'videos') setView('queue');
+  }, [config, profile, canUseVideos, view, setView]);
+
   // Landing: once the profile exists, load the queue; a rater with at least
-  // one assignment lands on it, everyone else on My videos (Dataset B).
+  // one assignment lands on it. Without the videos flow everyone else lands
+  // there too (the effect above); admins and, with self-upload on, community
+  // uploaders with an empty queue stay on the videos view.
   useEffect(() => {
     if (profileState !== 'ready' || landed || resumeStarted.current) return;
     // A page that was evicted mid-session resumes instead of landing.
@@ -385,12 +407,18 @@ function App() {
     );
   }
 
+  // The view actually rendered: 'videos' collapses to 'queue' for a user
+  // without the videos flow, before the redirect effect has run.
+  const shownView = view === 'videos' && !canUseVideos ? 'queue' : view;
+
   let body;
-  if (view === 'rating') {
+  if ((shownView === 'rating' || shownView === 'queue') && awaitingValidation) {
+    body = <WaitingForValidation profile={profile} />;
+  } else if (shownView === 'rating') {
     body = <RatingView onExit={handleExitRating} />;
-  } else if (view === 'queue') {
+  } else if (shownView === 'queue') {
     body = <MyQueue onOpen={handleOpenAssignment} />;
-  } else if (view === 'admin' && profile?.is_admin) {
+  } else if (shownView === 'admin' && isAdmin) {
     body = <AdminView onOpenVideo={handleOpenVideoForPrep} />;
   } else {
     body = mode === 'define' ? <DefineMode /> : <TaggingMode />;
@@ -405,10 +433,14 @@ function App() {
         </div>
         <AppNav />
         <div className="app-header-account">
-          <PoseStatusChip />
+          {/* Prep/upload only: raters need no pose data, so the chip (and
+              the pose-CSV fetch it drives) never mounts in the rating view. */}
+          {shownView !== 'rating' && <PoseStatusChip />}
           <span className="account-email" title={session.user?.email}>
             {profile?.display_name || session.user?.email}
-            {profile?.tier === 'validated' && <span className="tier-badge">validated</span>}
+            {profile?.is_validated === true && (
+              <span className="tier-badge" data-testid="validated-badge">validated</span>
+            )}
           </span>
           <button type="button" className="signout-btn" onClick={handleSignOut}>
             Sign out
@@ -425,8 +457,8 @@ function App() {
 
 /**
  * Define Mode — video on the left, moves list and the labeling panel on the
- * right. The form is a panel rather than a modal so the video and skeleton stay
- * visible and scrubbable while labeling.
+ * right. The form is a panel rather than a modal so the video stays visible
+ * and scrubbable while labeling.
  */
 function DefineMode() {
   const currentVideo = useStore((s) => s.currentVideo);

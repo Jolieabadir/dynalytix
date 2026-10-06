@@ -95,9 +95,11 @@ function TaggingMode() {
     poseStatus,
   } = useStore();
 
-  // Rating view (Dataset A): no export, "back" goes to the canonical list, and
+  // Read-only structure: no export, "back" goes to the canonical list, and
   // once the assignment is done (or the video closed) tags are view-only —
   // the API returns 403 for writes at that point, so the buttons say so first.
+  // (The observer-only rating view no longer opens TaggingMode at all; this
+  // path stays for a locked video in the owner/community flow.)
   const rating = Boolean(readOnlyStructure);
   const labelsLocked =
     rating &&

@@ -12,7 +12,9 @@
  *      timestamp_ms is authoritative, so frame = round(ms / 1000 * fps)), the
  *      current [ ] selection, and the play head;
  *   3. fetches the pose CSV from its presigned URL and parses it into the
- *      store, which is what turns the skeleton overlay and hold suggestions on.
+ *      store, which is what turns hold suggestions on (prep move form and
+ *      tagging view). The chip that mounts this hook is not rendered in the
+ *      rating view, so raters never fetch the pose CSV.
  *
  * Everything is keyed by video id, so switching videos restarts cleanly, and
  * a stale response for a previous video is dropped.

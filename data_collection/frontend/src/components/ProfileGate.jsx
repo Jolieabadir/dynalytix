@@ -3,8 +3,9 @@
  * sign-in and required before anything else renders.
  *
  * `GET /api/me/profile` answered 404, so `POST /api/me/profile` is the way
- * through. Tier starts `open`; an admin promotes a rater to `validated` from
- * the Admin view, which is why there is no tier control here.
+ * through. A new profile starts with `is_validated` false; an admin validates
+ * a rater from the Admin view, which is why there is no such control here.
+ * Until then App shows "Waiting for validation" instead of the queue.
  */
 import { useState } from 'react';
 import { createMyProfile } from '../api/client';

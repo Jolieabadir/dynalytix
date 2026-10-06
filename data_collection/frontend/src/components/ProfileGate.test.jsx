@@ -17,7 +17,7 @@ beforeEach(() => {
   vi.mocked(createMyProfile).mockResolvedValue({
     user_id: 'u1',
     display_name: 'Jo',
-    tier: 'open',
+    is_validated: false,
     is_admin: false,
   });
 });

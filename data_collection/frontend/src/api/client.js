@@ -459,6 +459,36 @@ export const updateOutcome = async (outcomeId, outcomeData) => {
   return response.data;
 };
 
+// ==================== STRATEGIES (Lens 2, per rater) ====================
+//
+// A rater labels Strategy on each canonical move independently, one row per
+// move per rater, like Environment and Outcome. The canonical move row only
+// fixes the boundaries. Raters give no effort_level.
+
+/** @param {{move_id: number, approach: string, size: string, move_tags: string[], form_quality: number, confidence?: string|null}} strategyData */
+export const createStrategy = async (strategyData) => {
+  const response = await api.post('/api/strategies', strategyData);
+  return response.data;
+};
+
+/** The caller's Strategy row for a move, or null on 404 (none yet). */
+export const getStrategyForMove = async (moveId) => {
+  try {
+    const response = await api.get(`/api/moves/${moveId}/strategy`);
+    return response.data;
+  } catch (err) {
+    if (err.response?.status === 404) {
+      return null; // No strategy yet
+    }
+    throw err;
+  }
+};
+
+export const updateStrategy = async (strategyId, strategyData) => {
+  const response = await api.put(`/api/strategies/${strategyId}`, strategyData);
+  return response.data;
+};
+
 // ==================== FRAME TAGS (Sensation) ====================
 
 export const createFrameTag = async (tagData) => {
@@ -481,7 +511,7 @@ export const deleteFrameTag = async (tagId) => {
  * Presigned URL for the original video, for a video that was not uploaded in
  * this session — a rater's assignment, or an owner's reload. Resolves to null
  * (rather than throwing) when no original was ever uploaded, because the pose
- * CSV can exist without it and the labeling UI still works on the skeleton.
+ * CSV can exist without it and the moves list and forms still work.
  */
 export const getVideoPlaybackUrl = async (videoId) => {
   try {
@@ -493,7 +523,7 @@ export const getVideoPlaybackUrl = async (videoId) => {
   }
 };
 
-// ==================== RATER PROFILE (Dataset A) ====================
+// ==================== RATER PROFILE ====================
 
 /** The caller's rater profile, or null on 404 — which is what opens the gate. */
 export const getMyProfile = async () => {
@@ -516,9 +546,12 @@ export const updateMyProfile = async (fields) => {
   return response.data;
 };
 
-// ==================== RATER QUEUE (Dataset A) ====================
+// ==================== RATER QUEUE ====================
 
-/** `[{ assignment, video, move_count }]`, oldest first. */
+/**
+ * `[{ assignment, video, move_count }]`, oldest first. Always `[]` until an
+ * admin has validated the caller's profile (`is_validated`), or for an admin.
+ */
 export const getMyAssignments = async () => {
   const response = await api.get('/api/me/assignments');
   return response.data;
@@ -558,7 +591,7 @@ export const deleteOutcome = async (outcomeId) => {
   await api.delete(`/api/outcomes/${outcomeId}`);
 };
 
-// ==================== ADMIN (Dataset A) ====================
+// ==================== ADMIN ====================
 
 /** `[{ video, assignment_count, done_count }]`, newest first. Admin only. */
 export const adminListVideos = async () => {
@@ -581,6 +614,15 @@ export const adminCloseVideo = async (videoId) => {
   return response.data;
 };
 
+/**
+ * Override the random overlap draw (3 raters instead of 1, or back). The API
+ * answers 409 once any rater is assigned; the UI disables the toggle then.
+ */
+export const adminSetOverlap = async (videoId, irr_overlap) => {
+  const response = await api.put(`/api/admin/videos/${videoId}/overlap`, { irr_overlap: Boolean(irr_overlap) });
+  return response.data;
+};
+
 export const adminReopenVideo = async (videoId) => {
   const response = await api.post(`/api/admin/videos/${videoId}/reopen`);
   return response.data;
@@ -593,8 +635,13 @@ export const adminListAssignments = async (videoId) => {
   return response.data;
 };
 
-export const adminCreateAssignment = async ({ video_id, rater_user_id, cohort }) => {
-  const response = await api.post('/api/admin/assignments', { video_id, rater_user_id, cohort });
+/**
+ * Assign one validated rater to one ready video. 409 when the video already
+ * has its rater_target (1, or 3 for the overlap subset) or the rater is
+ * already on it.
+ */
+export const adminCreateAssignment = async ({ video_id, rater_user_id }) => {
+  const response = await api.post('/api/admin/assignments', { video_id, rater_user_id });
   return response.data;
 };
 
@@ -612,6 +659,25 @@ export const adminUpdateRater = async (userId, fields) => {
   return response.data;
 };
 
+// --- Athletes (pseudonymous; no name field, identified by IFSC profile URL) ---
+
+/** `[{ athlete_id, ifsc_profile_url, height_cm, height_source, birth_year, category, created_at }]` */
+export const adminListAthletes = async () => {
+  const response = await api.get('/api/admin/athletes');
+  return response.data;
+};
+
+/** @param {{ifsc_profile_url?: string, height_cm?: number, birth_year?: number, category?: 'men'|'women', height_source?: string}} fields */
+export const adminCreateAthlete = async (fields) => {
+  const response = await api.post('/api/admin/athletes', fields);
+  return response.data;
+};
+
+export const adminUpdateAthlete = async (athleteId, fields) => {
+  const response = await api.put(`/api/admin/athletes/${athleteId}`, fields);
+  return response.data;
+};
+
 /**
  * Download an admin export as a file.
  *
@@ -623,13 +689,18 @@ export const adminUpdateRater = async (userId, fields) => {
  * `saveBlob` is injectable so a test can capture the blob instead of touching
  * the DOM's download machinery.
  *
+ * Community (self-upload) videos are excluded server-side unless
+ * `include_community` is set; `overlap_only` (long export only) keeps just
+ * the 3-rater reliability subset.
+ *
  * @param {'long'|'full'} kind
- * @param {{dataset?: 'A'|'B'|'all', video_id?: number}} [params]
+ * @param {{include_community?: boolean, overlap_only?: boolean, video_id?: number}} [params]
  */
 export const downloadAdminExport = async (kind, params = {}, saveBlob = saveBlobAsFile) => {
   const headers = await authHeader();
   const query = new URLSearchParams();
-  if (params.dataset) query.set('dataset', params.dataset);
+  if (params.include_community) query.set('include_community', 'true');
+  if (params.overlap_only && kind === 'long') query.set('overlap_only', 'true');
   if (params.video_id != null) query.set('video_id', String(params.video_id));
   const suffix = query.toString() ? `?${query}` : '';
 

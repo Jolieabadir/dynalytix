@@ -1,10 +1,16 @@
 /**
- * RatingView — one assignment, rated by one rater (Dataset A).
+ * RatingView — one assignment, rated by one rater.
  *
  * The existing labeling layout with the structure frozen: the player scrubs
  * and shows the canonical holds; the side column lists the canonical moves;
- * picking one opens RaterMoveForm (Strategy read-only, Environment + Outcome
- * the rater's own); "Tag Frames" is the same TaggingMode, minus export.
+ * picking one opens RaterMoveForm, where Strategy, Environment and Outcome
+ * are all the rater's own.
+ *
+ * Observer-only: raters label what is visible, so there is no frame tagging
+ * (sensation) here and no effort field. The prepper's own Strategy values on
+ * the canonical moves are not shown either, so every rater's Strategy is
+ * independent. No pose data is loaded for this view: nothing in it uses it
+ * (no skeleton, no hold auto-suggest), and the pose chip is not mounted.
  *
  * "Complete" posts to /complete. A 422 comes back with the moves that still
  * lack a lens and is rendered inline; a 200 marks the assignment done and the
@@ -20,6 +26,7 @@ import {
   getHolds,
   getMoves,
   getVideoPlaybackUrl,
+  getStrategyForMove,
   getEnvironmentForMove,
   getOutcomeForMove,
   startAssignment,
@@ -28,13 +35,25 @@ import {
 import VideoPlayer from './VideoPlayer';
 import MovesList from './MovesList';
 import RaterMoveForm from './RaterMoveForm';
-import TaggingMode from './TaggingMode';
 
 const STATUS_LABEL = {
   assigned: 'Not started',
   in_progress: 'In progress',
   done: 'Done',
 };
+
+const LENS_LABEL = {
+  strategy: 'Strategy',
+  environment: 'Environment',
+  outcome: 'Outcome',
+};
+
+/** ['strategy', 'environment', 'outcome'] → "Strategy, Environment and Outcome". */
+function joinLenses(lenses) {
+  const labels = lenses.map((l) => LENS_LABEL[l] || l);
+  if (labels.length <= 1) return labels.join('');
+  return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+}
 
 function RatingView({ onExit }) {
   const {
@@ -49,7 +68,6 @@ function RatingView({ onExit }) {
     setHolds,
     setVideoPlaybackUrl,
     setReadOnlyStructure,
-    mode,
     setMode,
     setCurrentMove,
     setHoldPickSlot,
@@ -70,15 +88,19 @@ function RatingView({ onExit }) {
   const locked =
     currentAssignment?.status === 'done' || currentVideo?.prep_status === 'closed';
 
-  /** This rater's environment/outcome presence per move. */
+  /** This rater's strategy/environment/outcome presence per move. */
   const refreshLabelStatus = useCallback(async (moveList) => {
     const entries = await Promise.all(
       moveList.map(async (m) => {
-        const [env, outcome] = await Promise.all([
+        const [strategy, env, outcome] = await Promise.all([
+          getStrategyForMove(m.id),
           getEnvironmentForMove(m.id),
           getOutcomeForMove(m.id),
         ]);
-        return [m.id, { environment: Boolean(env), outcome: Boolean(outcome) }];
+        return [
+          m.id,
+          { strategy: Boolean(strategy), environment: Boolean(env), outcome: Boolean(outcome) },
+        ];
       })
     );
     setLabelStatus(Object.fromEntries(entries));
@@ -111,10 +133,6 @@ function RatingView({ onExit }) {
         setHolds(holds);
         setMoves(moveList);
         setVideoPlaybackUrl(playbackUrl);
-
-        // Pose rows (skeleton + hold suggestions) arrive through
-        // usePoseStatus: the header chip polls /status for this video and
-        // loads the CSV once the worker has finished.
 
         await refreshLabelStatus(moveList);
 
@@ -225,14 +243,11 @@ function RatingView({ onExit }) {
     );
   }
 
-  if (mode === 'tagging') {
-    return <TaggingMode />;
-  }
-
   const selectedMove = moves.find((m) => m.id === selectedMoveId) ?? null;
   const selectedIndex = selectedMove ? moves.indexOf(selectedMove) : null;
-  const ratedCount = moves.filter((m) => labelStatus[m.id]?.environment && labelStatus[m.id]?.outcome).length;
-  const lensLabel = (lens) => (lens === 'environment' ? 'Environment' : lens === 'outcome' ? 'Outcome' : lens);
+  const ratedCount = moves.filter(
+    (m) => labelStatus[m.id]?.strategy && labelStatus[m.id]?.environment && labelStatus[m.id]?.outcome
+  ).length;
 
   return (
     <div className="define-mode rating-view">
@@ -289,7 +304,7 @@ function RatingView({ onExit }) {
                     Move {m.move_index + 1}
                   </button>
                   {': missing '}
-                  {m.missing.map(lensLabel).join(' and ')}
+                  {joinLenses(m.missing)}
                 </li>
               ))}
             </ul>
@@ -303,8 +318,8 @@ function RatingView({ onExit }) {
       {!locked && (
         <div className="onboarding-banner" role="note">
           <span className="onboarding-text">
-            Holds and moves are fixed for this video. Pick a move, fill in Environment and
-            Outcome, tag frames if you want, then press Complete.
+            Holds and moves are fixed for this video. Pick a move, fill in Strategy,
+            Environment and Outcome from what you can see, then press Complete.
           </span>
         </div>
       )}

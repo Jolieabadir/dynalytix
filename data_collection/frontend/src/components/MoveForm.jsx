@@ -4,8 +4,8 @@
  * Two structural changes from the modal it replaces:
  *
  * 1. It is a right-side panel, not a full-screen overlay. The labeler can see
- *    the movement, the skeleton, and the scrub bar while deciding what to call
- *    it — which is exactly when they need to look at it.
+ *    the movement and the scrub bar while deciding what to call it — which is
+ *    exactly when they need to look at it.
  * 2. Environment is four named hold slots (start-left, start-right, end, foot)
  *    rather than "reaching" and "non-reaching" hands, matching schema v3.
  *
@@ -17,10 +17,10 @@
 import { useState, useEffect } from 'react';
 import useStore, { HOLD_SLOT_KEYS } from '../store/useStore';
 import { fpsOf, frameToTime, frameToMs } from '../utils/frames';
-import { optionLabel, optionDescription } from '../utils/taxonomy';
+import { optionLabel } from '../utils/taxonomy';
 import { suggestHoldSlots } from '../services/holdAssignment';
-import InfoTip from './InfoTip';
-import { EnvironmentLens, OutcomeLens, RadioGroup } from './LensFields';
+import { EnvironmentLens, OutcomeLens, StrategyLens } from './LensFields';
+import { toggleMoveTagValue } from '../utils/strategy';
 import { createMove, createEnvironment, createOutcome, deleteMove } from '../api/client';
 import { useCoarsePointer } from '../utils/pointer';
 
@@ -38,16 +38,6 @@ const STEPS = [
   { key: 'strategy', title: 'Strategy' },
   { key: 'outcome', title: 'Outcome' },
 ];
-
-// Form quality anchor text. Not taxonomy — these are scale anchors for a
-// 1-5 rating, and the backend stores the number.
-const FORM_QUALITY_LABELS = {
-  1: 'Failed',
-  2: 'Clear compensation',
-  3: 'Acceptable',
-  4: 'Efficient/repeatable',
-  5: 'Excellent, repeatable under greater demand',
-};
 
 const EMPTY_SLOT = { hold_id: null, hold_type: '', hold_quality: [], suggested: false };
 
@@ -223,18 +213,8 @@ function MoveForm() {
   const clearSlot = (slot) =>
     setSlots((prev) => ({ ...prev, [slot]: { ...EMPTY_SLOT } }));
 
-  const toggleMoveTag = (tag) => {
-    setMoveTags((prev) => {
-      const isSelected = prev.includes(tag);
-      if (isSelected) return prev.filter((t) => t !== tag);
-
-      let newTags = [...prev, tag];
-      // no_hands and no_feet_on are mutually exclusive.
-      if (tag === 'no_hands') newTags = newTags.filter((t) => t !== 'no_feet_on');
-      if (tag === 'no_feet_on') newTags = newTags.filter((t) => t !== 'no_hands');
-      return newTags;
-    });
-  };
+  // no_hands and no_feet_on are mutually exclusive; see toggleMoveTagValue.
+  const toggleMoveTag = (tag) => setMoveTags((prev) => toggleMoveTagValue(prev, tag));
 
   const noHandsSelected = moveTags.includes('no_hands');
 
@@ -359,9 +339,6 @@ function MoveForm() {
 
   // The lens field groups live in LensFields so the rating view renders the
   // same controls; this form keeps the state and the validation.
-  const radioGroup = (taxonomyKey, name, value, onChange) => (
-    <RadioGroup config={config} taxonomyKey={taxonomyKey} name={name} value={value} onChange={onChange} />
-  );
 
   // On a pointer device every lens is on screen at once, so `shows` is always
   // true and the stepper never renders.
@@ -420,93 +397,21 @@ function MoveForm() {
 
         {/* ---------- Lens 2: Strategy ---------- */}
         {shows(1) && (
-        <div className="lens-section">
-          <h3 className="lens-title">🎯 Strategy</h3>
-
-          <div className="form-field">
-            <label className="form-label">Approach</label>
-            {radioGroup('approaches', 'approach', approach, setApproach)}
-          </div>
-
-          <div className="form-field">
-            <label className="form-label">
-              Size
-              <InfoTip text="How big the movement is — not the size of the hold." />
-            </label>
-            {radioGroup('sizes', 'size', size, setSize)}
-          </div>
-
-          <div className="form-field">
-            <label className="form-label">Move Tags (multi-select)</label>
-            <div className="tags-group">
-              {(config.move_tags ?? []).map((tag) => {
-                const blocked =
-                  (tag === 'no_feet_on' && moveTags.includes('no_hands')) ||
-                  (tag === 'no_hands' && moveTags.includes('no_feet_on'));
-                return (
-                  <span key={tag} className="tag-with-info">
-                    <button
-                      type="button"
-                      onClick={() => toggleMoveTag(tag)}
-                      className={`tag-btn ${moveTags.includes(tag) ? 'active' : ''} ${
-                        blocked ? 'disabled-mutual' : ''
-                      }`}
-                      disabled={blocked}
-                    >
-                      {optionLabel(config, 'move_tags', tag)}
-                    </button>
-                    <InfoTip text={optionDescription(config, 'move_tags', tag)} />
-                  </span>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="form-field">
-            <label className="form-label">Form Quality</label>
-            <div className="quality-buttons">
-              {[1, 2, 3, 4, 5].map((q) => (
-                <button
-                  key={q}
-                  type="button"
-                  onClick={() => setFormQuality(q)}
-                  className={`quality-btn ${formQuality === q ? 'active' : ''}`}
-                  title={FORM_QUALITY_LABELS[q]}
-                >
-                  {q}
-                </button>
-              ))}
-            </div>
-            <div className="quality-description">{FORM_QUALITY_LABELS[formQuality]}</div>
-          </div>
-
-          <div className="form-field">
-            <label className="form-label">Effort Level: {effortLevel}/10</label>
-            <input
-              type="range"
-              min="0"
-              max="10"
-              value={effortLevel}
-              onChange={(e) => setEffortLevel(Number(e.target.value))}
-              className="effort-slider"
-            />
-            <div className="effort-labels">
-              <span>Easy</span>
-              <span>Max Effort</span>
-            </div>
-          </div>
-
-          <div className="form-field">
-            <label className="form-label">Description (optional)</label>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value.slice(0, 500))}
-              placeholder="Add notes about this move…"
-              className="description-textarea"
-              rows="2"
-            />
-          </div>
-        </div>
+        <StrategyLens
+          config={config}
+          approach={approach}
+          onApproach={setApproach}
+          size={size}
+          onSize={setSize}
+          moveTags={moveTags}
+          onToggleTag={toggleMoveTag}
+          formQuality={formQuality}
+          onFormQuality={setFormQuality}
+          effortLevel={effortLevel}
+          onEffortLevel={setEffortLevel}
+          description={description}
+          onDescription={setDescription}
+        />
         )}
 
         {/* ---------- Lens 3: Outcome ---------- */}

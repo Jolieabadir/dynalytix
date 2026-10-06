@@ -4,11 +4,16 @@
  * Displays all completed moves for the current video.
  * Updated for three-lens schema: shows approach/size/move_tags and outcome.
  *
- * Dataset A: with `readOnly` the list is the canonical set — no delete, and a
- * card opens the rater's three-lens form through `onSelect` instead. Also
- * used by an owner on a locked (ready/closed) video, whose moves the API
- * refuses to change. `labelStatus` ({ [moveId]: { environment, outcome } })
- * shows which moves this rater has finished.
+ * With `readOnly` the list is the canonical set — no delete. Also used by an
+ * owner on a locked (ready/closed) video, whose moves the API refuses to
+ * change.
+ *
+ * Rating view (`onSelect` given): a card opens the rater's three-lens form.
+ * The card shows only the move's number and frames — not the prepper's
+ * Strategy values (approach, size, tags, quality, effort), which would anchor
+ * the rater's own Strategy — and offers no frame tagging (observer-only).
+ * `labelStatus` ({ [moveId]: { strategy, environment, outcome } }) shows
+ * which moves this rater has finished.
  */
 import { useEffect } from 'react';
 import useStore from '../store/useStore';
@@ -87,6 +92,8 @@ function MovesList({ readOnly = false, onSelect = null, labelStatus = null }) {
 
 // Individual move card component
 function MoveCard({ move, index, onAddTags, onDelete, onSelect, status }) {
+  // Rating view: observer-only, and blind to the prepper's Strategy.
+  const rater = Boolean(onSelect);
   const formatLabel = (str) => {
     if (!str) return '';
     return str
@@ -128,7 +135,7 @@ function MoveCard({ move, index, onAddTags, onDelete, onSelect, status }) {
     return move.move_tags.map(formatLabel).join(', ');
   };
 
-  const rated = status ? status.environment && status.outcome : null;
+  const rated = status ? status.strategy && status.environment && status.outcome : null;
 
   return (
     <div
@@ -137,8 +144,7 @@ function MoveCard({ move, index, onAddTags, onDelete, onSelect, status }) {
     >
       <div className="move-header">
         <h4>
-          {index != null && onSelect ? `${index + 1}. ` : ''}
-          {getMoveDescription()}
+          {rater ? `Move ${index + 1}` : getMoveDescription()}
         </h4>
         <div className="move-actions">
           {onSelect && (
@@ -151,13 +157,15 @@ function MoveCard({ move, index, onAddTags, onDelete, onSelect, status }) {
               {rated ? 'Edit rating' : 'Rate'}
             </button>
           )}
-          <button
-            onClick={() => onAddTags(move)}
-            className="btn-tag"
-            title="Add frame tags"
-          >
-            Tag Frames
-          </button>
+          {!rater && (
+            <button
+              onClick={() => onAddTags(move)}
+              className="btn-tag"
+              title="Add frame tags"
+            >
+              Tag Frames
+            </button>
+          )}
           {onDelete && (
             <button
               onClick={() => onDelete(move.id)}
@@ -172,6 +180,9 @@ function MoveCard({ move, index, onAddTags, onDelete, onSelect, status }) {
 
       {status && (
         <div className="rating-status" data-testid={`rating-status-${move.id}`}>
+          <span className={status.strategy ? 'lens-done' : 'lens-missing'}>
+            {status.strategy ? '✓' : '○'} Strategy
+          </span>
           <span className={status.environment ? 'lens-done' : 'lens-missing'}>
             {status.environment ? '✓' : '○'} Environment
           </span>
@@ -182,8 +193,8 @@ function MoveCard({ move, index, onAddTags, onDelete, onSelect, status }) {
       )}
 
       <div className="move-details">
-        {/* Move Tags */}
-        {getMoveTags() && (
+        {/* Move Tags (the prepper's; hidden from raters) */}
+        {!rater && getMoveTags() && (
           <div className="detail-row">
             <span className="label">Tags:</span>
             <span className="move-tags-display">{getMoveTags()}</span>
@@ -201,15 +212,17 @@ function MoveCard({ move, index, onAddTags, onDelete, onSelect, status }) {
           </span>
         </div>
 
-        {/* Quality & Effort */}
-        <div className="detail-row">
-          <span className="label">Quality:</span>
-          {renderQuality(move.form_quality)}
-          <span className="effort-level">Effort: {move.effort_level}/10</span>
-        </div>
+        {/* Quality & Effort (the prepper's; hidden from raters) */}
+        {!rater && (
+          <div className="detail-row">
+            <span className="label">Quality:</span>
+            {renderQuality(move.form_quality)}
+            <span className="effort-level">Effort: {move.effort_level}/10</span>
+          </div>
+        )}
 
         {/* Description */}
-        {move.description && (
+        {!rater && move.description && (
           <div className="move-description">
             <span className="label">Notes:</span>
             <p>{move.description}</p>
@@ -217,7 +230,7 @@ function MoveCard({ move, index, onAddTags, onDelete, onSelect, status }) {
         )}
 
         {/* Frame Tags Count */}
-        {move.frame_tag_count > 0 && (
+        {!rater && move.frame_tag_count > 0 && (
           <div className="frame-tags-count">
             📍 {move.frame_tag_count} frame tag
             {move.frame_tag_count !== 1 ? 's' : ''}

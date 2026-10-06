@@ -431,17 +431,6 @@ body {
   max-height: 70vh;
 }
 
-/* Skeleton overlay canvas - must match video exactly */
-.video-container canvas,
-.video-wrapper canvas {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-
 .video-controls {
   display: flex;
   justify-content: center;
@@ -498,32 +487,6 @@ body {
   font-size: 0.85rem;
   font-weight: 600;
   color: var(--text-secondary);
-}
-
-.toggle-skeleton {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  background: white;
-  border: 1px solid var(--border-light);
-  padding: var(--space-xs) var(--space-md);
-  border-radius: var(--radius-full);
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.toggle-skeleton:hover {
-  background: var(--success-soft);
-  border-color: var(--success);
-}
-
-.toggle-skeleton.active {
-  background: var(--success-soft);
-  border-color: var(--success);
-  color: var(--accent-sage-dark);
 }
 
 /* Timeline */
