@@ -869,8 +869,9 @@ def test_full_export_columns_and_rater_strategy(client, fake_r2, admin, rater_a)
     assert first['tag_types'] == 'sharp_pain'
 
 
-def test_admin_full_export_gates_on_pose(client, fake_r2, admin):
+def test_admin_full_export_gates_on_pose(client, fake_r2, admin, rater_a):
     done_video, _, _ = prepped_video(client, admin, n_moves=1)
+    assign(client, admin, done_video['id'], rater_a)
     pending = register_video(client, admin, filename='pending.mp4')
     create_move(client, admin, pending['id'])
 
@@ -878,8 +879,7 @@ def test_admin_full_export_gates_on_pose(client, fake_r2, admin):
     assert res.status_code == 409
     assert client.get('/api/admin/export/full?video_id=999999', headers=auth(admin)).status_code == 404
     rows = parse_csv(client.get('/api/admin/export/full', headers=auth(admin)).text)
-    assert {r['video_id'] for r in rows} == {str(done_video['id']), str(pending['id'])}
-    assert all(r['left_elbow_angle'] == '' for r in rows if r['video_id'] == str(pending['id']))
+    assert {r['video_id'] for r in rows} == {str(done_video['id'])}  # drafts excluded by default
     assert client.get(f'/api/admin/export/long?video_id={pending["id"]}', headers=auth(admin)).status_code == 200
 
 
@@ -917,3 +917,86 @@ def test_rater_can_poll_pose_status_but_not_retry(client, admin, rater_a, rater_
     enqueued.clear()
     assert client.post(f'/api/videos/{video["id"]}/retry-pose', headers=auth(admin)).status_code == 200
     assert [c['video_id'] for c in enqueued] == [video['id']]
+
+
+# ==================== REVIEW HARDENING ====================
+
+def test_exports_ignore_unassigned_labelers_and_drafts(client, clean_db, admin, rater_a, rater_b):
+    video, hold, moves = prepped_video(client, admin, n_moves=1)
+    assign(client, admin, video['id'], rater_a)
+    label_all(client, hold, moves, rater_a)
+    # A row written around the API by someone not assigned (or since unassigned).
+    with clean_db.get_connection() as conn:
+        conn.execute("INSERT INTO strategies (move_id, user_id, approach, size, form_quality) "
+                     "VALUES (%s, %s, 'static', 'small', 1)", (moves[0]['id'], rater_b))
+    rows = parse_csv(client.get('/api/admin/export/long', headers=auth(admin)).text)
+    assert {r['rater_user_id'] for r in rows} == {rater_a}
+
+    # A draft (mid-prep, or failed the gate) is not exported unless asked for,
+    # and a paper clip with nobody assigned contributes no "rater" rows.
+    draft = ready_video(client, admin, filename='draft.mp4')
+    create_move(client, admin, draft['id'])
+    rows = parse_csv(client.get('/api/admin/export/long', headers=auth(admin)).text)
+    assert {r['video_id'] for r in rows} == {str(video['id'])}
+    rows = parse_csv(client.get('/api/admin/export/long?include_drafts=true', headers=auth(admin)).text)
+    assert {r['video_id'] for r in rows} == {str(video['id'])}  # draft has no assigned rater
+    full = parse_csv(client.get('/api/admin/export/full?include_drafts=true', headers=auth(admin)).text)
+    assert {r['video_id'] for r in full} == {str(video['id'])}
+
+
+def test_provenance_is_locked_once_ready(client, admin):
+    video, _, _ = prepped_video(client, admin, n_moves=1)
+    url = f'/api/admin/videos/{video["id"]}/metadata'
+    minor = make_athlete(client, admin, birth_year=2012)
+    res = client.put(url, json={'athlete_id': minor['athlete_id']}, headers=auth(admin))
+    assert res.status_code == 409 and 'reopen' in res.json()['detail']
+    for field, value in (('event_date', '2030-01-01'), ('source_url', 'https://x'), ('clip_end_ms', 999999)):
+        assert client.put(url, json={field: value}, headers=auth(admin)).status_code == 409, field
+    # Non-provenance prep notes are still editable.
+    assert client.put(url, json={'notes': 'fine'}, headers=auth(admin)).status_code == 200
+
+    client.post(f'/api/admin/videos/{video["id"]}/reopen', headers=auth(admin))
+    assert client.put(url, json={'athlete_id': minor['athlete_id']}, headers=auth(admin)).status_code == 200
+    res = client.post(f'/api/admin/videos/{video["id"]}/ready', headers=auth(admin))
+    assert res.status_code == 422 and 'under 18' in res.json()['detail']
+
+
+def test_athlete_birth_year_change_cannot_make_a_ready_clip_underage(client, admin):
+    athlete = make_athlete(client, admin, birth_year=1995)
+    prepped_video(client, admin, n_moves=1, athlete=athlete)
+    url = f'/api/admin/athletes/{athlete["athlete_id"]}'
+    res = client.put(url, json={'birth_year': 2010}, headers=auth(admin))
+    assert res.status_code == 409
+    assert client.put(url, json={'birth_year': 1996}, headers=auth(admin)).status_code == 200
+
+
+def test_raters_do_not_see_prep_strategy_or_the_overlap_flag(client, admin, rater_a):
+    video, _, moves = prepped_video(client, admin, n_moves=1, overlap=True)
+    client.put(f'/api/admin/videos/{video["id"]}/metadata', json={'notes': 'prepper note'},
+               headers=auth(admin))
+    assign(client, admin, video['id'], rater_a)
+
+    listed = client.get(f'/api/videos/{video["id"]}/moves', headers=auth(rater_a)).json()[0]
+    single = client.get(f'/api/moves/{moves[0]["id"]}', headers=auth(rater_a)).json()
+    for move in (listed, single):
+        assert move['approach'] == '' and move['size'] == '' and move['move_tags'] == []
+        assert move['effort_level'] == 0 and move['description'] == ''
+        assert move['frame_start'] == 0 and move['frame_end'] == 2
+    assert client.get(f'/api/moves/{moves[0]["id"]}', headers=auth(admin)).json()['approach'] == 'dynamic'
+
+    for body in (client.get(f'/api/videos/{video["id"]}', headers=auth(rater_a)).json(),
+                 client.get('/api/me/assignments', headers=auth(rater_a)).json()[0]['video']):
+        assert body['irr_overlap'] is False and body['rater_target'] == 1
+        assert body['irr_overlap_set_by'] is None and body['notes'] is None
+    assert client.get(f'/api/videos/{video["id"]}', headers=auth(admin)).json()['irr_overlap'] is True
+
+
+def test_retry_pose_needs_the_flag_for_a_non_admin_owner(client, newcomer, monkeypatch, enqueued):
+    monkeypatch.setenv('SELF_UPLOAD_ENABLED', 'true')
+    video = register_video(client, newcomer, filename='mine.mp4')
+    from tests.test_api_scoping import upload_video
+    upload_video(client, newcomer, video)
+    client.post(f'/api/videos/{video["id"]}/pose-result', json={'status': 'failed', 'error': 'x'},
+                headers={'X-Webhook-Secret': WORKER_SECRET})
+    monkeypatch.delenv('SELF_UPLOAD_ENABLED')
+    assert client.post(f'/api/videos/{video["id"]}/retry-pose', headers=auth(newcomer)).status_code == 403

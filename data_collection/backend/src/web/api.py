@@ -756,7 +756,24 @@ def _iso(value: Optional[datetime]) -> str:
 
 
 def video_to_response(video: Video, access_role: str = 'owner') -> VideoResponse:
-    """Convert Video model to response schema."""
+    """Convert Video model to response schema.
+
+    A rater does not learn whether the video is in the reliability subset
+    (that could change how carefully they label it), nor the prepper's notes
+    or camera-override note: those fields come back neutral.
+    """
+    response = _video_response(video, access_role)
+    if access_role == 'rater':
+        response.irr_overlap = False
+        response.irr_overlap_set_by = None
+        response.rater_target = 1
+        response.notes = None
+        if hasattr(response, 'camera_override_note'):
+            response.camera_override_note = None
+    return response
+
+
+def _video_response(video: Video, access_role: str) -> VideoResponse:
     return VideoResponse(
         id=video.id,
         filename=video.filename,
@@ -915,9 +932,24 @@ def hold_to_response(hold: Hold) -> HoldResponse:
     )
 
 
-def move_to_response(move: Move, user_id: str) -> MoveResponse:
-    """Convert Move model to response schema."""
+def move_to_response(move: Move, user_id: str, role: str = 'owner') -> MoveResponse:
+    """Convert Move model to response schema.
+
+    A rater gets the move's boundaries only: the strategy / effort /
+    description on the move row are the prepper's, and showing them would
+    anchor the rater's own Strategy labels (which feed the reliability
+    analysis). They come back blank.
+    """
     tags = get_db().get_frame_tags_for_move(move.id, user_id)
+    if role == 'rater':
+        return MoveResponse(
+            id=move.id, video_id=move.video_id,
+            frame_start=move.frame_start, frame_end=move.frame_end,
+            timestamp_start_ms=move.timestamp_start_ms, timestamp_end_ms=move.timestamp_end_ms,
+            approach='', size='', move_tags=[], form_quality=0, effort_level=0,
+            confidence=None, description='', labeled_at=_iso(move.labeled_at),
+            frame_tag_count=len(tags),
+        )
 
     return MoveResponse(
         id=move.id,
@@ -1522,6 +1554,8 @@ async def retry_pose(video_id: int, user_id: str = Depends(get_current_user_id))
     access = _require_video_access(video_id, user_id)
     if access.role == 'rater':
         raise _forbidden('Only the video owner or an admin can retry pose extraction')
+    if access.role == 'owner':
+        _require_uploader(user_id)  # a non-admin owner needs SELF_UPLOAD_ENABLED
     video = access.video
     if video.pose_status in ('processing', 'done'):
         raise HTTPException(
@@ -1863,15 +1897,16 @@ async def list_moves(video_id: int, user_id: str = Depends(get_current_user_id))
 
     Owner, rater or admin. frame_tag_count is the caller's own tag count.
     """
-    _require_video_access(video_id, user_id)
+    access = _require_video_access(video_id, user_id)
     moves = get_db().get_moves_for_video_any(video_id)
-    return [move_to_response(m, user_id) for m in moves]
+    return [move_to_response(m, user_id, access.role) for m in moves]
 
 
 @app.get("/api/moves/{move_id}", response_model=MoveResponse)
 async def get_move(move_id: int, user_id: str = Depends(get_current_user_id)):
     """Get a specific move by ID."""
-    return move_to_response(_require_move(move_id, user_id), user_id)
+    move, access = _require_move_access(move_id, user_id)
+    return move_to_response(move, user_id, access.role)
 
 
 @app.put("/api/moves/{move_id}", response_model=MoveResponse)
@@ -2483,6 +2518,16 @@ async def admin_update_video_metadata(
     video = _require_any_video(video_id)
     fields = payload.model_dump()
 
+    # Provenance was checked at mark-ready (18+, source). Once a video is
+    # ready or closed it cannot change under the raters: reopen first, which
+    # puts it back through the gate.
+    locked = [k for k in PROVENANCE_FIELDS if fields.get(k) is not None]
+    if video.is_locked() and locked:
+        raise _conflict(
+            f"Video {video_id} is {video.prep_status}: reopen it before changing "
+            f"{', '.join(locked)}"
+        )
+
     if fields['source_type'] is not None:
         if fields['source_type'] not in PAPER_SOURCE_TYPES:
             raise _bad_request(
@@ -2503,6 +2548,10 @@ async def admin_update_video_metadata(
 
     updated = get_db().update_video_fields(video_id, **fields)
     return video_to_response(updated, 'admin')
+
+
+PROVENANCE_FIELDS = ('source_type', 'source_url', 'clip_start_ms', 'clip_end_ms',
+                     'license', 'event_name', 'event_date', 'athlete_id')
 
 
 def _ready_blockers(video: Video) -> List[str]:
@@ -2578,11 +2627,9 @@ async def admin_set_overlap(
     """Override the overlap flag. Only while the video has no assignments:
     once raters are on it, its rater target is fixed. 409 otherwise."""
     _require_any_video(video_id)
-    if get_db().count_assignments(video_id) > 0:
+    updated = get_db().set_overlap_if_unassigned(video_id, payload.irr_overlap)
+    if updated is None:
         raise _conflict('Overlap can only be changed before any rater is assigned')
-    updated = get_db().update_video_fields(
-        video_id, irr_overlap=payload.irr_overlap, irr_overlap_set_by='admin_override',
-    )
     return video_to_response(updated, 'admin')
 
 
@@ -2635,20 +2682,20 @@ async def admin_create_assignment(
     if db.get_assignment_for(payload.video_id, payload.rater_user_id):
         raise _conflict('Rater is already assigned to this video')
     target = video.rater_target()
-    if db.count_assignments(payload.video_id) >= target:
-        raise _conflict(
-            f"Video {video.id} already has its {target} rater{'s' if target != 1 else ''}"
-            f"{' (overlap subset)' if video.irr_overlap else ''}"
-        )
     try:
-        created = db.create_assignment(VideoAssignment(
+        created = db.create_assignment_capped(VideoAssignment(
             video_id=payload.video_id,
             rater_user_id=payload.rater_user_id,
             status='assigned',
             assigned_at=datetime.now(timezone.utc),
-        ))
+        ), target)
     except psycopg.errors.UniqueViolation:
         raise _conflict('Rater is already assigned to this video')
+    if created is None:
+        raise _conflict(
+            f"Video {video.id} already has its {target} rater{'s' if target != 1 else ''}"
+            f"{' (overlap subset)' if video.irr_overlap else ''}"
+        )
     return assignment_to_response(created)
 
 
@@ -2728,6 +2775,15 @@ async def admin_update_athlete(
         raise _not_found(f"Athlete {athlete_id} not found")
     _validate_athlete_fields(payload.category, payload.height_source)
     fields = payload.model_dump()
+    # The 18+ gate ran at mark-ready against the old birth_year. A change that
+    # would put any ready / closed clip of this athlete under it is refused.
+    if fields['birth_year'] is not None:
+        for event_date in db.athlete_video_dates(athlete_id):
+            if event_date and event_date.year - fields['birth_year'] < MIN_AGE_YEAR_GAP:
+                raise _conflict(
+                    f"birth_year {fields['birth_year']} would make a ready clip of this athlete "
+                    f"(event {event_date.isoformat()}) fail the 18+ check; reopen it first"
+                )
     if fields['height_cm'] is not None and fields['height_source'] is None:
         fields['height_source'] = 'ifsc_profile'
     if fields['ifsc_profile_url'] is not None:
@@ -2752,6 +2808,7 @@ async def admin_export_long(
     video_id: Optional[int] = None,
     include_community: bool = False,
     overlap_only: bool = False,
+    include_drafts: bool = False,
     _admin: str = Depends(require_admin),
 ):
     """Long-format CSV, the IRR input: one row per (video, move, rater, lens,
@@ -2760,12 +2817,16 @@ async def admin_export_long(
     Columns: see exporter.LONG_COLUMNS (video provenance, irr_overlap,
     athlete_id + height, then move/rater/lens/field/value). Lenses: strategy,
     environment, outcome, frame_tags. Multi-selects are pipe-delimited.
-    Community videos are excluded unless ?include_community=true;
-    ?overlap_only=true keeps only the reliability subset; ?video_id= returns
-    one video whatever its source. Never includes IFSC profile URLs.
+    Only videos that passed mark-ready (ready / closed) unless
+    ?include_drafts=true; community videos excluded unless
+    ?include_community=true; ?overlap_only=true keeps only the reliability
+    subset; ?video_id= returns one video whatever its source or status. On
+    paper footage only assigned raters' labels count. Never includes IFSC
+    profile URLs.
     """
     text = get_admin_exporter().long_csv(
         video_id=video_id, include_community=include_community, overlap_only=overlap_only,
+        include_drafts=include_drafts,
     )
     suffix = f'_video{video_id}' if video_id is not None else ''
     return _csv_response(text, f'dynalytix_long{suffix}.csv')
@@ -2775,6 +2836,7 @@ async def admin_export_long(
 async def admin_export_full(
     video_id: Optional[int] = None,
     include_community: bool = False,
+    include_drafts: bool = False,
     _admin: str = Depends(require_admin),
 ):
     """Full CSV: the per-video export's shape (one row per pose frame with the
@@ -2790,7 +2852,8 @@ async def admin_export_full(
         if not video:
             raise _not_found(f"Video {video_id} not found")
         _require_pose_done(video)
-    text = get_admin_exporter().full_csv(video_id=video_id, include_community=include_community)
+    text = get_admin_exporter().full_csv(video_id=video_id, include_community=include_community,
+                                         include_drafts=include_drafts)
     suffix = f'_video{video_id}' if video_id is not None else ''
     return _csv_response(text, f'dynalytix_full{suffix}.csv')
 

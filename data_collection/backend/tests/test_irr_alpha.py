@@ -146,3 +146,22 @@ def test_old_export_without_irr_overlap_is_refused(tmp_path, capsys):
         irr_alpha.read_long(path)
     assert irr_alpha.main([path]) == 2
     assert irr_alpha.main([path, '--all-videos']) == 0
+
+
+def test_move_tags_empty_set_agrees_and_partial_overlap_gets_per_tag_credit(tmp_path):
+    entries = []
+    for move in (1, 2, 3, 4):
+        a = {1: '', 2: 'dyno|mantle', 3: 'dyno', 4: 'heel_hook'}[move]
+        b = {1: '', 2: 'dyno', 3: 'dyno', 4: 'heel_hook'}[move]
+        entries.append((1, move, 'a', 'strategy', 'move_tags', a))
+        entries.append((1, move, 'b', 'strategy', 'move_tags', b))
+    rows = irr_alpha.read_long(write_csv(tmp_path, long_rows(entries)))
+    by_field = {(r['lens'], r['field']): r for r in irr_alpha.compute(rows)}
+
+    whole = by_field[('strategy', 'move_tags')]
+    assert whole['n_units_used'] == 4  # the empty set on move 1 is a value, not missing
+    assert whole['alpha'] < 1.0       # move 2 differs as a set
+
+    assert by_field[('strategy', 'move_tags:dyno')]['alpha'] == 1.0     # both applied dyno on 2 and 3
+    assert by_field[('strategy', 'move_tags:heel_hook')]['alpha'] == 1.0
+    assert by_field[('strategy', 'move_tags:mantle')]['alpha'] < 1.0    # only a applied it

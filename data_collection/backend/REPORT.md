@@ -1818,8 +1818,26 @@ owners). No effort level for raters (not observable).
 - `scripts/smoke_test.py` predates the worker (sends `csv_data`) and now also needs an admin
   user; it prints a hint on the 403. Not rewritten.
 
+### Hardening after independent review
+- RLS: label inserts/updates (`strategies`, `environments`, `outcomes`, `frame_tags`) require
+  `can_label_move(move_id)` (admin, assigned rater, or community owner); a non-admin can only
+  INSERT a `community` video and only through upload columns (no prep/overlap/pose/source fields);
+  the strategy/effort/description columns of `moves` are not readable through PostgREST.
+- Exports: paper clips count only assigned raters' labels; default exports are ready/closed clips
+  only (`?include_drafts=true` to widen); community videos are all-or-nothing with `include_community`.
+- Provenance (`source_*`, `clip_*`, `license`, `event_*`, `athlete_id`) is 409 on a ready/closed
+  video until reopened (which re-runs the gate); an athlete birth_year change that would make a
+  ready clip under-age is 409.
+- Raters get move boundaries only (no prepper strategy/effort/description) and a neutral
+  `irr_overlap` / `rater_target` / `notes`, so they can't tell they are in the reliability subset.
+- Assignment cap and overlap override are atomic (`SELECT … FOR UPDATE`); tested with 20 concurrent assigns.
+- `retry-pose` by a non-admin owner needs `SELF_UPLOAD_ENABLED`.
+- `irr_alpha.py`: `move_tags` empty set is a value ("(none)"), plus per-tag presence fields.
+- Migration backfills `irr_overlap` from any old `overlap` cohort before dropping it.
+- Sidecar import skips null keys (never clears a filled athlete).
+
 ### Tests
-Backend 194 passed on scratch Postgres (`tests/test_single_dataset.py` 47 replaces
+Backend 204 passed (was 194 before the review fixes) on scratch Postgres (`tests/test_single_dataset.py` 47 replaces
 `test_dataset_a.py`; `tests/test_rls.py` adds strategies + athletes; IRR + snapshot updated).
 
 ### Manual steps for Jolie

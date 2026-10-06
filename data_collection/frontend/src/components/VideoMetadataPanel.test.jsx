@@ -284,11 +284,18 @@ describe('VideoMetadataPanel — admin', () => {
 });
 
 describe('parseMetadataJson', () => {
-  it('keeps only the importable keys, as form strings', () => {
+  it('keeps only the importable keys with a value, as form strings', () => {
     expect(parseMetadataJson('{"clip_start_ms": 0, "event_date": null, "foo": 1}')).toEqual({
-      values: { clip_start_ms: '0', event_date: '' },
+      values: { clip_start_ms: '0' },
       ignored: ['foo'],
     });
+  });
+
+  it('never clears a field: null / empty values in the sidecar are skipped', () => {
+    // prepare_clip.py writes "athlete_id": null when no --athlete-id was given.
+    const { values } = parseMetadataJson('{"athlete_id": null, "notes": "", "source_url": "https://x"}');
+    expect(values).toEqual({ source_url: 'https://x' });
+    expect('athlete_id' in values).toBe(false);
   });
 
   it('rejects non-objects', () => {

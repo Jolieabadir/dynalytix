@@ -17,6 +17,12 @@ Metric per field:
     nominal   everything else (categories, multi-select strings compared as
               whole pipe-joined sets, hold ids)
 
+Move tags (strategy lens, multi-select): compared two ways. `move_tags` is
+the whole set as one nominal value, with an empty set written as "(none)" so
+two raters agreeing there are no tags count as agreement, not as missing.
+`move_tags:<tag>` is one yes/no field per tag (did this rater apply it?), so
+a partial overlap of sets earns partial credit, like frame tags.
+
 Missing values (a rater with no row for that unit, or an empty value) are
 left as NaN and handled by the package: units rated by fewer than two
 raters are dropped, and alpha is undefined (printed as "n/a") when fewer
@@ -52,6 +58,8 @@ except ImportError as exc:  # pragma: no cover
 
 ORDINAL_FIELDS = {'form_quality', 'effort_level'}
 FRAME_TAG_LENS = 'frame_tags'
+MULTI_SELECT = {('strategy', 'move_tags')}
+EMPTY_SET = '(none)'
 
 Unit = Tuple[str, str]  # (video_id, move_id)
 
@@ -96,14 +104,27 @@ def pivot(rows: List[dict]) -> Dict[Tuple[str, str], Dict[Unit, Dict[str, str]]]
     table: Dict[Tuple[str, str], Dict[Unit, Dict[str, str]]] = defaultdict(lambda: defaultdict(dict))
     raters_on_unit: Dict[Unit, set] = defaultdict(set)
 
+    multi: Dict[Tuple[str, str], Dict[Unit, Dict[str, set]]] = defaultdict(lambda: defaultdict(dict))
     for r in rows:
         unit = (r['video_id'], r['move_id'])
         raters_on_unit[unit].add(r['rater_user_id'])
         key = (r['lens'], r['field'])
         if r['lens'] == FRAME_TAG_LENS:
             table[key][unit][r['rater_user_id']] = '1'
+        elif key in MULTI_SELECT:
+            chosen = {t for t in r['value'].split('|') if t}
+            table[key][unit][r['rater_user_id']] = '|'.join(sorted(chosen)) or EMPTY_SET
+            multi[key][unit][r['rater_user_id']] = chosen
         else:
             table[key][unit][r['rater_user_id']] = r['value']
+
+    # Multi-selects: one presence field per option ever used on the field.
+    for (lens, field), units in multi.items():
+        options = sorted({t for by_rater in units.values() for s in by_rater.values() for t in s})
+        for option in options:
+            for unit, by_rater in units.items():
+                for rater, chosen in by_rater.items():
+                    table[(lens, f'{field}:{option}')][unit][rater] = '1' if option in chosen else '0'
 
     # Frame tags: every rater on the unit who did not apply the tag gets '0'.
     for (lens, _field), units in table.items():

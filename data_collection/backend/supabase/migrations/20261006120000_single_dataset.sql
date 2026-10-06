@@ -123,7 +123,24 @@ GRANT UPDATE (
 
 -- ---------------------------------------------------------------------------
 -- video_assignments: cohort is now a per-video flag
+--
+-- A video that already had an 'overlap' assignment is carried over as an
+-- overlap video (set_by 'admin_override': it was hand-picked, not drawn), so
+-- an existing 3-rater video is not silently dropped from the alpha.
 -- ---------------------------------------------------------------------------
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'video_assignments' AND column_name = 'cohort'
+    ) THEN
+        UPDATE public.videos v
+           SET irr_overlap = true, irr_overlap_set_by = 'admin_override'
+         WHERE EXISTS (SELECT 1 FROM public.video_assignments a
+                       WHERE a.video_id = v.id AND a.cohort = 'overlap');
+    END IF;
+END $$;
+
 ALTER TABLE public.video_assignments DROP COLUMN IF EXISTS cohort;
 
 -- ---------------------------------------------------------------------------
@@ -181,3 +198,75 @@ CREATE POLICY strategies_update ON public.strategies FOR UPDATE
     WITH CHECK (auth.uid() = user_id OR public.is_admin());
 CREATE POLICY strategies_delete ON public.strategies FOR DELETE
     USING (auth.uid() = user_id OR public.is_admin());
+
+-- =============================================================================
+-- Hardening: PostgREST (anon key + a user's JWT) must not get around the
+-- API's rules. The app itself never writes through PostgREST; these close
+-- the direct path.
+-- =============================================================================
+
+-- Who may write label rows on a move: an admin, a rater assigned to the
+-- move's video, or the owner of a community video. Without this a signed-in
+-- stranger could insert label rows on any move id, and they would surface in
+-- the admin exports as an extra "rater".
+CREATE OR REPLACE FUNCTION public.can_label_move(target_move_id bigint)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+    SELECT EXISTS (
+        SELECT 1
+        FROM public.moves m
+        JOIN public.videos v ON v.id = m.video_id
+        WHERE m.id = target_move_id
+          AND (
+              public.is_admin()
+              OR EXISTS (SELECT 1 FROM public.video_assignments a
+                         WHERE a.video_id = v.id AND a.rater_user_id = auth.uid())
+              OR (v.user_id = auth.uid() AND v.source_type = 'community')
+          )
+    );
+$$;
+
+DO $$
+DECLARE
+    t text;
+BEGIN
+    FOREACH t IN ARRAY ARRAY['strategies', 'environments', 'outcomes', 'frame_tags'] LOOP
+        EXECUTE format('DROP POLICY IF EXISTS %I ON public.%I', t || '_insert', t);
+        EXECUTE format('DROP POLICY IF EXISTS %I ON public.%I', t || '_update', t);
+        EXECUTE format(
+            'CREATE POLICY %I ON public.%I FOR INSERT '
+            'WITH CHECK (auth.uid() = user_id AND public.can_label_move(move_id))',
+            t || '_insert', t);
+        EXECUTE format(
+            'CREATE POLICY %I ON public.%I FOR UPDATE '
+            'USING (auth.uid() = user_id OR public.is_admin()) '
+            'WITH CHECK ((auth.uid() = user_id AND public.can_label_move(move_id)) OR public.is_admin())',
+            t || '_update', t);
+    END LOOP;
+END $$;
+
+-- videos: a signed-in non-admin may only ever create a community draft, and
+-- only through the columns an upload needs. prep / overlap / pose / source
+-- metadata are not insertable at all (defaults apply).
+REVOKE INSERT ON public.videos FROM authenticated, anon;
+GRANT INSERT (
+    user_id, filename, fps, total_frames, duration_ms, width, height,
+    r2_video_key, r2_pose_csv_key, r2_export_key, uploaded_at,
+    source_type, route_grade, wall_type, camera_angle, notes
+) ON public.videos TO authenticated;
+DROP POLICY IF EXISTS videos_insert ON public.videos;
+CREATE POLICY videos_insert ON public.videos FOR INSERT
+    WITH CHECK (public.is_admin() OR (auth.uid() = user_id AND source_type = 'community'));
+
+-- moves: raters label Strategy themselves and must not see the prepper's
+-- (anchoring). The API strips those fields for raters; here the strategy
+-- columns are simply not readable through PostgREST.
+REVOKE SELECT ON public.moves FROM authenticated, anon;
+GRANT SELECT (
+    id, video_id, user_id, frame_start, frame_end,
+    timestamp_start_ms, timestamp_end_ms, labeled_at
+) ON public.moves TO authenticated;

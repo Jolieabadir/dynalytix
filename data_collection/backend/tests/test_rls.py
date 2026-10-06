@@ -255,9 +255,12 @@ def test_structure_locks_at_ready_for_owner_and_always_for_raters(world):
 
 def test_anon_sees_nothing(world):
     anon = as_(world, None)
-    for table in ('videos', 'holds', 'moves', 'environments', 'rater_profiles', 'video_assignments',
+    for table in ('videos', 'holds', 'environments', 'rater_profiles', 'video_assignments',
                   'strategies', 'athletes'):
         assert anon.rows(f'SELECT 1 FROM {table}') == [], table
+    # moves: anon has no column grant at all (strategy columns are hidden from
+    # PostgREST), so the read is refused outright.
+    assert anon.error('SELECT id FROM moves') is psycopg.errors.InsufficientPrivilege
 
 
 # ==================== 7. pose_* columns: worker/API only ====================
@@ -314,3 +317,77 @@ def test_athletes_are_admin_only(world):
         assert user.error("INSERT INTO athletes (birth_year) VALUES (2001)") is psycopg.errors.InsufficientPrivilege, who
         assert user.count('UPDATE athletes SET birth_year = 2010') == 0, who
     assert [r['birth_year'] for r in admin.rows('SELECT birth_year FROM athletes')] == [1995]
+
+
+# ==================== 10. hardening: no write path around the API ====================
+
+def test_stranger_cannot_write_labels_on_a_move_they_are_not_assigned_to(world):
+    stranger = as_(world, 'outsider')
+    move_id = world['move_id']
+    for sql in (
+        "INSERT INTO strategies (move_id, user_id, approach, size, form_quality) VALUES (%s, %s, 'static', 'small', 3)",
+        "INSERT INTO environments (move_id, user_id, wall_angle) VALUES (%s, %s, 'slab')",
+        "INSERT INTO outcomes (move_id, user_id, result, reach_detail) VALUES (%s, %s, 'fall', 'didnt_reach')",
+        "INSERT INTO frame_tags (move_id, user_id, frame_number, timestamp_ms, tag_type) VALUES (%s, %s, 1, 33, 'weak')",
+    ):
+        assert stranger.error(sql, (move_id, world['outsider'])) is psycopg.errors.InsufficientPrivilege, sql
+    # An assigned rater still can.
+    rater = as_(world, 'rater_a')
+    assert rater.count(
+        "INSERT INTO strategies (move_id, user_id, approach, size, form_quality) VALUES (%s, %s, 'static', 'small', 3)",
+        (move_id, world['rater_a'])) == 1
+    # ...but cannot re-point their row at a move they may not label.
+    other_move = world['db'].create_move(Move(video_id=world['other_id'], user_id=world['admin'],
+                                              frame_start=0, frame_end=1, timestamp_start_ms=0,
+                                              timestamp_end_ms=33, approach='static', size='small'))
+    assert rater.error('UPDATE strategies SET move_id = %s WHERE user_id = %s',
+                       (other_move, world['rater_a'])) is psycopg.errors.InsufficientPrivilege
+
+
+def test_non_admin_can_only_insert_a_community_draft_video(world):
+    stranger = as_(world, 'outsider')
+    uid = world['outsider']
+    base = "INSERT INTO videos (user_id, filename, fps, total_frames, duration_ms{cols}) VALUES (%s, 'v', 30, 1, 33{vals})"
+    assert stranger.error(base.format(cols=", source_type", vals=", 'public_broadcast'"),
+                          (uid,)) is psycopg.errors.InsufficientPrivilege
+    assert stranger.error(base.format(cols="", vals=""), (uid,)) is psycopg.errors.InsufficientPrivilege  # default = paper
+    for col, val in (('irr_overlap', 'true'), ('prep_status', "'ready'"), ('pose_status', "'done'"),
+                     ('athlete_id', 'NULL')):
+        assert stranger.error(
+            base.format(cols=f", source_type, {col}", vals=f", 'community', {val}"), (uid,)
+        ) is psycopg.errors.InsufficientPrivilege, col
+    assert stranger.count(base.format(cols=", source_type", vals=", 'community'"), (uid,)) == 1
+
+
+def test_move_strategy_columns_are_not_readable_through_postgrest(world):
+    rater = as_(world, 'rater_a')
+    assert [r['id'] for r in rater.rows('SELECT id, frame_start FROM moves')] == [world['move_id']]
+    for col in ('approach', 'size', 'move_tags', 'form_quality', 'effort_level', 'description'):
+        assert rater.error(f'SELECT {col} FROM moves') is psycopg.errors.InsufficientPrivilege, col
+
+
+def test_assignment_cap_holds_under_concurrency(world):
+    """Twenty concurrent assigns on a 1-rater video: exactly one lands."""
+    import threading
+    db = world['db']
+    vid = db.create_video(Video(user_id=world['admin'], filename='race.mp4', fps=30,
+                                total_frames=3, duration_ms=100))
+    db.update_video_fields(vid, prep_status='ready')
+    results = []
+
+    def go():
+        try:
+            results.append(db.create_assignment_capped(
+                VideoAssignment(video_id=vid, rater_user_id=str(uuid.uuid4())), 1))
+        except Exception as exc:  # noqa: BLE001
+            results.append(exc)
+
+    threads = [threading.Thread(target=go) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sum(1 for r in results if isinstance(r, VideoAssignment)) == 1
+    assert all(r is None for r in results if not isinstance(r, VideoAssignment))
+    assert db.count_assignments(vid) == 1
+    assert db.set_overlap_if_unassigned(vid, True) is None  # locked once assigned

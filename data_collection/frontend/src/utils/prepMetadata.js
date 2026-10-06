@@ -26,8 +26,11 @@ function toFormValue(value) {
 
 /**
  * Parse a metadata sidecar. Returns `{ values, ignored }` — `values` holds
- * only IMPORTABLE_KEYS, as form strings ('' for null); `ignored` lists every
- * other key. Throws an Error with a human message on bad input.
+ * only IMPORTABLE_KEYS that carry a value, as form strings; a null / missing
+ * value is skipped so importing a sidecar never clears a field the admin
+ * already filled (prepare_clip.py writes "athlete_id": null when no athlete
+ * was given). `ignored` lists every other key. Throws an Error with a human
+ * message on bad input.
  *
  * @param {string} text
  * @returns {{values: Record<string, string>, ignored: string[]}}
@@ -45,8 +48,8 @@ export function parseMetadataJson(text) {
   const values = {};
   const ignored = [];
   for (const [key, value] of Object.entries(data)) {
-    if (IMPORTABLE_KEYS.includes(key)) values[key] = toFormValue(value);
-    else ignored.push(key);
+    if (!IMPORTABLE_KEYS.includes(key)) ignored.push(key);
+    else if (value !== null && value !== undefined && value !== '') values[key] = toFormValue(value);
   }
   return { values, ignored };
 }

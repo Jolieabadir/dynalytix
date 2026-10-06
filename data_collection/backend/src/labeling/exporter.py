@@ -336,10 +336,24 @@ class AdminExporter:
         return {a.rater_user_id for a in self.db.list_assignments(video_id)}
 
     def _videos(self, video_id: Optional[int], include_community: bool,
-                overlap_only: bool = False) -> List[Video]:
+                overlap_only: bool = False, include_drafts: bool = False) -> List[Video]:
         return self.db.get_videos_for_export(
             video_id=video_id, include_community=include_community, overlap_only=overlap_only,
+            include_drafts=include_drafts,
         )
+
+    @staticmethod
+    def _allowed(video: Video, assigned: set, authors: set, creator: str) -> set:
+        """The raters whose labels count on a video.
+
+        Paper footage: assigned raters only. A label row by anyone else (e.g.
+        written straight through PostgREST, or by a rater since unassigned)
+        is not part of the dataset. Community videos: whoever labeled, falling
+        back to the creator so an unlabeled move still shows its own strategy.
+        """
+        if not video.is_community():
+            return set(assigned)
+        return set(authors) or {creator}
 
     def _provenance(self, videos: List[Video]) -> Dict[int, dict]:
         """video_id -> the provenance cells (athlete height joined in)."""
@@ -371,22 +385,23 @@ class AdminExporter:
     # ---------- long format ----------
 
     def long_rows(self, video_id: Optional[int] = None, include_community: bool = False,
-                  overlap_only: bool = False) -> List[dict]:
+                  overlap_only: bool = False, include_drafts: bool = False) -> List[dict]:
         """One dict per (video, move, rater, lens, field), sorted.
 
         Paper footage only by default (include_community adds the dormant
         self-upload videos); overlap_only keeps just the reliability subset;
-        a video_id returns that one video whatever its source.
+        a video_id returns that one video whatever its source or status;
+        drafts only with include_drafts.
 
-        Which raters appear on a move: everyone assigned to the video plus
-        anyone who wrote a label row on the move; a move nobody has rated and
-        nobody is assigned to falls back to the move's creator. Strategy
+        Which raters appear on a move: on paper footage, the raters assigned
+        to the video (labels by anyone else are ignored); on community videos,
+        whoever labeled it, else the move's creator. Strategy
         comes from each rater's own strategies row (see strategy_for); a rater
         with none emits no strategy rows, which the alpha script reads as
         missing.
         """
         rows: List[dict] = []
-        videos = self._videos(video_id, include_community, overlap_only)
+        videos = self._videos(video_id, include_community, overlap_only, include_drafts)
         provenance = self._provenance(videos)
 
         for video in videos:
@@ -401,10 +416,9 @@ class AdminExporter:
                     tags_by_rater.setdefault(tag.user_id, []).append(tag)
                 strategies = {s.user_id: s for s in self.db.get_strategies_for_move_all(move.id)}
 
-                raters = (set(assigned) | set(envs) | set(outcomes) | set(tags_by_rater)
-                          | set(strategies))
-                if not raters:
-                    raters = {move.user_id}
+                authors = (set(assigned) | set(envs) | set(outcomes) | set(tags_by_rater)
+                           | set(strategies))
+                raters = self._allowed(video, assigned, authors, move.user_id)
 
                 for rater in sorted(raters):
                     base = {
@@ -467,10 +481,11 @@ class AdminExporter:
         return rows
 
     def long_csv(self, video_id: Optional[int] = None, include_community: bool = False,
-                 overlap_only: bool = False) -> str:
+                 overlap_only: bool = False, include_drafts: bool = False) -> str:
         """The long export as CSV text with exactly LONG_COLUMNS as the header."""
         return rows_to_csv(LONG_COLUMNS, self.long_rows(
             video_id=video_id, include_community=include_community, overlap_only=overlap_only,
+            include_drafts=include_drafts,
         ))
 
     # ---------- full format ----------
@@ -479,6 +494,7 @@ class AdminExporter:
         self,
         video_id: Optional[int] = None,
         include_community: bool = False,
+        include_drafts: bool = False,
     ) -> "tuple[List[str], List[dict]]":
         """(columns, rows): the per-video export shape across every user.
 
@@ -494,7 +510,7 @@ class AdminExporter:
         pose_columns: List[str] = []
         seen = set()
         rows: List[dict] = []
-        videos = self._videos(video_id, include_community)
+        videos = self._videos(video_id, include_community, include_drafts=include_drafts)
         provenance = self._provenance(videos)
 
         for video in videos:
@@ -502,11 +518,12 @@ class AdminExporter:
             moves = self.db.get_moves_for_video_any(video.id)
             holds = {h.id: h for h in self.db.get_holds_for_video_any(video.id)}
 
-            raters = set(assigned)
+            authors = set(assigned)
             for move in moves:
-                raters |= self._raters_on_move(move, set())
+                authors |= self._raters_on_move(move, set())
+            raters = self._allowed(video, assigned, authors, video.user_id)
             if not raters:
-                raters = {video.user_id}
+                continue  # paper clip nobody is assigned to yet: nothing to export
 
             pose_rows = self._pose_rows(video)
             for name in (pose_rows[0].keys() if pose_rows else ['frame_number']):
@@ -550,9 +567,11 @@ class AdminExporter:
             text_stream = io.TextIOWrapper(source, encoding='utf-8', newline='')
             return list(csv.DictReader(text_stream))
 
-    def full_csv(self, video_id: Optional[int] = None, include_community: bool = False) -> str:
+    def full_csv(self, video_id: Optional[int] = None, include_community: bool = False,
+                 include_drafts: bool = False) -> str:
         """The full export as CSV text."""
-        columns, rows = self.full_rows(video_id=video_id, include_community=include_community)
+        columns, rows = self.full_rows(video_id=video_id, include_community=include_community,
+                                       include_drafts=include_drafts)
         return rows_to_csv(columns, rows)
 
 

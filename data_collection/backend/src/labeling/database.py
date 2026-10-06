@@ -367,20 +367,29 @@ class Database:
         video_id: Optional[int] = None,
         include_community: bool = False,
         overlap_only: bool = False,
+        include_drafts: bool = False,
     ) -> List[Video]:
         """Videos across every owner, for the admin exports.
 
-        Community videos (the dormant self-upload flow) are left out unless
-        asked for: the paper's exports are paper footage only. A single
-        video_id is returned whatever its source.
+        By default only videos that passed mark-ready (ready / closed): a
+        draft may still be mid-prep or have failed the provenance / 18+ /
+        camera gate. Community videos (the dormant self-upload flow) are left
+        out unless asked for. A single video_id is returned whatever its
+        source or status.
         """
         clauses, params = [], []
         if video_id is not None:
             clauses.append('id = %s')
             params.append(video_id)
         else:
-            if not include_community:
-                clauses.append("source_type <> 'community'")
+            # Paper clips: ready / closed unless drafts are asked for.
+            paper = "source_type <> 'community'"
+            if not include_drafts:
+                paper += " AND prep_status IN ('ready', 'closed')"
+            # Community videos are never marked ready by their owners, so
+            # asking for them means all of them.
+            clauses.append(f"(({paper}) OR source_type = 'community')" if include_community
+                           else f'({paper})')
             if overlap_only:
                 clauses.append('irr_overlap')
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ''
@@ -1483,6 +1492,62 @@ class Database:
             )
             row = cursor.fetchone()
             return self._row_to_assignment(row) if row else None
+
+    def create_assignment_capped(self, assignment: VideoAssignment, target: int) -> Optional[VideoAssignment]:
+        """Insert an assignment only if the video has fewer than `target`.
+
+        One transaction with the video row locked (SELECT ... FOR UPDATE), so
+        two concurrent assigns cannot both see room for one more rater, and an
+        overlap change (which takes the same lock) cannot slip in between.
+        Returns None when the video is already at its target. Raises
+        UniqueViolation on a repeated (video, rater).
+        """
+        with self.get_connection() as conn:
+            with conn.transaction():
+                cursor = conn.cursor()
+                cursor.execute('SELECT irr_overlap FROM videos WHERE id = %s FOR UPDATE',
+                               (assignment.video_id,))
+                cursor.execute('SELECT COUNT(*) AS n FROM video_assignments WHERE video_id = %s',
+                               (assignment.video_id,))
+                if int(cursor.fetchone()['n']) >= target:
+                    return None
+                cursor.execute('''
+                    INSERT INTO video_assignments (video_id, rater_user_id, status, assigned_at)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING *
+                ''', (
+                    assignment.video_id,
+                    assignment.rater_user_id,
+                    assignment.status or 'assigned',
+                    assignment.assigned_at or datetime.now(timezone.utc),
+                ))
+                return self._row_to_assignment(cursor.fetchone())
+
+    def set_overlap_if_unassigned(self, video_id: int, irr_overlap: bool) -> Optional[Video]:
+        """Set the overlap flag (admin override) only while the video has no
+        assignments, atomically. Returns the row, or None if it has any."""
+        with self.get_connection() as conn:
+            with conn.transaction():
+                cursor = conn.cursor()
+                cursor.execute('SELECT id FROM videos WHERE id = %s FOR UPDATE', (video_id,))
+                cursor.execute('''
+                    UPDATE videos SET irr_overlap = %s, irr_overlap_set_by = 'admin_override'
+                    WHERE id = %s
+                      AND NOT EXISTS (SELECT 1 FROM video_assignments a WHERE a.video_id = %s)
+                    RETURNING *
+                ''', (irr_overlap, video_id, video_id))
+                row = cursor.fetchone()
+                return self._row_to_video(row) if row else None
+
+    def athlete_video_dates(self, athlete_id: str, statuses=('ready', 'closed')) -> List:
+        """event_date of every video of an athlete in the given prep statuses."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT event_date FROM videos WHERE athlete_id::text = %s AND prep_status = ANY(%s)',
+                (str(athlete_id), list(statuses)),
+            )
+            return [r['event_date'] for r in cursor.fetchall()]
 
     def count_assignments(self, video_id: int) -> int:
         """How many raters are assigned to a video."""
