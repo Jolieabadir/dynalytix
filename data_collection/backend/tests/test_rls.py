@@ -2,7 +2,7 @@
 Row Level Security for Dataset A, exercised the way PostgREST would hit it:
 as the non-superuser `authenticated` role with `request.jwt.claims` set.
 
-The API's own role bypasses RLS, so tests/test_dataset_a.py says nothing
+The API's own role bypasses RLS, so tests/test_single_dataset.py says nothing
 about these policies. Here every statement runs through
     SET ROLE authenticated; SET request.jwt.claims = '{"sub": ...}';
 on a fresh connection, so both the policies and the column privileges the
@@ -69,12 +69,13 @@ def world(clean_db, dsn):
     for key in ('owner', 'admin', 'rater_a', 'rater_b', 'outsider'):
         db.create_rater_profile(RaterProfile(user_id=ids[key], display_name=key))
     db.update_rater_profile(ids['admin'], is_admin=True)
-    db.update_rater_profile(ids['rater_a'], tier='validated', validation_note='coach')
+    db.update_rater_profile(ids['rater_a'], is_validated=True, validation_note='coach')
 
     video_id = db.create_video(Video(user_id=ids['owner'], filename='v.mp4', fps=30,
                                      total_frames=3, duration_ms=100,
                                      r2_pose_csv_key='pose/secret.csv'))
-    db.update_video_fields(video_id, dataset='A', prep_status='ready')
+    db.update_video_fields(video_id, prep_status='ready', irr_overlap=True,
+                           irr_overlap_set_by='random')
     other_id = db.create_video(Video(user_id=ids['admin'], filename='other.mp4', fps=30,
                                      total_frames=3, duration_ms=100,
                                      r2_pose_csv_key='pose/other.csv'))
@@ -84,10 +85,8 @@ def world(clean_db, dsn):
                                   frame_end=2, timestamp_start_ms=0, timestamp_end_ms=66,
                                   approach='dynamic', size='large', move_tags=['dyno'],
                                   form_quality=3, effort_level=5, confidence='high'))
-    a_id = db.create_assignment(VideoAssignment(video_id=video_id, rater_user_id=ids['rater_a'],
-                                                cohort='validated')).id
-    b_id = db.create_assignment(VideoAssignment(video_id=video_id, rater_user_id=ids['rater_b'],
-                                                cohort='overlap')).id
+    a_id = db.create_assignment(VideoAssignment(video_id=video_id, rater_user_id=ids['rater_a'])).id
+    b_id = db.create_assignment(VideoAssignment(video_id=video_id, rater_user_id=ids['rater_b'])).id
     env_a = db.create_environment(Environment(move_id=move_id, user_id=ids['rater_a'],
                                               wall_angle='steep'))
     env_b = db.create_environment(Environment(move_id=move_id, user_id=ids['rater_b'],
@@ -115,7 +114,7 @@ def test_rater_cannot_repoint_or_complete_their_assignment(world):
                        (world['assignment_a'],)) == 0
     assert rater.count('DELETE FROM video_assignments WHERE id = %s', (world['assignment_b'],)) == 0
     assert rater.error(
-        "INSERT INTO video_assignments (video_id, rater_user_id, cohort) VALUES (%s, %s, 'overlap')",
+        "INSERT INTO video_assignments (video_id, rater_user_id) VALUES (%s, %s)",
         (world['other_id'], world['rater_a']),
     ) is psycopg.errors.InsufficientPrivilege  # RLS WITH CHECK violation
 
@@ -132,17 +131,20 @@ def test_rater_cannot_repoint_or_complete_their_assignment(world):
                        (world['assignment_a'],)) == 1
 
 
-# ==================== 2. videos: dataset / prep_status are API-only ====================
+# ==================== 2. videos: prep / overlap / source fields are API-only ====================
 
-def test_owner_cannot_change_prep_status_or_dataset_but_can_edit_metadata(world):
+def test_owner_cannot_change_prep_overlap_or_source_but_can_edit_metadata(world):
     owner = as_(world, 'owner')
     assert owner.error("UPDATE videos SET prep_status = 'draft' WHERE id = %s",
                        (world['video_id'],)) is psycopg.errors.InsufficientPrivilege
-    assert owner.error("UPDATE videos SET dataset = 'B' WHERE id = %s",
-                       (world['video_id'],)) is psycopg.errors.InsufficientPrivilege
+    for column, value in (('irr_overlap', 'false'), ('irr_overlap_set_by', "'admin_override'"),
+                          ('source_type', "'community'"), ('athlete_id', 'NULL'),
+                          ('event_date', "'2000-01-01'"), ('source_url', "'x'")):
+        assert owner.error(f"UPDATE videos SET {column} = {value} WHERE id = %s",
+                           (world['video_id'],)) is psycopg.errors.InsufficientPrivilege, column
     assert owner.count("UPDATE videos SET notes = 'mine' WHERE id = %s", (world['video_id'],)) == 1
     video = world['db'].get_video_any(world['video_id'])
-    assert video.prep_status == 'ready' and video.dataset == 'A' and video.notes == 'mine'
+    assert video.prep_status == 'ready' and video.irr_overlap is True and video.notes == 'mine'
 
     # An admin through PostgREST is bound by the same column privilege: the
     # ready/close/reopen transitions are API routes.
@@ -156,12 +158,12 @@ def test_owner_cannot_change_prep_status_or_dataset_but_can_edit_metadata(world)
 # ==================== 3. rater_profiles: own row editable, privileged columns not ====================
 
 def test_validated_rater_can_rename_but_not_promote_themself(world):
-    rater = as_(world, 'rater_a')  # tier = validated, validation_note set
+    rater = as_(world, 'rater_a')  # is_validated, validation_note set
     assert rater.count("UPDATE rater_profiles SET display_name = 'A. Rater' WHERE user_id = %s",
                        (world['rater_a'],)) == 1
     assert rater.count("UPDATE rater_profiles SET bio = 'Coach.' WHERE user_id = %s",
                        (world['rater_a'],)) == 1
-    assert rater.error("UPDATE rater_profiles SET tier = 'open' WHERE user_id = %s",
+    assert rater.error("UPDATE rater_profiles SET is_validated = false WHERE user_id = %s",
                        (world['rater_a'],)) is psycopg.errors.InsufficientPrivilege
     assert rater.error("UPDATE rater_profiles SET is_admin = true WHERE user_id = %s",
                        (world['rater_a'],)) is psycopg.errors.InsufficientPrivilege
@@ -171,7 +173,7 @@ def test_validated_rater_can_rename_but_not_promote_themself(world):
     assert rater.count("UPDATE rater_profiles SET display_name = 'pwned' WHERE user_id = %s",
                        (world['rater_b'],)) == 0
     profile = world['db'].get_rater_profile(world['rater_a'])
-    assert profile.display_name == 'A. Rater' and profile.tier == 'validated' and not profile.is_admin
+    assert profile.display_name == 'A. Rater' and profile.is_validated and not profile.is_admin
     assert profile.bio == 'Coach.'
     # They only see themself (admin sees everyone).
     assert [r['user_id'] for r in rater.rows('SELECT user_id FROM rater_profiles')] == [uuid.UUID(world['rater_a'])]
@@ -184,7 +186,7 @@ def test_self_insert_uses_defaults_and_cannot_name_privileged_columns(world):
     assert me.count("INSERT INTO rater_profiles (user_id, display_name, bio) VALUES (%s, 'New', 'Hi')",
                     (newcomer,)) == 1
     profile = world['db'].get_rater_profile(newcomer)
-    assert profile.tier == 'open' and profile.is_admin is False and profile.validation_note is None
+    assert profile.is_validated is False and profile.is_admin is False and profile.validation_note is None
     assert profile.bio == 'Hi'
 
     another = str(uuid.uuid4())
@@ -193,7 +195,7 @@ def test_self_insert_uses_defaults_and_cannot_name_privileged_columns(world):
         "INSERT INTO rater_profiles (user_id, display_name, is_admin) VALUES (%s, 'X', true)",
         (another,)) is psycopg.errors.InsufficientPrivilege
     assert other.error(
-        "INSERT INTO rater_profiles (user_id, display_name, tier) VALUES (%s, 'X', 'validated')",
+        "INSERT INTO rater_profiles (user_id, display_name, is_validated) VALUES (%s, 'X', true)",
         (another,)) is psycopg.errors.InsufficientPrivilege
     # A row for somebody else fails the policy.
     assert other.error(
@@ -253,7 +255,8 @@ def test_structure_locks_at_ready_for_owner_and_always_for_raters(world):
 
 def test_anon_sees_nothing(world):
     anon = as_(world, None)
-    for table in ('videos', 'holds', 'moves', 'environments', 'rater_profiles', 'video_assignments'):
+    for table in ('videos', 'holds', 'moves', 'environments', 'rater_profiles', 'video_assignments',
+                  'strategies', 'athletes'):
         assert anon.rows(f'SELECT 1 FROM {table}') == [], table
 
 
@@ -278,3 +281,36 @@ def test_pose_columns_are_not_writable_through_postgrest(world):
     # The API's own role is unaffected: this is the worker's path.
     assert world['db'].record_pose_result(world['video_id'], 'processing')
     assert world['db'].get_video_any(world['video_id']).pose_status == 'processing'
+
+
+# ==================== 8. strategies: per rater, like environments ====================
+
+def test_strategies_are_private_to_each_rater(world):
+    a, b = as_(world, 'rater_a'), as_(world, 'rater_b')
+    move_id = world['move_id']
+    insert = ("INSERT INTO strategies (move_id, user_id, approach, size, form_quality) "
+              "VALUES (%s, %s, %s, 'large', 3)")
+    assert a.count(insert, (move_id, world['rater_a'], 'static')) == 1
+    assert b.count(insert, (move_id, world['rater_b'], 'dynamic')) == 1
+    # Writing a row in someone else's name fails the policy.
+    assert b.error(insert, (move_id, world['rater_a'], 'coordination')) is psycopg.errors.InsufficientPrivilege
+
+    assert [r['approach'] for r in a.rows('SELECT approach FROM strategies')] == ['static']
+    assert [r['approach'] for r in b.rows('SELECT approach FROM strategies')] == ['dynamic']
+    assert b.count("UPDATE strategies SET approach = 'coordination' WHERE user_id = %s", (world['rater_a'],)) == 0
+    assert b.count('DELETE FROM strategies WHERE user_id = %s', (world['rater_a'],)) == 0
+    assert as_(world, 'outsider').rows('SELECT 1 FROM strategies') == []
+    assert len(as_(world, 'admin').rows('SELECT 1 FROM strategies')) == 2
+
+
+# ==================== 9. athletes: admin only ====================
+
+def test_athletes_are_admin_only(world):
+    admin = as_(world, 'admin')
+    assert admin.count("INSERT INTO athletes (height_cm, height_source, birth_year) VALUES (170, 'ifsc_profile', 1995)") == 1
+    for who in ('owner', 'rater_a', 'outsider'):
+        user = as_(world, who)
+        assert user.rows('SELECT 1 FROM athletes') == [], who
+        assert user.error("INSERT INTO athletes (birth_year) VALUES (2001)") is psycopg.errors.InsufficientPrivilege, who
+        assert user.count('UPDATE athletes SET birth_year = 2010') == 0, who
+    assert [r['birth_year'] for r in admin.rows('SELECT birth_year FROM athletes')] == [1995]

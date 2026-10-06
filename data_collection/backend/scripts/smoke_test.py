@@ -236,6 +236,10 @@ def main():
         'duration_ms': 166.0,
         'csv_data': POSE_CSV,
     })
+    if status == 403 and 'SELF_UPLOAD_ENABLED' in str(video):
+        print('  hint: self-upload is off (the default since W2). Make the smoke-test user an admin\n'
+              '        (UPDATE rater_profiles SET is_admin = true WHERE user_id = ...) or run against\n'
+              '        a deployment with SELF_UPLOAD_ENABLED=true.')
     check('POST /api/videos/register is 201', status == 201, f'got {status}: {video}')
     if status != 201:
         return summarize()

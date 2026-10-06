@@ -2,7 +2,11 @@
 """
 Krippendorff's alpha per field from the long-format export.
 
-Reference implementation for the Dataset A inter-rater reliability check.
+Reference implementation for the inter-rater reliability check.
+
+Only the overlap subset counts: videos drawn at random (irr_overlap = true)
+to be rated by 3 raters. Every other video has a single rater and carries no
+agreement information. Pass --all-videos to drop that filter (debugging).
 Reads the CSV produced by GET /api/admin/export/long (one row per
 video, move, rater, lens, field), pivots each field into a
 raters x units matrix (unit = (video_id, move_id)), and computes alpha with
@@ -27,7 +31,7 @@ also summarised by count so the report shows how often each tag was used.
 Usage:
     python scripts/irr_alpha.py dynalytix_long.csv
     python scripts/irr_alpha.py dynalytix_long.csv --lens environment
-    python scripts/irr_alpha.py dynalytix_long.csv --cohort validated --min-raters 3
+    python scripts/irr_alpha.py dynalytix_long.csv --min-raters 3
     python scripts/irr_alpha.py dynalytix_long.csv --json out.json
 
 Requires: pip install krippendorff numpy
@@ -52,18 +56,35 @@ FRAME_TAG_LENS = 'frame_tags'
 Unit = Tuple[str, str]  # (video_id, move_id)
 
 
-def read_long(path: str, lens: Optional[str] = None, cohort: Optional[str] = None,
-              dataset: Optional[str] = None) -> List[dict]:
-    """Rows of the long export, optionally filtered."""
+def read_long(path: str, lens: Optional[str] = None, overlap_only: bool = True) -> List[dict]:
+    """Rows of the long export, optionally filtered.
+
+    overlap_only (default) keeps rows of videos in the reliability subset
+    (irr_overlap == 'true'). A CSV without the column (pre-W2 export) is
+    refused rather than silently treated as all-overlap.
+    """
     with open(path, newline='', encoding='utf-8') as handle:
-        rows = list(csv.DictReader(handle))
+        reader = csv.DictReader(handle)
+        if overlap_only and 'irr_overlap' not in (reader.fieldnames or []):
+            raise ValueError(
+                "CSV has no irr_overlap column (an export from before the single-dataset "
+                "change). Re-export, or pass --all-videos."
+            )
+        rows = list(reader)
+    if overlap_only:
+        rows = [r for r in rows if r.get('irr_overlap') == 'true']
     if lens:
         rows = [r for r in rows if r['lens'] == lens]
-    if cohort:
-        rows = [r for r in rows if r['cohort'] == cohort]
-    if dataset:
-        rows = [r for r in rows if r['dataset'] == dataset]
     return rows
+
+
+def coverage(rows: List[dict]) -> dict:
+    """How much data the alpha is computed on."""
+    return {
+        'n_videos': len({r['video_id'] for r in rows}),
+        'n_moves': len({(r['video_id'], r['move_id']) for r in rows}),
+        'n_raters': len({r['rater_user_id'] for r in rows}),
+    }
 
 
 def pivot(rows: List[dict]) -> Dict[Tuple[str, str], Dict[Unit, Dict[str, str]]]:
@@ -204,18 +225,26 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Krippendorff's alpha per field from the long export")
     parser.add_argument('csv', help='long-format CSV from GET /api/admin/export/long')
     parser.add_argument('--lens', help='only this lens (environment|strategy|outcome|frame_tags)')
-    parser.add_argument('--cohort', help="only rows with this cohort (validated|overlap)")
-    parser.add_argument('--dataset', help='only this dataset (A|B)')
+    parser.add_argument('--all-videos', action='store_true',
+                        help='include single-rater videos too (default: overlap subset only)')
     parser.add_argument('--min-raters', type=int, default=2,
                         help='drop units rated by fewer raters than this (default 2)')
     parser.add_argument('--json', help='also write the results to this JSON file')
     args = parser.parse_args(argv)
 
-    rows = read_long(args.csv, lens=args.lens, cohort=args.cohort, dataset=args.dataset)
+    try:
+        rows = read_long(args.csv, lens=args.lens, overlap_only=not args.all_videos)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     if not rows:
         print('No rows after filtering.', file=sys.stderr)
         return 1
 
+    cov = coverage(rows)
+    scope = 'all videos' if args.all_videos else 'overlap subset'
+    print(f"Scope: {scope} - {cov['n_videos']} videos, {cov['n_moves']} moves, "
+          f"{cov['n_raters']} raters\n")
     results = compute(rows, min_raters=args.min_raters)
     print_table(results)
 
@@ -228,7 +257,8 @@ def main(argv=None) -> int:
 
     if args.json:
         with open(args.json, 'w', encoding='utf-8') as handle:
-            json.dump({'results': results, 'tag_counts': counts}, handle, indent=2)
+            json.dump({'coverage': cov, 'scope': scope, 'results': results,
+                       'tag_counts': counts}, handle, indent=2)
         print(f'\nWrote {args.json}')
     return 0
 

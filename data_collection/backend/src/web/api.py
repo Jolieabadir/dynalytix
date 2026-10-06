@@ -9,11 +9,13 @@ written to the container filesystem, which Railway wipes on every deploy.
 Every route below /api (except health) requires a Supabase JWT and is scoped to
 that token's user.
 
-Access model (Dataset A, runbook W1). Every video-bound request resolves the
-caller to one of three roles via _require_video_access:
+Access model (single dataset, runbook W2). Every video-bound request resolves
+the caller to one of three roles via _require_video_access:
 
-    owner   videos.user_id = caller. The Dataset B self-upload flow. Full
-            access while prep_status = 'draft'; holds and moves lock at 'ready'.
+    owner   videos.user_id = caller. For a non-admin this is the dormant
+            community self-upload flow, which only works while
+            SELF_UPLOAD_ENABLED is on. Full access while prep_status =
+            'draft'; holds and moves lock at 'ready'.
     rater   the caller holds a video_assignments row on the video. May read the
             video, holds, canonical moves and pose CSV; may write only its own
             environment / outcome / frame_tag rows. Never sees another rater's
@@ -27,6 +29,7 @@ on a finished assignment, admin routes for non-admins.
 import hmac
 import logging
 import os
+import secrets
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,21 +38,23 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import psycopg
 
 from ..labeling.database import Database, SchemaNotApplied
 from ..labeling import pose_queue
 from ..labeling.models import (
-    Video, Hold, Move, Environment, Outcome, FrameTag,
+    Video, Hold, Move, Environment, Outcome, FrameTag, Strategy, Athlete,
     RaterProfile, VideoAssignment,
     APPROACHES, SIZES, MOVE_TAGS,
     WALL_ANGLES, HOLD_TYPES, HOLD_QUALITIES, HOLD_SLOTS, HOLD_SOURCES,
     RESULTS, REACH_DETAILS, CONFIDENCE_LEVELS,
     TAG_TYPES, BODY_PARTS, SIDES,
     DEFINITIONS,
-    TAXONOMY_VERSION, DATASETS, ASSIGNMENT_COHORTS, RATER_TIERS,
+    TAXONOMY_VERSION,
+    SOURCE_TYPES, PAPER_SOURCE_TYPES, COMMUNITY_SOURCE_TYPE,
+    HEIGHT_SOURCES, ATHLETE_CATEGORIES, MIN_AGE_YEAR_GAP,
 )
 from ..labeling.exporter import Exporter, AdminExporter
 from ..storage import r2
@@ -60,6 +65,34 @@ log = logging.getLogger(__name__)
 # fps the browser reports at register when it cannot measure one. The worker
 # overwrites it from ffprobe; see VideoRegister.
 PROVISIONAL_FPS = 30.0
+
+DEFAULT_IRR_OVERLAP_RATE = 0.25
+
+
+def self_upload_enabled() -> bool:
+    """SELF_UPLOAD_ENABLED: the dormant community self-upload flow.
+
+    Off by default. Read on every call (not cached) so a test, or a Railway
+    variable change plus restart, takes effect without code changes.
+    """
+    return os.environ.get('SELF_UPLOAD_ENABLED', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def irr_overlap_rate() -> float:
+    """IRR_OVERLAP_RATE: share of videos drawn into the 3-rater overlap subset."""
+    raw = os.environ.get('IRR_OVERLAP_RATE', '').strip()
+    try:
+        rate = float(raw) if raw else DEFAULT_IRR_OVERLAP_RATE
+    except ValueError:
+        log.warning('IRR_OVERLAP_RATE=%r is not a number; using %s', raw, DEFAULT_IRR_OVERLAP_RATE)
+        return DEFAULT_IRR_OVERLAP_RATE
+    return min(max(rate, 0.0), 1.0)
+
+
+# Cryptographic RNG for the overlap draw: unpredictable, so nobody can steer
+# which videos land in the reliability subset.
+_overlap_rng = secrets.SystemRandom()
+
 
 # Most holds accepted in one bulk create. A bouldering wall in frame is tens of
 # holds; anything past this is a runaway detector, not a real wall.
@@ -156,18 +189,26 @@ class VideoResponse(BaseModel):
     r2_pose_csv_key: Optional[str]
     r2_export_key: Optional[str]
     uploaded_at: str
-    # Dataset A additions. owner_user_id is videos.user_id (the uploader /
-    # prepper). A rater reading an assigned video sees the owner's id here.
+    # owner_user_id is videos.user_id (the prepper, or a community uploader).
+    # A rater reading an assigned video sees the owner's id here.
     owner_user_id: str = ""
-    dataset: str = "B"
     prep_status: str = "draft"
+    # Inter-rater reliability subset (3 raters) and the resulting target.
+    irr_overlap: bool = False
+    irr_overlap_set_by: Optional[str] = None
+    rater_target: int = 1
+    # Public-source provenance.
+    source_type: str = "public_broadcast"
+    source_url: Optional[str] = None
+    clip_start_ms: Optional[int] = None
+    clip_end_ms: Optional[int] = None
+    license: Optional[str] = None
+    event_name: Optional[str] = None
+    event_date: Optional[str] = None
+    athlete_id: Optional[str] = None
     route_grade: Optional[str] = None
     wall_type: Optional[str] = None
-    climber_experience: Optional[str] = None
-    climber_height_cm: Optional[int] = None
-    climber_ape_index_cm: Optional[int] = None
     camera_angle: Optional[str] = None
-    gym: Optional[str] = None
     notes: Optional[str] = None
     # The caller's relationship to this video: owner | rater | admin.
     access_role: str = "owner"
@@ -182,18 +223,60 @@ class VideoResponse(BaseModel):
 class VideoMetadataUpdate(BaseModel):
     """Admin prep metadata. Every field optional; omitted fields stay.
 
-    Pass "" to clear a nullable text field. `dataset` may be set here too
-    (POST .../ready also sets it to 'A').
+    Pass "" to clear a nullable text field (athlete_id and event_date too).
+    The keys match the sidecar JSON written by scripts/prepare_clip.py, so the
+    admin form can import one directly. irr_overlap is not here: it is drawn
+    at random on mark-ready (see PUT .../overlap for the override).
     """
-    dataset: Optional[str] = None
+    source_type: Optional[str] = None
+    source_url: Optional[str] = None
+    clip_start_ms: Optional[int] = Field(default=None, ge=0)
+    clip_end_ms: Optional[int] = Field(default=None, ge=0)
+    license: Optional[str] = None
+    event_name: Optional[str] = None
+    event_date: Optional[str] = None  # YYYY-MM-DD, or "" to clear
+    athlete_id: Optional[str] = None  # an athletes.athlete_id, or "" to clear
     route_grade: Optional[str] = None
     wall_type: Optional[str] = None
-    climber_experience: Optional[str] = None
-    climber_height_cm: Optional[int] = Field(default=None, gt=0)
-    climber_ape_index_cm: Optional[int] = None
     camera_angle: Optional[str] = None
-    gym: Optional[str] = None
     notes: Optional[str] = None
+
+
+class OverlapUpdate(BaseModel):
+    """Admin override of the random overlap draw."""
+    irr_overlap: bool
+
+
+# --- Athletes (admin only) ---
+
+class AthleteCreate(BaseModel):
+    """A pseudonymous athlete. No name field by design."""
+    ifsc_profile_url: Optional[str] = None
+    height_cm: Optional[int] = Field(default=None, ge=100, le=250)
+    birth_year: Optional[int] = Field(default=None, ge=1900, le=2100)
+    category: Optional[str] = None  # men | women
+    # Defaults to 'ifsc_profile' when height_cm is given, else 'missing'.
+    height_source: Optional[str] = None
+
+
+class AthleteUpdate(BaseModel):
+    """Every field optional; "" clears ifsc_profile_url / category."""
+    ifsc_profile_url: Optional[str] = None
+    height_cm: Optional[int] = Field(default=None, ge=100, le=250)
+    birth_year: Optional[int] = Field(default=None, ge=1900, le=2100)
+    category: Optional[str] = None
+    height_source: Optional[str] = None
+
+
+class AthleteResponse(BaseModel):
+    """An athlete as the admin sees it (profile URL included; never exported)."""
+    athlete_id: str
+    ifsc_profile_url: Optional[str]
+    height_cm: Optional[int]
+    height_source: str
+    birth_year: Optional[int]
+    category: Optional[str]
+    created_at: str
 
 
 class AdminVideoListItem(BaseModel):
@@ -474,6 +557,40 @@ class OutcomeResponse(BaseModel):
     is_gold: bool = False
 
 
+# --- Strategy Schemas (Lens 2, per rater) ---
+
+class StrategyCreate(BaseModel):
+    """A rater's own Strategy labels on a canonical move."""
+    move_id: int
+    approach: str  # static | dynamic | coordination
+    size: str  # small | medium | large
+    move_tags: List[str] = []
+    form_quality: int = Field(ge=1, le=5)
+    confidence: Optional[str] = None  # low | med | high
+
+
+class StrategyUpdate(BaseModel):
+    """Every field optional."""
+    approach: Optional[str] = None
+    size: Optional[str] = None
+    move_tags: Optional[List[str]] = None
+    form_quality: Optional[int] = Field(default=None, ge=1, le=5)
+    confidence: Optional[str] = None
+
+
+class StrategyResponse(BaseModel):
+    """A rater's Strategy row."""
+    id: int
+    move_id: int
+    approach: str
+    size: str
+    move_tags: List[str]
+    form_quality: int
+    confidence: Optional[str]
+    taxonomy_version: str = ""
+    is_gold: bool = False
+
+
 # --- Frame Tag Schemas (Sensation) ---
 
 class FrameTagCreate(BaseModel):
@@ -504,11 +621,11 @@ class FrameTagResponse(BaseModel):
     is_gold: bool = False
 
 
-# --- Rater profile / assignment / admin Schemas (Dataset A) ---
+# --- Rater profile / assignment / admin Schemas ---
 
 class ProfileCreate(BaseModel):
-    """What a rater fills in at first sign-in. tier / is_admin are not here:
-    only an admin sets those."""
+    """What a rater fills in at first sign-in. is_validated / is_admin are
+    not here: only an admin sets those."""
     display_name: str = Field(min_length=1, max_length=120)
     years_climbing: Optional[int] = Field(default=None, ge=0, le=100)
     bio: Optional[str] = Field(default=None, max_length=1000)
@@ -520,7 +637,7 @@ class ProfileResponse(BaseModel):
     """A rater profile. is_admin tells the app whether to show admin views."""
     user_id: str
     display_name: str
-    tier: str
+    is_validated: bool
     years_climbing: Optional[int]
     bio: Optional[str]
     highest_grade: Optional[str]
@@ -532,7 +649,7 @@ class ProfileResponse(BaseModel):
 
 class ProfileUpdate(BaseModel):
     """What a rater may change on their own profile later. Every field
-    optional; tier / validation_note / is_admin are admin-only and absent."""
+    optional; is_validated / validation_note / is_admin are admin-only and absent."""
     display_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
     years_climbing: Optional[int] = Field(default=None, ge=0, le=100)
     bio: Optional[str] = Field(default=None, max_length=1000)
@@ -542,17 +659,16 @@ class ProfileUpdate(BaseModel):
 
 class RaterUpdate(BaseModel):
     """Admin-only edits to a profile. Every field optional."""
-    tier: Optional[str] = None  # validated | open
+    is_validated: Optional[bool] = None
     validation_note: Optional[str] = None
     is_admin: Optional[bool] = None
     display_name: Optional[str] = None
 
 
 class AssignmentCreate(BaseModel):
-    """Admin assigns one rater to one video."""
+    """Admin assigns one validated rater to one ready video."""
     video_id: int
     rater_user_id: str
-    cohort: str  # validated | overlap
 
 
 class AssignmentResponse(BaseModel):
@@ -560,7 +676,6 @@ class AssignmentResponse(BaseModel):
     id: int
     video_id: int
     rater_user_id: str
-    cohort: str
     status: str  # assigned | in_progress | done
     assigned_at: str
     completed_at: Optional[str]
@@ -607,6 +722,9 @@ class ConfigResponse(BaseModel):
     # Plain-language definitions for every option above, and optional
     # display_label overrides. {taxonomy_key: {value: {description, display_label?}}}
     definitions: dict
+    # Feature flags the frontend reads at runtime (no Vite rebuild needed).
+    self_upload_enabled: bool = False
+    source_types: List[str] = []
 
 
 class ExportResponse(BaseModel):
@@ -652,15 +770,21 @@ def video_to_response(video: Video, access_role: str = 'owner') -> VideoResponse
         r2_export_key=video.r2_export_key,
         uploaded_at=_iso(video.uploaded_at),
         owner_user_id=video.user_id,
-        dataset=video.dataset,
         prep_status=video.prep_status,
+        irr_overlap=bool(video.irr_overlap),
+        irr_overlap_set_by=video.irr_overlap_set_by,
+        rater_target=video.rater_target(),
+        source_type=video.source_type,
+        source_url=video.source_url,
+        clip_start_ms=video.clip_start_ms,
+        clip_end_ms=video.clip_end_ms,
+        license=video.license,
+        event_name=video.event_name,
+        event_date=video.event_date.isoformat() if video.event_date else None,
+        athlete_id=video.athlete_id,
         route_grade=video.route_grade,
         wall_type=video.wall_type,
-        climber_experience=video.climber_experience,
-        climber_height_cm=video.climber_height_cm,
-        climber_ape_index_cm=video.climber_ape_index_cm,
         camera_angle=video.camera_angle,
-        gym=video.gym,
         notes=video.notes,
         access_role=access_role,
         pose_status=video.pose_status or 'pending',
@@ -675,7 +799,7 @@ def profile_to_response(profile: RaterProfile) -> ProfileResponse:
     return ProfileResponse(
         user_id=profile.user_id,
         display_name=profile.display_name,
-        tier=profile.tier,
+        is_validated=bool(profile.is_validated),
         years_climbing=profile.years_climbing,
         bio=profile.bio,
         highest_grade=profile.highest_grade,
@@ -692,10 +816,37 @@ def assignment_to_response(assignment: VideoAssignment) -> AssignmentResponse:
         id=assignment.id,
         video_id=assignment.video_id,
         rater_user_id=assignment.rater_user_id,
-        cohort=assignment.cohort,
         status=assignment.status,
         assigned_at=_iso(assignment.assigned_at),
         completed_at=_iso(assignment.completed_at) or None,
+    )
+
+
+def athlete_to_response(athlete: Athlete) -> AthleteResponse:
+    """Convert Athlete model to response schema."""
+    return AthleteResponse(
+        athlete_id=athlete.athlete_id,
+        ifsc_profile_url=athlete.ifsc_profile_url,
+        height_cm=athlete.height_cm,
+        height_source=athlete.height_source,
+        birth_year=athlete.birth_year,
+        category=athlete.category,
+        created_at=_iso(athlete.created_at),
+    )
+
+
+def strategy_to_response(strategy: Strategy) -> StrategyResponse:
+    """Convert Strategy model to response schema."""
+    return StrategyResponse(
+        id=strategy.id,
+        move_id=strategy.move_id,
+        approach=strategy.approach,
+        size=strategy.size,
+        move_tags=strategy.move_tags,
+        form_quality=strategy.form_quality,
+        confidence=strategy.confidence or None,
+        taxonomy_version=strategy.taxonomy_version,
+        is_gold=strategy.is_gold,
     )
 
 
@@ -870,6 +1021,35 @@ def _require_video(video_id: int, user_id: str) -> Video:
     return video
 
 
+def _self_upload_forbidden() -> HTTPException:
+    return _forbidden(
+        'Self-upload is switched off (SELF_UPLOAD_ENABLED). '
+        'Videos are uploaded and prepped by an admin.'
+    )
+
+
+def _require_uploader(user_id: str) -> bool:
+    """Who may register and upload a video: an admin always; anyone else only
+    while the community self-upload flag is on. Returns is_admin."""
+    if get_db().is_admin(user_id):
+        return True
+    if not self_upload_enabled():
+        raise _self_upload_forbidden()
+    return False
+
+
+def _require_upload_video(video_id: int, user_id: str) -> Video:
+    """One of the caller's own videos for an upload step, or 404 / 403.
+
+    Same ownership rule as _require_video, plus the self-upload gate for
+    non-admins, so turning the flag off also stops a half-finished community
+    upload rather than only hiding the button.
+    """
+    video = _require_video(video_id, user_id)
+    _require_uploader(user_id)
+    return video
+
+
 def _require_pose_done(video: Video) -> None:
     """409 until the worker has written the pose CSV."""
     if video.pose_status != 'done' or not video.r2_pose_csv_key:
@@ -933,6 +1113,9 @@ def _require_structure_write(access: VideoAccess):
         return
     if access.role == 'rater':
         raise _forbidden('Raters cannot create, edit or delete holds or moves')
+    # A non-admin owner is the community flow, which the flag switches off.
+    if not self_upload_enabled() and not get_db().is_admin(access.user_id):
+        raise _self_upload_forbidden()
     if access.video.is_locked():
         raise _forbidden(
             f"Video {access.video.id} is {access.video.prep_status}: holds and moves are locked"
@@ -943,8 +1126,14 @@ def _require_label_write(access: VideoAccess):
     """Environment / outcome / frame_tag rows: owner, admin, or a rater whose
     assignment is still open on a video that is not closed.
 
-    A rater's first label write moves their assignment to in_progress.
+    A rater's first label write moves their assignment to in_progress. A
+    non-admin owner labeling their own video is the community flow and needs
+    SELF_UPLOAD_ENABLED.
     """
+    if access.role == 'owner':
+        if not self_upload_enabled() and not get_db().is_admin(access.user_id):
+            raise _self_upload_forbidden()
+        return
     if access.role != 'rater':
         return
     if access.video.prep_status == 'closed':
@@ -1101,6 +1290,8 @@ async def get_config(user_id: str = Depends(get_current_user_id)):
         sides=SIDES,
         # Definitions rendered as an "i" tooltip beside each option.
         definitions=DEFINITIONS,
+        self_upload_enabled=self_upload_enabled(),
+        source_types=PAPER_SOURCE_TYPES,
     )
 
 
@@ -1118,9 +1309,14 @@ async def register_video(
     VideoRegister) and pose_status 'pending'. No CSV is accepted any more:
     the flow is register -> upload-url -> PUT to R2 -> confirm-upload, and
     confirm-upload enqueues the pose worker, which writes the CSV.
+
+    Admin only, unless SELF_UPLOAD_ENABLED: then anyone may register, and a
+    non-admin's video is a community video (excluded from paper exports).
     """
+    is_admin = _require_uploader(user_id)
     video = Video(
         user_id=user_id,
+        source_type='public_broadcast' if is_admin else COMMUNITY_SOURCE_TYPE,
         filename=payload.filename,
         fps=payload.fps,
         total_frames=payload.total_frames,
@@ -1141,7 +1337,7 @@ async def create_upload_url(
     user_id: str = Depends(get_current_user_id),
 ):
     """Presigned PUT URL so the browser uploads the original video to R2 directly."""
-    video = _require_video(video_id, user_id)
+    video = _require_upload_video(video_id, user_id)
 
     key = r2.video_key(user_id, video_id, video.filename)
     expires_in = 3600
@@ -1183,7 +1379,7 @@ async def create_multipart(
     browser holds on to `upload_id` and resumes from the first part it has no
     ETag for.
     """
-    video = _require_video(video_id, user_id)
+    video = _require_upload_video(video_id, user_id)
     key = _multipart_key(video, user_id)
 
     try:
@@ -1206,7 +1402,7 @@ async def sign_upload_part(
     user_id: str = Depends(get_current_user_id),
 ):
     """Presign one part. Called again on resume, and again on a part retry."""
-    video = _require_video(video_id, user_id)
+    video = _require_upload_video(video_id, user_id)
     key = _guard_multipart_key(video, user_id, payload.key)
 
     expires_in = 3600
@@ -1236,7 +1432,7 @@ async def complete_multipart(
     This is confirm-upload for the multipart path: same post-conditions, one
     round trip instead of two, because the phone may not get another.
     """
-    video = _require_video(video_id, user_id)
+    video = _require_upload_video(video_id, user_id)
     key = _guard_multipart_key(video, user_id, payload.key)
 
     if not payload.parts:
@@ -1266,7 +1462,7 @@ async def abort_multipart(
     user_id: str = Depends(get_current_user_id),
 ):
     """Discard an abandoned upload so R2 stops billing for its parts."""
-    video = _require_video(video_id, user_id)
+    video = _require_upload_video(video_id, user_id)
     key = _guard_multipart_key(video, user_id, payload.key)
 
     try:
@@ -1293,7 +1489,7 @@ async def confirm_upload(
     configured) is reported through pose_status='failed' + pose_error rather
     than failing the confirm, because the upload itself succeeded.
     """
-    video = _require_video(video_id, user_id)
+    video = _require_upload_video(video_id, user_id)
 
     key = payload.key or r2.video_key(user_id, video_id, video.filename)
 
@@ -1917,6 +2113,106 @@ async def delete_outcome(outcome_id: int, user_id: str = Depends(get_current_use
     return None
 
 
+# ==================== STRATEGY ENDPOINTS (Lens 2, per rater) ====================
+
+def _validate_strategy_fields(approach=None, size=None, move_tags=None, confidence=None):
+    if approach is not None and approach not in APPROACHES:
+        raise _bad_request(f"Invalid approach: {approach}. Must be one of: {APPROACHES}")
+    if size is not None and size not in SIZES:
+        raise _bad_request(f"Invalid size: {size}. Must be one of: {SIZES}")
+    for tag in move_tags or []:
+        if tag not in MOVE_TAGS:
+            raise _bad_request(f"Invalid move tag: {tag}. Must be one of: {MOVE_TAGS}")
+    if confidence is not None and confidence != '' and confidence not in CONFIDENCE_LEVELS:
+        raise _bad_request(f"Invalid confidence: {confidence}. Must be one of: {CONFIDENCE_LEVELS}")
+
+
+@app.post("/api/strategies", response_model=StrategyResponse, status_code=status.HTTP_201_CREATED)
+async def create_strategy(
+    data: StrategyCreate,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Create the caller's Strategy row for a move (one per move per rater).
+
+    Raters label Strategy independently, like Environment and Outcome, so it
+    enters the reliability analysis. The canonical move row only fixes the
+    move's boundaries.
+    """
+    _, access = _require_move_access(data.move_id, user_id)
+    _require_label_write(access)
+
+    if get_db().get_strategy_for_move(data.move_id, user_id):
+        raise _conflict(f"Strategy already exists for move {data.move_id}. Use PUT to update.")
+    _validate_strategy_fields(data.approach, data.size, data.move_tags, data.confidence)
+
+    strategy = Strategy(
+        move_id=data.move_id,
+        user_id=user_id,
+        approach=data.approach,
+        size=data.size,
+        move_tags=list(data.move_tags),
+        form_quality=data.form_quality,
+        confidence=data.confidence or '',
+        taxonomy_version=TAXONOMY_VERSION,
+    )
+    try:
+        strategy.id = get_db().create_strategy(strategy)
+    except psycopg.errors.UniqueViolation:
+        raise _conflict(f"Strategy already exists for move {data.move_id}. Use PUT to update.")
+    return strategy_to_response(strategy)
+
+
+@app.get("/api/moves/{move_id}/strategy", response_model=StrategyResponse)
+async def get_strategy(move_id: int, user_id: str = Depends(get_current_user_id)):
+    """The caller's own Strategy row for a move (404 if none)."""
+    _require_move(move_id, user_id)
+    strategy = get_db().get_strategy_for_move(move_id, user_id)
+    if not strategy:
+        raise _not_found(f"No strategy record for move {move_id}")
+    return strategy_to_response(strategy)
+
+
+@app.put("/api/strategies/{strategy_id}", response_model=StrategyResponse)
+async def update_strategy(
+    strategy_id: int,
+    data: StrategyUpdate,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Update the caller's own Strategy row (another rater's is 404)."""
+    strategy = get_db().get_strategy(strategy_id, user_id)
+    if not strategy:
+        raise _not_found(f"Strategy {strategy_id} not found")
+    _, access = _require_move_access(strategy.move_id, user_id)
+    _require_label_write(access)
+    _validate_strategy_fields(data.approach, data.size, data.move_tags, data.confidence)
+
+    if data.approach is not None:
+        strategy.approach = data.approach
+    if data.size is not None:
+        strategy.size = data.size
+    if data.move_tags is not None:
+        strategy.move_tags = list(data.move_tags)
+    if data.form_quality is not None:
+        strategy.form_quality = data.form_quality
+    if data.confidence is not None:
+        strategy.confidence = data.confidence
+    strategy.taxonomy_version = TAXONOMY_VERSION
+    get_db().update_strategy(strategy)
+    return strategy_to_response(strategy)
+
+
+@app.delete("/api/strategies/{strategy_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_strategy(strategy_id: int, user_id: str = Depends(get_current_user_id)):
+    """Delete the caller's own Strategy row."""
+    strategy = get_db().get_strategy(strategy_id, user_id)
+    if not strategy:
+        raise _not_found(f"Strategy {strategy_id} not found")
+    _, access = _require_move_access(strategy.move_id, user_id)
+    _require_label_write(access)
+    get_db().delete_strategy(strategy_id, user_id)
+    return None
+
+
 # ==================== FRAME TAG ENDPOINTS ====================
 
 @app.post("/api/frame-tags", response_model=FrameTagResponse, status_code=status.HTTP_201_CREATED)
@@ -1997,7 +2293,7 @@ async def create_my_profile(
 ):
     """Create the caller's profile. Saved once; 409 if it already exists.
 
-    tier starts at 'open' and is_admin at false; only an admin changes those.
+    is_validated and is_admin start false; only an admin changes those.
     """
     db = get_db()
     if db.get_rater_profile(user_id):
@@ -2005,7 +2301,7 @@ async def create_my_profile(
     profile = RaterProfile(
         user_id=user_id,
         display_name=payload.display_name.strip(),
-        tier='open',
+        is_validated=False,
         years_climbing=payload.years_climbing,
         bio=(payload.bio or '').strip() or None,
         highest_grade=(payload.highest_grade or '').strip() or None,
@@ -2027,7 +2323,7 @@ async def update_my_profile(
 ):
     """Edit the caller's own profile. 404 if none yet (POST first).
 
-    tier, validation_note and is_admin are not accepted here; an admin sets
+    is_validated, validation_note and is_admin are not accepted here; an admin sets
     them through PUT /api/admin/raters/{user_id}.
     """
     db = get_db()
@@ -2044,7 +2340,7 @@ async def update_my_profile(
     return profile_to_response(updated)
 
 
-# ==================== RATER QUEUE / ASSIGNMENTS (Dataset A) ====================
+# ==================== RATER QUEUE / ASSIGNMENTS ====================
 
 def _require_my_assignment(assignment_id: int, user_id: str) -> VideoAssignment:
     """One of the caller's own assignments, or 404."""
@@ -2056,8 +2352,16 @@ def _require_my_assignment(assignment_id: int, user_id: str) -> VideoAssignment:
 
 @app.get("/api/me/assignments", response_model=List[MyAssignmentItem])
 async def list_my_assignments(user_id: str = Depends(get_current_user_id)):
-    """The caller's rating queue: every assignment with its video and move count."""
+    """The caller's rating queue: every assignment with its video and move count.
+
+    Empty until an admin has validated the caller (the app shows a "waiting
+    for validation" screen from the profile's is_validated). An admin always
+    sees their own queue.
+    """
     db = get_db()
+    profile = db.get_rater_profile(user_id)
+    if not profile or not (profile.is_validated or profile.is_admin):
+        return []
     items = []
     for assignment in db.list_assignments_for_rater(user_id):
         video = db.get_video_any(assignment.video_id)
@@ -2090,9 +2394,9 @@ async def start_assignment(assignment_id: int, user_id: str = Depends(get_curren
 async def complete_assignment(assignment_id: int, user_id: str = Depends(get_current_user_id)):
     """Mark the caller's assignment done.
 
-    Validates that every canonical move on the video has BOTH an environment
-    and an outcome written by this rater. Strategy lives on the canonical
-    move row (filled in prep), so it always counts as present. On failure:
+    Validates that every canonical move on the video has a strategy, an
+    environment and an outcome written by this rater. Frame tags (sensation)
+    and effort are not required: raters label what is observable. On failure:
     422 with {"detail": ..., "missing": [{move_id, move_index, missing: [...]}]}.
     """
     db = get_db()
@@ -2110,6 +2414,8 @@ async def complete_assignment(assignment_id: int, user_id: str = Depends(get_cur
     missing = []
     for move_index, move in enumerate(moves):
         lenses = []
+        if not db.get_strategy_for_move(move.id, user_id):
+            lenses.append('strategy')
         if not db.get_environment_for_move(move.id, user_id):
             lenses.append('environment')
         if not db.get_outcome_for_move(move.id, user_id):
@@ -2130,7 +2436,7 @@ async def complete_assignment(assignment_id: int, user_id: str = Depends(get_cur
     return assignment_to_response(done)
 
 
-# ==================== ADMIN (Dataset A) ====================
+# ==================== ADMIN ====================
 #
 # Every route here depends on require_admin and returns 403 for anyone else.
 
@@ -2154,30 +2460,130 @@ def _require_any_video(video_id: int) -> Video:
     return video
 
 
+def _parse_event_date(value: str) -> Optional[date]:
+    if value == '':
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise _bad_request(f"Invalid event_date: {value!r}. Use YYYY-MM-DD.")
+
+
 @app.put("/api/admin/videos/{video_id}/metadata", response_model=VideoResponse)
 async def admin_update_video_metadata(
     video_id: int,
     payload: VideoMetadataUpdate,
     _admin: str = Depends(require_admin),
 ):
-    """Set prep metadata (and optionally dataset) on any video."""
-    _require_any_video(video_id)
-    if payload.dataset is not None and payload.dataset not in DATASETS:
-        raise _bad_request(f"Invalid dataset: {payload.dataset}. Must be one of: {DATASETS}")
-    video = get_db().update_video_fields(video_id, **payload.model_dump())
-    return video_to_response(video, 'admin')
+    """Set prep metadata and public-source fields on any video.
+
+    source_type may be any paper type; 'community' is set only by the
+    self-upload flow. athlete_id must name an existing athlete.
+    """
+    video = _require_any_video(video_id)
+    fields = payload.model_dump()
+
+    if fields['source_type'] is not None:
+        if fields['source_type'] not in PAPER_SOURCE_TYPES:
+            raise _bad_request(
+                f"Invalid source_type: {fields['source_type']}. Must be one of: {PAPER_SOURCE_TYPES}"
+            )
+    if fields['event_date'] is not None:
+        fields['event_date'] = _parse_event_date(fields['event_date'])
+        if fields['event_date'] is None:
+            fields['event_date'] = ''  # clear
+    if fields['athlete_id'] is not None and fields['athlete_id'] != '':
+        if not get_db().get_athlete(fields['athlete_id']):
+            raise _bad_request(f"Unknown athlete_id: {fields['athlete_id']}")
+
+    start = fields['clip_start_ms'] if fields['clip_start_ms'] is not None else video.clip_start_ms
+    end = fields['clip_end_ms'] if fields['clip_end_ms'] is not None else video.clip_end_ms
+    if start is not None and end is not None and end <= start:
+        raise _bad_request('clip_end_ms must be greater than clip_start_ms')
+
+    updated = get_db().update_video_fields(video_id, **fields)
+    return video_to_response(updated, 'admin')
+
+
+def _ready_blockers(video: Video) -> List[str]:
+    """Why a paper clip cannot be marked ready yet ([] when it can).
+
+    Provenance must be complete and the athlete must be an adult on the event
+    date. Without full birth dates, (event year - birth year) >= 19 is the
+    conservative test that guarantees 18+.
+    """
+    if video.is_community():
+        return []
+    problems = []
+    if not video.source_type:
+        problems.append('source_type is missing')
+    if video.source_type == 'research_dataset':
+        if not (video.source_url or video.license):
+            problems.append('source_url or license is required for research_dataset clips')
+    elif not video.source_url:
+        problems.append('source_url is missing')
+    if not video.event_date:
+        problems.append('event_date is missing')
+    if not video.athlete_id:
+        problems.append('athlete is not set')
+    else:
+        athlete = get_db().get_athlete(video.athlete_id)
+        if not athlete:
+            problems.append('athlete record not found')
+        elif athlete.birth_year is None:
+            problems.append("athlete's birth_year is missing (needed for the 18+ check)")
+        elif video.event_date and video.event_date.year - athlete.birth_year < MIN_AGE_YEAR_GAP:
+            problems.append(
+                f'athlete may be under 18 on {video.event_date.isoformat()} '
+                f'(born {athlete.birth_year}); only clips of adults can be rated'
+            )
+    return problems
 
 
 @app.post("/api/admin/videos/{video_id}/ready", response_model=VideoResponse)
 async def admin_mark_ready(video_id: int, _admin: str = Depends(require_admin)):
-    """Mark a video ready to rate: dataset -> 'A', prep_status -> 'ready'.
+    """Mark a video ready to rate: prep_status -> 'ready'.
 
-    Holds and canonical moves lock from here (admins excepted). Setting
-    dataset here means the prep flow needs no separate call to tag it.
+    Holds and canonical moves lock from here (admins excepted). 422 with a
+    list of reasons when provenance or the 18+ check fails.
+
+    The first time a video is marked ready its overlap flag is drawn at
+    random (probability IRR_OVERLAP_RATE, default 0.25), so the reliability
+    subset is not hand-picked. Re-marking a reopened video keeps the earlier
+    draw, as does an admin override made before the draw.
     """
+    video = _require_any_video(video_id)
+    problems = _ready_blockers(video)
+    if problems:
+        return JSONResponse(
+            status_code=422,
+            content={'detail': 'Video cannot be marked ready: ' + '; '.join(problems),
+                     'problems': problems},
+        )
+
+    fields = {'prep_status': 'ready'}
+    if video.irr_overlap_set_by is None:
+        fields['irr_overlap'] = _overlap_rng.random() < irr_overlap_rate()
+        fields['irr_overlap_set_by'] = 'random'
+    updated = get_db().update_video_fields(video_id, **fields)
+    return video_to_response(updated, 'admin')
+
+
+@app.put("/api/admin/videos/{video_id}/overlap", response_model=VideoResponse)
+async def admin_set_overlap(
+    video_id: int,
+    payload: OverlapUpdate,
+    _admin: str = Depends(require_admin),
+):
+    """Override the overlap flag. Only while the video has no assignments:
+    once raters are on it, its rater target is fixed. 409 otherwise."""
     _require_any_video(video_id)
-    video = get_db().update_video_fields(video_id, dataset='A', prep_status='ready')
-    return video_to_response(video, 'admin')
+    if get_db().count_assignments(video_id) > 0:
+        raise _conflict('Overlap can only be changed before any rater is assigned')
+    updated = get_db().update_video_fields(
+        video_id, irr_overlap=payload.irr_overlap, irr_overlap_set_by='admin_override',
+    )
+    return video_to_response(updated, 'admin')
 
 
 @app.post("/api/admin/videos/{video_id}/close", response_model=VideoResponse)
@@ -2190,7 +2596,7 @@ async def admin_mark_closed(video_id: int, _admin: str = Depends(require_admin))
 
 @app.post("/api/admin/videos/{video_id}/reopen", response_model=VideoResponse)
 async def admin_reopen(video_id: int, _admin: str = Depends(require_admin)):
-    """Put a video back to draft so its owner can edit holds and moves again."""
+    """Put a video back to draft so its holds and moves can be edited again."""
     _require_any_video(video_id)
     video = get_db().update_video_fields(video_id, prep_status='draft')
     return video_to_response(video, 'admin')
@@ -2210,26 +2616,34 @@ async def admin_create_assignment(
     payload: AssignmentCreate,
     _admin: str = Depends(require_admin),
 ):
-    """Assign a rater to a video. The rater must already have a profile.
+    """Assign a validated rater to a ready video.
 
-    404 for a missing video or rater profile, 400 for a bad cohort, 409 when
-    the rater is already assigned to that video.
+    404 for a missing video or rater profile; 409 when the video is not
+    ready, the rater is not validated, the rater is already assigned, or the
+    video already has its target number of raters (1, or 3 for the overlap
+    subset).
     """
     db = get_db()
-    _require_any_video(payload.video_id)
-    if payload.cohort not in ASSIGNMENT_COHORTS:
-        raise _bad_request(
-            f"Invalid cohort: {payload.cohort}. Must be one of: {ASSIGNMENT_COHORTS}"
-        )
-    if not db.get_rater_profile(payload.rater_user_id):
+    video = _require_any_video(payload.video_id)
+    profile = db.get_rater_profile(payload.rater_user_id)
+    if not profile:
         raise _not_found(f"Rater profile {payload.rater_user_id} not found")
+    if video.prep_status != 'ready':
+        raise _conflict(f"Video {video.id} is {video.prep_status}; mark it ready before assigning raters")
+    if not profile.is_validated:
+        raise _conflict('Only validated raters can be assigned')
     if db.get_assignment_for(payload.video_id, payload.rater_user_id):
         raise _conflict('Rater is already assigned to this video')
+    target = video.rater_target()
+    if db.count_assignments(payload.video_id) >= target:
+        raise _conflict(
+            f"Video {video.id} already has its {target} rater{'s' if target != 1 else ''}"
+            f"{' (overlap subset)' if video.irr_overlap else ''}"
+        )
     try:
         created = db.create_assignment(VideoAssignment(
             video_id=payload.video_id,
             rater_user_id=payload.rater_user_id,
-            cohort=payload.cohort,
             status='assigned',
             assigned_at=datetime.now(timezone.utc),
         ))
@@ -2258,14 +2672,71 @@ async def admin_update_rater(
     payload: RaterUpdate,
     _admin: str = Depends(require_admin),
 ):
-    """Set tier, validation_note, is_admin or display_name on a profile."""
-    if payload.tier is not None and payload.tier not in RATER_TIERS:
-        raise _bad_request(f"Invalid tier: {payload.tier}. Must be one of: {RATER_TIERS}")
+    """Set is_validated, validation_note, is_admin or display_name on a profile."""
     db = get_db()
     if not db.get_rater_profile(rater_user_id):
         raise _not_found(f"Rater profile {rater_user_id} not found")
     updated = db.update_rater_profile(rater_user_id, **payload.model_dump())
     return profile_to_response(updated)
+
+
+# ---------- athletes ----------
+
+def _validate_athlete_fields(category=None, height_source=None):
+    if category not in (None, '') and category not in ATHLETE_CATEGORIES:
+        raise _bad_request(f"Invalid category: {category}. Must be one of: {ATHLETE_CATEGORIES}")
+    if height_source is not None and height_source not in HEIGHT_SOURCES:
+        raise _bad_request(f"Invalid height_source: {height_source}. Must be one of: {HEIGHT_SOURCES}")
+
+
+@app.get("/api/admin/athletes", response_model=List[AthleteResponse])
+async def admin_list_athletes(_admin: str = Depends(require_admin)):
+    """Every athlete, oldest first."""
+    return [athlete_to_response(a) for a in get_db().list_athletes()]
+
+
+@app.post("/api/admin/athletes", response_model=AthleteResponse, status_code=status.HTTP_201_CREATED)
+async def admin_create_athlete(payload: AthleteCreate, _admin: str = Depends(require_admin)):
+    """Add a pseudonymous athlete. 409 if the IFSC profile URL is already in."""
+    _validate_athlete_fields(payload.category, payload.height_source)
+    height_source = payload.height_source or ('ifsc_profile' if payload.height_cm else 'missing')
+    if height_source == 'ifsc_profile' and payload.height_cm is None:
+        raise _bad_request("height_source 'ifsc_profile' needs height_cm")
+    try:
+        created = get_db().create_athlete(Athlete(
+            ifsc_profile_url=(payload.ifsc_profile_url or '').strip() or None,
+            height_cm=payload.height_cm,
+            height_source=height_source,
+            birth_year=payload.birth_year,
+            category=payload.category or None,
+        ))
+    except psycopg.errors.UniqueViolation:
+        raise _conflict('An athlete with that IFSC profile URL already exists')
+    return athlete_to_response(created)
+
+
+@app.put("/api/admin/athletes/{athlete_id}", response_model=AthleteResponse)
+async def admin_update_athlete(
+    athlete_id: str,
+    payload: AthleteUpdate,
+    _admin: str = Depends(require_admin),
+):
+    """Edit an athlete. Setting height_cm without height_source marks it
+    'ifsc_profile'."""
+    db = get_db()
+    if not db.get_athlete(athlete_id):
+        raise _not_found(f"Athlete {athlete_id} not found")
+    _validate_athlete_fields(payload.category, payload.height_source)
+    fields = payload.model_dump()
+    if fields['height_cm'] is not None and fields['height_source'] is None:
+        fields['height_source'] = 'ifsc_profile'
+    if fields['ifsc_profile_url'] is not None:
+        fields['ifsc_profile_url'] = fields['ifsc_profile_url'].strip()
+    try:
+        updated = db.update_athlete(athlete_id, **fields)
+    except psycopg.errors.UniqueViolation:
+        raise _conflict('An athlete with that IFSC profile URL already exists')
+    return athlete_to_response(updated)
 
 
 def _csv_response(text: str, filename: str) -> Response:
@@ -2279,24 +2750,23 @@ def _csv_response(text: str, filename: str) -> Response:
 @app.get("/api/admin/export/long")
 async def admin_export_long(
     video_id: Optional[int] = None,
-    dataset: Optional[str] = 'A',
+    include_community: bool = False,
+    overlap_only: bool = False,
     _admin: str = Depends(require_admin),
 ):
     """Long-format CSV, the IRR input: one row per (video, move, rater, lens,
     field), sorted by video, move, rater, lens, field.
 
-    Columns: video_id, dataset, move_id, move_index, rater_user_id,
-    rater_tier, cohort, lens, field, value, taxonomy_version, is_gold.
-    Lenses: environment, strategy, outcome, frame_tags (field = tag_type,
-    value = frame:level:side:locations). Multi-selects are pipe-delimited.
-    Defaults to Dataset A; ?dataset=all for everything, ?video_id= for one
-    video regardless of dataset.
+    Columns: see exporter.LONG_COLUMNS (video provenance, irr_overlap,
+    athlete_id + height, then move/rater/lens/field/value). Lenses: strategy,
+    environment, outcome, frame_tags. Multi-selects are pipe-delimited.
+    Community videos are excluded unless ?include_community=true;
+    ?overlap_only=true keeps only the reliability subset; ?video_id= returns
+    one video whatever its source. Never includes IFSC profile URLs.
     """
-    if dataset in ('all', ''):
-        dataset = None
-    if dataset is not None and dataset not in DATASETS:
-        raise _bad_request(f"Invalid dataset: {dataset}. Must be one of: {DATASETS} or 'all'")
-    text = get_admin_exporter().long_csv(video_id=video_id, dataset=dataset)
+    text = get_admin_exporter().long_csv(
+        video_id=video_id, include_community=include_community, overlap_only=overlap_only,
+    )
     suffix = f'_video{video_id}' if video_id is not None else ''
     return _csv_response(text, f'dynalytix_long{suffix}.csv')
 
@@ -2304,17 +2774,13 @@ async def admin_export_long(
 @app.get("/api/admin/export/full")
 async def admin_export_full(
     video_id: Optional[int] = None,
-    dataset: Optional[str] = None,
+    include_community: bool = False,
     _admin: str = Depends(require_admin),
 ):
     """Full CSV: the per-video export's shape (one row per pose frame with the
     label columns appended) for every video and every rater across all users,
-    with identity columns in front. Defaults to every dataset; ?dataset=A|B
-    or ?video_id= narrow it. Large: frames repeat once per rater."""
-    if dataset in ('all', ''):
-        dataset = None
-    if dataset is not None and dataset not in DATASETS:
-        raise _bad_request(f"Invalid dataset: {dataset}. Must be one of: {DATASETS} or 'all'")
+    with identity and provenance columns in front. Community videos are
+    excluded unless ?include_community=true. Large: frames repeat per rater."""
     if video_id is not None:
         # One video: refuse loudly while its pose CSV does not exist yet. The
         # multi-video export instead keeps such videos as label-only rows
@@ -2324,7 +2790,7 @@ async def admin_export_full(
         if not video:
             raise _not_found(f"Video {video_id} not found")
         _require_pose_done(video)
-    text = get_admin_exporter().full_csv(video_id=video_id, dataset=dataset)
+    text = get_admin_exporter().full_csv(video_id=video_id, include_community=include_community)
     suffix = f'_video{video_id}' if video_id is not None else ''
     return _csv_response(text, f'dynalytix_full{suffix}.csv')
 

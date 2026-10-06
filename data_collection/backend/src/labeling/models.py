@@ -9,7 +9,7 @@ Schema version 4 (storage v3): per-user scoping, hold bounding boxes, and
 slot-based environments. Every record carries the owning Supabase user id.
 """
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 
@@ -25,15 +25,29 @@ from typing import Optional
 TAXONOMY_VERSION = "3.1.0"
 
 # =============================================================================
-# DATASET A / B CONSTANTS
+# SINGLE-DATASET CONSTANTS (runbook W2, 2026-10-06)
 # =============================================================================
+#
+# One dataset. Paper footage (public_broadcast / cc_license /
+# research_dataset) is admin-prepped and rated by validated raters: 1 rater
+# per video, 3 on the random inter-rater-reliability overlap subset.
+# 'community' is the dormant self-upload flow (SELF_UPLOAD_ENABLED).
 
-DATASETS = ['A', 'B']
 PREP_STATUSES = ['draft', 'ready', 'closed']
 LOCKED_PREP_STATUSES = ['ready', 'closed']
-ASSIGNMENT_COHORTS = ['validated', 'overlap']
 ASSIGNMENT_STATUSES = ['assigned', 'in_progress', 'done']
-RATER_TIERS = ['validated', 'open']
+SOURCE_TYPES = ['public_broadcast', 'cc_license', 'research_dataset', 'community']
+PAPER_SOURCE_TYPES = ['public_broadcast', 'cc_license', 'research_dataset']
+COMMUNITY_SOURCE_TYPE = 'community'
+IRR_OVERLAP_SET_BY = ['random', 'admin_override']
+HEIGHT_SOURCES = ['ifsc_profile', 'missing']
+ATHLETE_CATEGORIES = ['men', 'women']
+# Raters per video: everyone gets 1; the overlap subset gets 3.
+RATERS_PER_VIDEO = 1
+RATERS_PER_OVERLAP_VIDEO = 3
+# Minimum (event year - birth year) for a clip to be marked ready. 19, not
+# 18: without full birth dates, 19 guarantees the athlete was 18+ on the day.
+MIN_AGE_YEAR_GAP = 19
 
 
 @dataclass
@@ -68,28 +82,43 @@ class Video:
     pose_started_at: Optional[datetime] = None
     pose_finished_at: Optional[datetime] = None
 
-    # Dataset A / B split. ``user_id`` above is the owner / prepper
-    # (owner_user_id semantics): the uploader on B, the admin who prepped on A.
-    dataset: str = "B"  # A | B
+    # ``user_id`` above is the owner / prepper (owner_user_id semantics): the
+    # admin who prepped a paper clip, or the uploader of a community video.
     prep_status: str = "draft"  # draft | ready | closed
+    # Inter-rater reliability subset: 3 raters instead of 1.
+    irr_overlap: bool = False
+    irr_overlap_set_by: Optional[str] = None  # random | admin_override
+    # Public-source provenance (runbook W2 amendment).
+    source_type: str = "public_broadcast"  # see SOURCE_TYPES
+    source_url: Optional[str] = None
+    clip_start_ms: Optional[int] = None
+    clip_end_ms: Optional[int] = None
+    license: Optional[str] = None
+    event_name: Optional[str] = None
+    event_date: Optional[date] = None
+    athlete_id: Optional[str] = None
     # Prep-pass metadata, all optional.
     route_grade: Optional[str] = None
     wall_type: Optional[str] = None
-    climber_experience: Optional[str] = None
-    climber_height_cm: Optional[int] = None
-    climber_ape_index_cm: Optional[int] = None
     camera_angle: Optional[str] = None
-    gym: Optional[str] = None
     notes: Optional[str] = None
 
     def is_locked(self) -> bool:
         """True once holds and canonical moves may no longer change."""
         return self.prep_status in LOCKED_PREP_STATUSES
 
+    def is_community(self) -> bool:
+        """True for the dormant self-upload flow's videos."""
+        return self.source_type == COMMUNITY_SOURCE_TYPE
+
+    def rater_target(self) -> int:
+        """How many raters this video should get."""
+        return RATERS_PER_OVERLAP_VIDEO if self.irr_overlap else RATERS_PER_VIDEO
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         data = asdict(self)
-        for key in ('uploaded_at', 'pose_started_at', 'pose_finished_at'):
+        for key in ('uploaded_at', 'pose_started_at', 'pose_finished_at', 'event_date'):
             if getattr(self, key):
                 data[key] = getattr(self, key).isoformat()
         return data
@@ -270,6 +299,54 @@ class Outcome:
 
 
 @dataclass
+class Strategy:
+    """
+    One rater's Strategy lens labels for a canonical move (Lens 2).
+
+    The move row carries the move boundaries (and, on community videos, the
+    owner's own strategy labels). On paper clips every rater writes their own
+    Strategy row, one per (move, rater), exactly like Environment and Outcome,
+    so the strategy fields are rated independently and enter the reliability
+    analysis. No effort level: raters cannot observe another climber's effort.
+    """
+
+    id: Optional[int] = None
+    move_id: int = 0
+    user_id: str = ""
+
+    approach: str = ""  # static | dynamic | coordination
+    size: str = ""  # small | medium | large
+    move_tags: list[str] = field(default_factory=list)
+    form_quality: int = 3  # 1-5
+    confidence: str = ""  # low | med | high
+
+    taxonomy_version: str = TAXONOMY_VERSION
+    is_gold: bool = False
+    labeled_at: Optional[datetime] = None
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        data = asdict(self)
+        if self.labeled_at:
+            data['labeled_at'] = self.labeled_at.isoformat()
+        return data
+
+
+@dataclass
+class Athlete:
+    """A pseudonymous athlete for public-source clips. No name by design."""
+
+    athlete_id: Optional[str] = None
+    # Admin-only lookup key; never exported.
+    ifsc_profile_url: Optional[str] = None
+    height_cm: Optional[int] = None
+    height_source: str = "missing"  # ifsc_profile | missing
+    birth_year: Optional[int] = None
+    category: Optional[str] = None  # men | women
+    created_at: Optional[datetime] = None
+
+
+@dataclass
 class FrameTag:
     """
     Represents a tag on a specific frame within a move.
@@ -325,13 +402,14 @@ class FrameTag:
 class RaterProfile:
     """Who a labeler is, collected once at first sign-in.
 
-    ``tier``/``validation_note``/``is_admin`` are set by an admin, never by the
-    rater themself. ``is_admin`` doubles as the admin flag for the whole app.
+    ``is_validated``/``validation_note``/``is_admin`` are set by an admin,
+    never by the rater themself. Only validated raters can be assigned
+    videos. ``is_admin`` doubles as the admin flag for the whole app.
     """
 
     user_id: str = ""
     display_name: str = ""
-    tier: str = "open"  # validated | open
+    is_validated: bool = False
     years_climbing: Optional[int] = None
     bio: Optional[str] = None  # free text, optional, <= 1000 chars
     highest_grade: Optional[str] = None
@@ -350,12 +428,11 @@ class RaterProfile:
 
 @dataclass
 class VideoAssignment:
-    """One rater's assignment to rate one Dataset A video."""
+    """One rater's assignment to rate one video."""
 
     id: Optional[int] = None
     video_id: int = 0
     rater_user_id: str = ""
-    cohort: str = "validated"  # validated | overlap
     status: str = "assigned"  # assigned | in_progress | done
     assigned_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None

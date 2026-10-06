@@ -15,6 +15,39 @@ from .models import HOLD_SLOTS, Video
 from ..storage import r2
 
 
+STRATEGY_FIELDS = ['approach', 'move_tags', 'size', 'form_quality', 'effort_level', 'confidence']
+_EMPTY_STRATEGY = {f: None for f in STRATEGY_FIELDS}
+
+
+def _blank(value):
+    return '' if value is None else value
+
+
+def strategy_for(db: Database, move, user_id: str) -> dict:
+    """The Strategy lens values one labeler gave a move, as a dict.
+
+    A rater's own `strategies` row when there is one (paper clips: every
+    rater labels strategy independently; no effort level). Otherwise the
+    canonical move row's strategy, but only for the labeler who created the
+    move (the community owner labeling their own climb, or legacy rows).
+    Anyone else has no strategy on that move: all values None.
+    """
+    row = db.get_strategy_for_move(move.id, user_id)
+    if row:
+        return {
+            'approach': row.approach, 'move_tags': list(row.move_tags), 'size': row.size,
+            'form_quality': row.form_quality, 'effort_level': None,
+            'confidence': row.confidence or None,
+        }
+    if str(move.user_id) == str(user_id) and move.approach:
+        return {
+            'approach': move.approach, 'move_tags': list(move.move_tags or []), 'size': move.size,
+            'form_quality': move.form_quality, 'effort_level': move.effort_level,
+            'confidence': move.confidence or None,
+        }
+    return dict(_EMPTY_STRATEGY)
+
+
 class Exporter:
     """Combines raw pose CSV with labels from Postgres."""
 
@@ -86,16 +119,17 @@ class Exporter:
             env = self.db.get_environment_for_move(move.id, user_id)
             outcome = self.db.get_outcome_for_move(move.id, user_id)
             tags = self.db.get_frame_tags_for_move(move.id, user_id)
+            strategy = strategy_for(self.db, move, user_id)
 
             labels = {
                 'move_id': move.id,
-                # Lens 2: Strategy
-                'approach': move.approach,
-                'size': move.size,
-                'move_tags': '|'.join(move.move_tags) if move.move_tags else '',
-                'form_quality': move.form_quality,
-                'effort_level': move.effort_level,
-                'move_confidence': move.confidence or '',
+                # Lens 2: Strategy (the rater's own row; see strategy_for)
+                'approach': strategy['approach'],
+                'size': strategy['size'],
+                'move_tags': _pipe(strategy['move_tags']),
+                'form_quality': _blank(strategy['form_quality']),
+                'effort_level': _blank(strategy['effort_level']),
+                'move_confidence': strategy['confidence'] or '',
                 # Lens 1: Environment
                 'wall_angle': env.wall_angle if env else '',
                 # Lens 3: Outcome
@@ -207,7 +241,7 @@ class Exporter:
 
 
 # =============================================================================
-# Admin exports (Dataset A, runbook W1)
+# Admin exports (runbook W1, reshaped for the single dataset in W2)
 # =============================================================================
 #
 # Two CSVs an admin can pull across every video and every rater:
@@ -219,9 +253,16 @@ class Exporter:
 #           appended) for every video and every rater, with identity columns
 #           in front. Frames of a video are repeated once per rater.
 
+# Video-level provenance repeated on every row so each export stands alone.
+# ifsc_profile_url is deliberately never exported.
+VIDEO_PROVENANCE_COLUMNS = [
+    'source_type', 'source_url', 'clip_start_ms', 'clip_end_ms',
+    'event_name', 'event_date', 'athlete_id', 'height_cm', 'height_source',
+]
+
 LONG_COLUMNS = [
-    'video_id', 'dataset', 'move_id', 'move_index',
-    'rater_user_id', 'rater_tier', 'cohort',
+    'video_id', 'irr_overlap', *VIDEO_PROVENANCE_COLUMNS,
+    'move_id', 'move_index', 'rater_user_id',
     'lens', 'field', 'value', 'taxonomy_version', 'is_gold',
 ]
 
@@ -230,12 +271,12 @@ LENS_STRATEGY = 'strategy'
 LENS_OUTCOME = 'outcome'
 LENS_FRAME_TAGS = 'frame_tags'
 
-STRATEGY_FIELDS = ['approach', 'move_tags', 'size', 'form_quality', 'effort_level', 'confidence']
 OUTCOME_FIELDS = ['result', 'reach_detail', 'confidence']
 
 FULL_ID_COLUMNS = [
-    'video_id', 'dataset', 'prep_status', 'owner_user_id', 'filename',
-    'rater_user_id', 'rater_tier', 'cohort',
+    'video_id', 'prep_status', 'irr_overlap', 'owner_user_id', 'filename',
+    *VIDEO_PROVENANCE_COLUMNS,
+    'rater_user_id',
 ]
 
 
@@ -281,8 +322,8 @@ def frame_tag_value(tag) -> str:
 class AdminExporter:
     """Cross-user, cross-video exports for admins.
 
-    Holds a Database and small per-call caches for profiles so a long export
-    over N videos does not run one profile query per row.
+    Community videos (the dormant self-upload flow) are excluded unless
+    include_community is set: the paper's exports are paper footage only.
     """
 
     def __init__(self, db: Database):
@@ -290,41 +331,66 @@ class AdminExporter:
 
     # ---------- shared lookups ----------
 
-    def _tier(self, cache: dict, user_id: str) -> str:
-        if user_id not in cache:
-            profile = self.db.get_rater_profile(user_id)
-            cache[user_id] = profile.tier if profile else ''
-        return cache[user_id]
+    def _assigned(self, video_id: int) -> set:
+        """Every rater assigned to a video."""
+        return {a.rater_user_id for a in self.db.list_assignments(video_id)}
 
-    def _cohorts(self, video_id: int) -> Dict[str, str]:
-        """rater_user_id -> cohort for every assignment on a video."""
-        return {a.rater_user_id: a.cohort for a in self.db.list_assignments(video_id)}
+    def _videos(self, video_id: Optional[int], include_community: bool,
+                overlap_only: bool = False) -> List[Video]:
+        return self.db.get_videos_for_export(
+            video_id=video_id, include_community=include_community, overlap_only=overlap_only,
+        )
 
-    def _videos(self, video_id: Optional[int], dataset: Optional[str]) -> List[Video]:
-        return self.db.get_videos_for_export(video_id=video_id, dataset=dataset)
+    def _provenance(self, videos: List[Video]) -> Dict[int, dict]:
+        """video_id -> the provenance cells (athlete height joined in)."""
+        athletes = self.db.get_athletes_by_id(v.athlete_id for v in videos)
+        out = {}
+        for v in videos:
+            athlete = athletes.get(v.athlete_id) if v.athlete_id else None
+            out[v.id] = {
+                'source_type': v.source_type,
+                'source_url': v.source_url or '',
+                'clip_start_ms': _blank(v.clip_start_ms),
+                'clip_end_ms': _blank(v.clip_end_ms),
+                'event_name': v.event_name or '',
+                'event_date': v.event_date.isoformat() if v.event_date else '',
+                'athlete_id': v.athlete_id or '',
+                'height_cm': _blank(athlete.height_cm) if athlete else '',
+                'height_source': athlete.height_source if athlete else '',
+            }
+        return out
+
+    def _raters_on_move(self, move, assigned: set) -> set:
+        raters = set(assigned)
+        raters |= {s.user_id for s in self.db.get_strategies_for_move_all(move.id)}
+        raters |= {e.user_id for e in self.db.get_environments_for_move_all(move.id)}
+        raters |= {o.user_id for o in self.db.get_outcomes_for_move_all(move.id)}
+        raters |= {t.user_id for t in self.db.get_frame_tags_for_move_all(move.id)}
+        return raters
 
     # ---------- long format ----------
 
-    def long_rows(self, video_id: Optional[int] = None, dataset: Optional[str] = 'A') -> List[dict]:
+    def long_rows(self, video_id: Optional[int] = None, include_community: bool = False,
+                  overlap_only: bool = False) -> List[dict]:
         """One dict per (video, move, rater, lens, field), sorted.
 
-        Defaults to Dataset A only; pass dataset=None for everything, or a
-        video_id for one video regardless of dataset.
+        Paper footage only by default (include_community adds the dormant
+        self-upload videos); overlap_only keeps just the reliability subset;
+        a video_id returns that one video whatever its source.
 
         Which raters appear on a move: everyone assigned to the video plus
         anyone who wrote a label row on the move; a move nobody has rated and
-        nobody is assigned to (Dataset B) falls back to the move's creator.
-        Strategy fields come from the canonical move row and are emitted once
-        per rater (identical values) so the per-field table is rectangular
-        for the alpha script; on Dataset B that rater is the move creator.
+        nobody is assigned to falls back to the move's creator. Strategy
+        comes from each rater's own strategies row (see strategy_for); a rater
+        with none emits no strategy rows, which the alpha script reads as
+        missing.
         """
-        if video_id is not None:
-            dataset = None
-        tiers: Dict[str, str] = {}
         rows: List[dict] = []
+        videos = self._videos(video_id, include_community, overlap_only)
+        provenance = self._provenance(videos)
 
-        for video in self._videos(video_id, dataset):
-            cohorts = self._cohorts(video.id)
+        for video in videos:
+            assigned = self._assigned(video.id)
             moves = self.db.get_moves_for_video_any(video.id)
 
             for move_index, move in enumerate(moves):
@@ -333,20 +399,21 @@ class AdminExporter:
                 tags_by_rater: Dict[str, list] = {}
                 for tag in self.db.get_frame_tags_for_move_all(move.id):
                     tags_by_rater.setdefault(tag.user_id, []).append(tag)
+                strategies = {s.user_id: s for s in self.db.get_strategies_for_move_all(move.id)}
 
-                raters = set(cohorts) | set(envs) | set(outcomes) | set(tags_by_rater)
+                raters = (set(assigned) | set(envs) | set(outcomes) | set(tags_by_rater)
+                          | set(strategies))
                 if not raters:
                     raters = {move.user_id}
 
                 for rater in sorted(raters):
                     base = {
                         'video_id': video.id,
-                        'dataset': video.dataset,
+                        'irr_overlap': _cell(bool(video.irr_overlap)),
+                        **provenance[video.id],
                         'move_id': move.id,
                         'move_index': move_index,
                         'rater_user_id': rater,
-                        'rater_tier': self._tier(tiers, rater),
-                        'cohort': cohorts.get(rater, ''),
                     }
 
                     def emit(lens, field, value, taxonomy_version, is_gold):
@@ -359,15 +426,25 @@ class AdminExporter:
                     outcome = outcomes.get(rater)
                     tags = tags_by_rater.get(rater, [])
 
-                    # Strategy: the canonical move, stamped with the version
-                    # the rater's own rows carry (they were labeled together).
-                    strategy_version = (
-                        env.taxonomy_version if env else
-                        outcome.taxonomy_version if outcome else
-                        tags[0].taxonomy_version if tags else ''
-                    )
-                    for field in STRATEGY_FIELDS:
-                        emit(LENS_STRATEGY, field, getattr(move, field), strategy_version, False)
+                    # Strategy: the rater's own row. On the creator's own
+                    # community move it falls back to the move row, stamped
+                    # with the version their other rows carry.
+                    strategy_row = strategies.get(rater)
+                    if strategy_row:
+                        values = strategy_for(self.db, move, rater)
+                        for field in STRATEGY_FIELDS:
+                            if field == 'effort_level':
+                                continue
+                            emit(LENS_STRATEGY, field, values[field],
+                                 strategy_row.taxonomy_version, strategy_row.is_gold)
+                    elif str(move.user_id) == str(rater) and move.approach:
+                        legacy_version = (
+                            env.taxonomy_version if env else
+                            outcome.taxonomy_version if outcome else
+                            tags[0].taxonomy_version if tags else ''
+                        )
+                        for field in STRATEGY_FIELDS:
+                            emit(LENS_STRATEGY, field, getattr(move, field), legacy_version, False)
 
                     if env:
                         for field in environment_fields():
@@ -389,16 +466,19 @@ class AdminExporter:
         ))
         return rows
 
-    def long_csv(self, video_id: Optional[int] = None, dataset: Optional[str] = 'A') -> str:
+    def long_csv(self, video_id: Optional[int] = None, include_community: bool = False,
+                 overlap_only: bool = False) -> str:
         """The long export as CSV text with exactly LONG_COLUMNS as the header."""
-        return rows_to_csv(LONG_COLUMNS, self.long_rows(video_id=video_id, dataset=dataset))
+        return rows_to_csv(LONG_COLUMNS, self.long_rows(
+            video_id=video_id, include_community=include_community, overlap_only=overlap_only,
+        ))
 
     # ---------- full format ----------
 
     def full_rows(
         self,
         video_id: Optional[int] = None,
-        dataset: Optional[str] = None,
+        include_community: bool = False,
     ) -> "tuple[List[str], List[dict]]":
         """(columns, rows): the per-video export shape across every user.
 
@@ -411,21 +491,20 @@ class AdminExporter:
         labeled frame with only frame_number filled, so no label is lost.
         """
         exporter = Exporter(self.db)
-        tiers: Dict[str, str] = {}
         pose_columns: List[str] = []
         seen = set()
         rows: List[dict] = []
+        videos = self._videos(video_id, include_community)
+        provenance = self._provenance(videos)
 
-        for video in self._videos(video_id, dataset):
-            cohorts = self._cohorts(video.id)
+        for video in videos:
+            assigned = self._assigned(video.id)
             moves = self.db.get_moves_for_video_any(video.id)
             holds = {h.id: h for h in self.db.get_holds_for_video_any(video.id)}
 
-            raters = set(cohorts)
+            raters = set(assigned)
             for move in moves:
-                raters |= {e.user_id for e in self.db.get_environments_for_move_all(move.id)}
-                raters |= {o.user_id for o in self.db.get_outcomes_for_move_all(move.id)}
-                raters |= {t.user_id for t in self.db.get_frame_tags_for_move_all(move.id)}
+                raters |= self._raters_on_move(move, set())
             if not raters:
                 raters = {video.user_id}
 
@@ -441,13 +520,12 @@ class AdminExporter:
                 )
                 identity = {
                     'video_id': video.id,
-                    'dataset': video.dataset,
                     'prep_status': video.prep_status,
+                    'irr_overlap': _cell(bool(video.irr_overlap)),
                     'owner_user_id': video.user_id,
                     'filename': video.filename,
+                    **provenance[video.id],
                     'rater_user_id': rater,
-                    'rater_tier': self._tier(tiers, rater),
-                    'cohort': cohorts.get(rater, ''),
                 }
                 source_rows = pose_rows or [
                     {'frame_number': str(frame)} for frame in sorted(frame_labels)
@@ -472,9 +550,9 @@ class AdminExporter:
             text_stream = io.TextIOWrapper(source, encoding='utf-8', newline='')
             return list(csv.DictReader(text_stream))
 
-    def full_csv(self, video_id: Optional[int] = None, dataset: Optional[str] = None) -> str:
+    def full_csv(self, video_id: Optional[int] = None, include_community: bool = False) -> str:
         """The full export as CSV text."""
-        columns, rows = self.full_rows(video_id=video_id, dataset=dataset)
+        columns, rows = self.full_rows(video_id=video_id, include_community=include_community)
         return rows_to_csv(columns, rows)
 
 
