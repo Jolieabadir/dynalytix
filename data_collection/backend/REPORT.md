@@ -1753,3 +1753,77 @@ Local DSNs are untouched, so the normal path never sees any of this.
 ### Manual steps for Jolie
 
 None. If you ever *do* want to rebuild a hosted database from the migrations, set `DYNALYTIX_ALLOW_DESTRUCTIVE_SCHEMA=1` for that one command.
+
+## 14. Single dataset (runbook-w2-backend + Amendment, 2026-10-06)
+
+Branch `feat/single-dataset`. Scope flip: the paper uses public footage (IFSC broadcasts,
+CC / open research clips), admin-prepped and rated by validated raters. One dataset; a random
+~25% overlap subset gets 3 raters for Krippendorff's alpha. Self-upload survives as the
+dormant `community` source type.
+
+### Migration `20261006120000_single_dataset.sql`
+- `videos`: drops `dataset`, `climber_experience`, `climber_height_cm`, `climber_ape_index_cm`,
+  `gym`; adds `irr_overlap`, `irr_overlap_set_by`, `source_type` (default `public_broadcast`;
+  former Dataset B rows → `community`), `source_url`, `clip_start_ms`, `clip_end_ms`, `license`,
+  `event_name`, `event_date`, `athlete_id` (FK). Column UPDATE grant for `authenticated` re-issued
+  without the dropped columns; the new ones are API-only.
+- `athletes` (new, admin-only RLS): pseudonymous `athlete_id`, `ifsc_profile_url` (unique,
+  admin-only, never exported), `height_cm`, `height_source`, `birth_year`, `category`. No name column.
+- `video_assignments.cohort` dropped. `rater_profiles.tier` → `is_validated` (validated rows keep it).
+- `strategies` (new): per-rater Strategy lens rows, `UNIQUE (move_id, user_id)`, same RLS shape
+  as environments/outcomes.
+- Verified on a database built from the pre-W2 migrations with rows in it (B video → community,
+  validated tier → is_validated, assignment survives) and re-applied twice (idempotent).
+
+### Deviation from the runbook (flagged to Jolie)
+The W1 implementation stored Strategy (approach, tags, size, form quality, effort) on the
+canonical move row, filled once by the admin in prep and read-only for raters. That would make
+the paper's main targets single-labeled by the admin and leave Strategy out of the reliability
+analysis. This branch adds per-rater `strategies` rows: raters label all three lenses
+independently; `/complete` requires strategy + environment + outcome; exports take strategy from
+the rater's own row (falling back to the move row only for the move's creator, i.e. community
+owners). No effort level for raters (not observable).
+
+### API
+- `SELF_UPLOAD_ENABLED` (default off), exposed as `self_upload_enabled` in `/api/config`.
+  Off: register / upload-url / multipart / confirm-upload are admin-only, and a non-admin
+  owner's structure and label writes are 403 (so a leftover community video is frozen, not
+  just hidden). On: non-admins upload `community` videos with owner access.
+- `POST /api/admin/videos/{id}/ready`: 422 `{detail, problems}` unless source_type, source_url
+  (or license for `research_dataset`), event_date and an athlete with birth_year are set and
+  `event_year - birth_year >= 19` (conservative 18+ without birth dates). Community videos skip
+  the gate. First ready draws `irr_overlap` with `secrets.SystemRandom` at `IRR_OVERLAP_RATE`
+  (default 0.25, clamped 0–1); re-readying keeps the draw; an override made before ready is kept.
+- `PUT /api/admin/videos/{id}/overlap` `{irr_overlap}`: only while the video has no assignments (409).
+- `POST /api/admin/assignments` `{video_id, rater_user_id}`: video must be ready, rater validated,
+  cap 1 (or 3 on overlap) → 409 otherwise.
+- `GET /api/me/assignments`: `[]` until the profile is validated (admins always see theirs).
+- Strategy: `POST /api/strategies`, `GET /api/moves/{id}/strategy`, `PUT|DELETE /api/strategies/{id}`.
+- Athletes: `GET|POST /api/admin/athletes`, `PUT /api/admin/athletes/{id}`.
+- Metadata `PUT /api/admin/videos/{id}/metadata` accepts the clip-prep sidecar keys as-is
+  (unknown keys ignored); `source_type` limited to the three paper types.
+- Exports: long columns `video_id, irr_overlap, source_type, source_url, clip_start_ms,
+  clip_end_ms, event_name, event_date, athlete_id, height_cm, height_source, move_id,
+  move_index, rater_user_id, lens, field, value, taxonomy_version, is_gold`; full export has the
+  same provenance in front. Community excluded unless `?include_community=true`;
+  `?overlap_only=true` on long. No `ifsc_profile_url` anywhere.
+- `scripts/irr_alpha.py`: overlap subset by default (`--all-videos` to widen), prints coverage
+  (videos / moves / raters), refuses a pre-W2 CSV without `irr_overlap`.
+
+### Defaults taken
+- Frame-tag (sensation) writes stay allowed by the API for raters; the rating UI hides them.
+  Easy to reverse if Taylor wants sensation back; data is not lost either way.
+- Ready videos that existed before the migration keep `irr_overlap = false` with no draw
+  recorded (`set_by` NULL); there is no real study data, so not backfilled.
+- `scripts/smoke_test.py` predates the worker (sends `csv_data`) and now also needs an admin
+  user; it prints a hint on the 403. Not rewritten.
+
+### Tests
+Backend 194 passed on scratch Postgres (`tests/test_single_dataset.py` 47 replaces
+`test_dataset_a.py`; `tests/test_rls.py` adds strategies + athletes; IRR + snapshot updated).
+
+### Manual steps for Jolie
+1. `supabase db push` via the session pooler (5432), then `supabase migration list` clean, BEFORE merging.
+2. Leave `SELF_UPLOAD_ENABLED` unset on `adorable-integrity`. Optionally set `IRR_OVERLAP_RATE`.
+3. Validate raters in the Admin view; add athletes from IFSC profiles (height, birth year).
+4. Prep one clip end to end: upload → Import metadata JSON → holds/moves → Mark ready → assign → rate.
