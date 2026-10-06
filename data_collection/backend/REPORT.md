@@ -1916,3 +1916,52 @@ Real broadcast footage was not available in this session.
 2. Redeploy the Modal app (`modal deploy data_collection/worker/modal_app.py`) so new clips get metrics.
 3. Calibrate thresholds as above; set `CAMERA_MOTION_MAX` / `CAMERA_ZOOM_MAX` on `adorable-integrity`.
 4. Clips processed before this deploy have no metrics: use **Retry pose** on them (or override with a note).
+## 14. Clip-prep (W2, runbook-w2-backend-clip-prep)
+
+Script-only; no service code, migrations or runtime deps touched.
+
+### Files
+
+- `scripts/prepare_clip.py` — Python 3.11 stdlib + `ffmpeg`/`ffprobe`. Single mode and `--batch CSV`. Writes `<name>.mp4` + `<name>.json` (keys exactly as the runbook lists, in that order).
+- `tests/test_prepare_clip.py` — 45 tests on synthetic `testsrc` videos (30, 60 and 30000/1001 fps). No database; module skips if ffmpeg is missing.
+- `scripts/README_clip_prep.md` — workflow, inclusion criteria, citation note.
+
+### How the trim stays frame-accurate
+
+A stream copy is exact only when the start is on a keyframe, and even then a B-frame stream overshoots the end by a frame or two (measured: 152 packets for a 150-frame cut at 60 fps). So:
+
+1. ffprobe reads packet flags (no decode) around the start; a keyframe within half a frame of it allows a copy attempt.
+2. The copy is probed; if its frame count isn't within one frame of the source frames in `[start, end)`, or its rate differs, it is discarded and the clip is re-encoded.
+3. Re-encode: libx264 CRF 18, `-preset slow`, `-fps_mode passthrough` (no rate conversion, no dup/drop), `-an`. The final output is probed and refused if its rate differs from the source.
+
+Tests check frame count and also that the first and last output frames visually match the expected source frames (best MSE match within ±1 frame); a deliberate 2-frame shift is caught.
+
+### Defaults taken
+
+- `--out-dir clips`, `--max-seconds 180`, output name `<input stem>_<start_ms>-<end_ms>` unless `--name`.
+- `--source-url` (http/https), `--license`, `--event-name`, `--event-date` required (the usage line shows them unbracketed). `--athlete-id` must be a UUID if given.
+- `source_type` limited to the runbook's three values; `community` (the self-upload type in the W2 backend runbook) is deliberately not accepted here.
+- `clip_start_ms`/`clip_end_ms` are the requested source times, not the snapped frame times.
+- `fps` is the reduced `r_frame_rate` (`30/1`, `60/1`, `30000/1001`). `duration_ms` is the output's ffprobe duration; `frame_count` is counted packets.
+- Existing outputs are refused unless `--overwrite`. Audio, subtitles, data streams, metadata and chapters are dropped. `yuv420p` is forced on re-encode when dimensions are even.
+- Variable-frame-rate sources (`avg_frame_rate != r_frame_rate`) never take the copy path.
+- Batch: every row is validated before any trimming (exit 2 listing every bad row, nothing written); processing errors on individual rows are recorded and the run continues (exit 1). Summary at `<out-dir>/batch_summary.json`. Relative `input` paths resolve against the CSV folder.
+- Exit codes: 0 ok, 2 validation, 1 ffmpeg/ffprobe.
+
+### Not verifiable here
+
+- Real broadcast files (MPEG-TS with non-zero `start_time`, interlaced or true VFR footage). The start-time offset is handled in the keyframe check but only tested on MP4s starting at 0.
+- The admin form's "Import metadata JSON" is on `feat/single-dataset`; the sidecar matches the key list in the runbook, but the import itself wasn't exercised against it.
+
+### Tests
+
+| Command | Result |
+|---|---|
+| `pytest tests/test_prepare_clip.py` (no `TEST_DATABASE_URL`) | 45 passed |
+| `TEST_DATABASE_URL=<scratch> pytest` | 221 passed |
+| `pytest` with no database | 67 passed, 154 skipped |
+
+### Manual steps for Jolie
+
+- Install ffmpeg locally if it isn't there (`brew install ffmpeg`).
+- Obtain footage yourself; the script never downloads. Check each clip against the inclusion criteria in `scripts/README_clip_prep.md` before trimming.
