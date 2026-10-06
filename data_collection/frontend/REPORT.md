@@ -1719,3 +1719,66 @@ Delete moved to press-and-hold because a tap cannot mean both "place" and "delet
 1. Run the real-iPhone pass above, in Safari and then from the Home Screen.
 2. Check the same session still works on the laptop with keyboard shortcuts — that is the constraint this branch is most able to break.
 3. Nothing to configure: no new env var, no migration, no bucket change (the existing `ExposeHeaders: ["ETag"]` rule is what multipart needs, and it is already applied).
+
+---
+
+## 16. W2 single dataset (frontend)
+
+Branch `feat/single-dataset` (from `main`), frontend half of runbook-w2 (Part A + the Part B amendment, which wins where they conflict). The backend half (commit `c5c7658`) was taken as the contract; nothing under `data_collection/backend` was touched.
+
+### What changed, file by file
+
+| File | Change |
+|---|---|
+| `api/client.js` | `adminCreateAssignment` drops `cohort`. `downloadAdminExport` takes `include_community` / `overlap_only` (long only) / `video_id` instead of `dataset`; unset flags are not sent. New: `createStrategy`, `getStrategyForMove` (404 → `null`, like the other lenses), `updateStrategy`, `adminListAthletes`, `adminCreateAthlete`, `adminUpdateAthlete`, `adminSetOverlap(videoId, irr_overlap)`. "Dataset A" section labels removed. |
+| `App.jsx` | Reads `config.self_upload_enabled`. Without it a non-admin never renders the upload/"My videos" flow: `view === 'videos'` collapses to `queue` (render guard + redirect effect, which also covers a resumed session). Unvalidated non-admins (`is_validated !== true`) get `WaitingForValidation` instead of the queue / rating view. `tier` badge → validated badge from `is_validated`. `PoseStatusChip` is not mounted in the rating view. |
+| `components/WaitingForValidation.jsx` | New: "Waiting for validation — an admin needs to approve your rater profile". |
+| `components/AppNav.jsx` | Videos tab only for admins ("Upload & prep") or, with the flag on, non-admins ("My videos"). |
+| `components/AdminView.jsx` | Rewritten. Videos table: source type (+ event name), athlete short id (full label in the tooltip), prep status, overlap yes/no + set-by with an Overlap checkbox (→ `adminSetOverlap`; disabled once any assignment exists), raters `n / rater_target`. Assign: no cohort, only validated raters offered, disabled when the video is not `ready` or is at its target (with the reason shown); 409 shows the server's detail. Mark ready shows the 422 `problems` list. Raters: `is_validated` checkbox + note (no tier select). New Athletes panel: list (short id, profile URL link, height + source, birth year, category), create form, inline edit. Exports: "Long (IRR input)" and "Full" + "Include community videos" and "Overlap subset only (long)". |
+| `components/VideoMetadataPanel.jsx` | Climber / gym fields and the dataset display removed. New fields: source type (from `config.source_types`), source URL, clip start/end (ms), license, event name, event date (`<input type=date>`), athlete picker (from `adminListAthletes`, admin only), plus route grade / wall type / camera angle / notes. "Import metadata JSON" (admin): `.json` file → only the known keys fill the form, unknown keys are listed as ignored, nothing is saved until Save; invalid JSON / non-object → friendly error. Header shows prep_status and overlap (with set-by and rater target) read-only. Mark ready shows the 422 `problems`. |
+| `utils/prepMetadata.js` | New: `IMPORTABLE_KEYS`, `parseMetadataJson`, `athleteLabel`, `shortId` (pure; kept out of component files for react-refresh). |
+| `components/LensFields.jsx` | New `StrategyLens` (approach, size, move tags, form quality; effort / strategy confidence / description only when the caller passes handlers). `StrategySummary` removed (no caller left). Test ids on the three lens sections. |
+| `utils/strategy.js` | New: `FORM_QUALITY_LABELS`, `toggleMoveTagValue` (no_hands ⟂ no_feet_on), shared by both forms. |
+| `components/MoveForm.jsx` | Prep form renders `StrategyLens` (with effort + description) instead of inline fields. Behaviour unchanged; hold suggestions kept. |
+| `components/RaterMoveForm.jsx` | Raters fill Strategy themselves: approach, size, move tags, form quality 1–5, optional strategy confidence; no effort. Loads `getStrategyForMove`, POSTs on first save, PUTs after (409 on POST → fetch + PUT, like the other lenses). Save writes strategy, environment and outcome. No-Hands now follows the rater's own tags. Hold auto-suggest removed: slots start empty. |
+| `components/RatingView.jsx` | Label status and the "N of M rated" count include strategy; the 422 list renders "missing Strategy, Environment and Outcome". No `TaggingMode` path. Banner text updated. |
+| `components/MovesList.jsx` | In the rating view (`onSelect` given): no "Tag Frames" button, Strategy shows in the per-move status, and the card shows "Move N" + frames only (the prepper's approach/size/tags/quality/effort/notes are hidden). Owner/prep flow unchanged. |
+| `components/MyQueue.jsx` | Cohort column removed. |
+| `components/VideoPlayer.jsx` | Skeleton overlay, its toggle button and the `S` shortcut removed. `H` unchanged. |
+| `components/SkeletonOverlay.jsx` | Deleted. |
+| `App.css` | `.toggle-skeleton` and the overlay-canvas rules removed (no canvas renders any more). |
+| `eslint.config.js` | Node globals for `vite.config.js` / `vitest.config.js` — fixes the pre-existing `process is not defined`. |
+| Comments only | `TaggingMode.jsx`, `ProfileGate.jsx`, `PoseStatusChip.jsx`, `usePoseStatus.js`, `HoldSuggestions.jsx`, `VideoUpload.jsx`, `poseMath.js`, `utils/csv.js`, `store/useStore.js`: skeleton / Dataset A / tier wording updated. |
+
+### Defaults taken (not asked)
+
+- **Fail closed on validation:** anything but `is_validated === true` counts as unvalidated. Admins are never gated.
+- **Flag on + unvalidated non-admin:** "My videos" (community upload) still works; only My queue / rating show the waiting screen.
+- **Landing:** non-admins without the flag always land on My queue; admins with an empty queue still land on Upload & prep (as before).
+- **Rater Strategy:** form quality starts unset (not 3) so no rater is anchored on a default; approach, size and form quality are required, strategy confidence is optional (the API allows null).
+- **Prepper's Strategy hidden from raters** in the moves list and form. Not asked explicitly, but showing it would anchor the per-rater Strategy that now enters the reliability analysis. Reversible in `MovesList.MoveCard`.
+- **Assign** offers only validated raters and is disabled on non-ready videos (the API would 409 both).
+- **Overlap checkbox** is disabled from the row's `assignment_count`, and also from the loaded list once the raters panel is open.
+- **Athlete create** requires an IFSC profile URL in the UI (the API does not), since there is no name and the URL is the only way to tell athletes apart.
+- **Pose CSV fetch kept:** `usePoseStatus` still loads `csvData`, because the prep `MoveForm` (hold-slot suggestions) and `TaggingMode`'s `HoldSuggestions` still use it. It now only runs where `PoseStatusChip` mounts, i.e. never in the rating view.
+- **`holdMatching.js` / `holdAssignment.js` / `holdSuggestions.js` still have callers** (prep MoveForm, TaggingMode) — nothing became orphaned; no file deleted.
+
+### Verification
+
+- `npx vitest run`: **224 passed / 25 files** (190 / 24 before). New or rewritten: `App.test` (flag off/on, admin upload, waiting screen, profile gate → waiting, chip absent in rating view), `RatingView.test` (editable strategy, no effort, no tagging, no hold pre-fill, create then update of all three lenses, existing row loads, 'strategy' in missing lists), `AdminView.test` (overlap toggle + lock, assign disabled at target / not ready, 422 problems, validated toggle, athletes list/create/edit, export flags), `VideoMetadataPanel.test` (new fields, dropped fields, JSON import fills + ignores unknown keys + no auto-save, invalid JSON, 422 problems), `VideoPlayer.test` (new: no skeleton, `S` inert, `H` works), `client.test` (all new client functions, export query flags).
+- `npm run test:math`: 55 passed.
+- `npm run lint`: 0 errors, 0 warnings.
+- `npm run build`: clean.
+
+### Could not verify
+
+- **No browser / real-device pass.** Everything above is jsdom. Not checked by eye: the Admin table's width with eight columns (likely needs a horizontal scroll on a phone), the athlete-picker labels' length in a `<select>`, and the file picker on iOS Safari for the JSON import.
+- **No run against the real backend.** The request/response shapes were read from `api.py` and `tests/test_single_dataset.py`, not exercised end to end.
+
+### Manual steps for Jolie
+
+1. Leave `SELF_UPLOAD_ENABLED` unset on Railway; check a non-admin account sees only My queue (or the waiting screen until you validate it).
+2. Add athletes from IFSC profiles in Admin → Athletes (URL, height, birth year, category).
+3. Prep one clip: Upload & prep → Video details → Import metadata JSON (from `scripts/prepare_clip.py`) → pick the athlete → Save → Mark ready (check a deliberately incomplete clip shows the problems list).
+4. Validate a rater, assign them, and rate one move end to end; Complete should list "Strategy" until it is filled.
+5. Out of this lane, still mentioning the removed skeleton: `data_collection/README.md` (feature list and the `S` shortcut row) and the repo `README.md` (`SkeletonOverlay.jsx` in the tree, the `S` row) — update with the merge.

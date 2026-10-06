@@ -19,12 +19,11 @@ const ITEMS = [
       id: 11,
       video_id: 5,
       rater_user_id: 'u1',
-      cohort: 'validated',
       status: 'assigned',
       assigned_at: '2026-09-20T10:00:00Z',
       completed_at: null,
     },
-    video: { id: 5, filename: 'crimp_ladder.mp4', dataset: 'A', prep_status: 'ready', access_role: 'rater' },
+    video: { id: 5, filename: 'crimp_ladder.mp4', prep_status: 'ready', access_role: 'rater' },
     move_count: 3,
   },
   {
@@ -32,12 +31,11 @@ const ITEMS = [
       id: 12,
       video_id: 6,
       rater_user_id: 'u1',
-      cohort: 'overlap',
       status: 'done',
       assigned_at: '2026-09-21T10:00:00Z',
       completed_at: '2026-09-22T10:00:00Z',
     },
-    video: { id: 6, filename: 'slab_dance.mov', dataset: 'A', prep_status: 'ready', access_role: 'rater' },
+    video: { id: 6, filename: 'slab_dance.mov', prep_status: 'ready', access_role: 'rater' },
     move_count: 4,
   },
 ];
@@ -48,13 +46,13 @@ beforeEach(() => {
 });
 
 describe('MyQueue', () => {
-  it('lists each assignment with filename, cohort, status and date', async () => {
+  it('lists each assignment with filename, move count and status — no cohort', async () => {
     render(<MyQueue onOpen={() => {}} />);
 
     expect(await screen.findByText('crimp_ladder.mp4')).toBeInTheDocument();
     expect(screen.getByText('slab_dance.mov')).toBeInTheDocument();
-    expect(screen.getByText('validated')).toBeInTheDocument();
-    expect(screen.getByText('overlap')).toBeInTheDocument();
+    expect(screen.queryByText(/cohort/i)).not.toBeInTheDocument();
+    expect(screen.getByText('3')).toBeInTheDocument();
     expect(screen.getByText('Not started')).toBeInTheDocument();
     expect(screen.getByText('Done')).toBeInTheDocument();
     expect(useStore.getState().assignments).toHaveLength(2);

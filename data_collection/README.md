@@ -20,7 +20,6 @@ This UI allows you to:
 - **Move Definition** - Mark start/end frames with `[` and `]` keys
 - **Move Labeling** - Two-step form with contextual questions per move type
 - **Frame Tagging** - Tag specific frames with sensations and body parts
-- **Skeleton Overlay** - Toggle pose visualization on video
 - **Moves List** - View, edit, and delete labeled moves
 - **Export System** - Combines pose CSV with labels into ML-ready format
 - **Storage Management** - Videos deleted after export to save space
@@ -49,7 +48,6 @@ This UI allows you to:
 | `Space` | Play/Pause |
 | `[` | Mark move start |
 | `]` | Mark move end |
-| `S` | Toggle skeleton overlay |
 
 ## Setup
 
@@ -164,4 +162,3 @@ data_collection/
 - [ ] Undo/Redo for tagging actions
 - [ ] Batch video processing
 - [ ] Progress indicator for labeling sessions
-- [ ] Skeleton overlay scaling fix

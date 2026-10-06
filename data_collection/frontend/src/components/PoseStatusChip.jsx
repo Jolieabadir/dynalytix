@@ -3,9 +3,10 @@
  *
  * Two jobs run behind the labeling UI once a file is picked — the upload to
  * R2, then the pose worker. The chip shows whichever is in flight, turns
- * green when the skeleton is ready, and offers a retry when the worker
- * failed. It owns the status poll (usePoseStatus) because it is mounted for
- * the whole time a video is open.
+ * green when the pose is ready, and offers a retry when the worker failed.
+ * It owns the status poll (usePoseStatus) because it is mounted for the
+ * whole time a video is open in the prep/upload view. App does not render it
+ * in the rating view: raters need no pose data.
  */
 import useStore from '../store/useStore';
 import usePoseStatus from '../hooks/usePoseStatus';

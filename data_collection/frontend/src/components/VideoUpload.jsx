@@ -11,8 +11,8 @@
  *   4. uploads the file to R2 in the background with a progress chip, then
  *      confirms, which enqueues the pose worker.
  *
- * Pose extraction happens on the server. The skeleton, hold suggestions and
- * export switch on by themselves when the worker reports done (see
+ * Pose extraction happens on the server. Hold suggestions and export switch
+ * on by themselves when the worker reports done (see
  * hooks/usePoseStatus and components/PoseStatusChip).
  */
 import { useState } from 'react';
@@ -241,8 +241,8 @@ function VideoUpload() {
             </label>
             <p className="upload-hint">Supports .mov, .mp4, .avi</p>
             <p className="upload-hint" style={{ marginTop: '8px', fontSize: '12px', color: '#888' }}>
-              You can start labeling right away. The video uploads in the background and the
-              pose skeleton appears when the server has processed it.
+              You can start labeling right away. The video uploads in the background and
+              pose extraction runs on the server once it arrives.
             </p>
           </div>
         ) : (

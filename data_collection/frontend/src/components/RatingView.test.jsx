@@ -1,9 +1,10 @@
 /**
- * RatingView: the rater's read-only-structure labeling view.
+ * RatingView: the rater's read-only-structure, observer-only labeling view.
  *
- * Holds and canonical moves cannot be changed; Environment and Outcome are
- * the rater's own; Complete renders the API's 422 `missing` list inline and
- * turns the view read-only on 200.
+ * Holds and canonical moves cannot be changed; Strategy, Environment and
+ * Outcome are all the rater's own (no effort, no frame tagging, no hold
+ * auto-suggest, and the prepper's Strategy is not shown); Complete renders
+ * the API's 422 `missing` list inline and turns the view read-only on 200.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
@@ -19,6 +20,9 @@ vi.mock('../api/client', () => ({
   retryPose: vi.fn(),
   updateMove: vi.fn(),
   getVideoPlaybackUrl: vi.fn(),
+  getStrategyForMove: vi.fn(),
+  createStrategy: vi.fn(),
+  updateStrategy: vi.fn(),
   getEnvironmentForMove: vi.fn(),
   getOutcomeForMove: vi.fn(),
   startAssignment: vi.fn(),
@@ -30,14 +34,10 @@ vi.mock('../api/client', () => ({
   deleteMove: vi.fn(),
 }));
 
-// The player needs a real <video> and a canvas; neither exists in jsdom. The
-// rating view's contract with it is the store (readOnlyStructure), asserted
-// directly below.
+// The player needs a real <video>, which jsdom lacks. The rating view's
+// contract with it is the store (readOnlyStructure), asserted directly below.
 vi.mock('./VideoPlayer', () => ({
   default: () => <div data-testid="video-player-stub" />,
-}));
-vi.mock('./TaggingMode', () => ({
-  default: () => <div data-testid="tagging-stub" />,
 }));
 
 import RatingView from './RatingView';
@@ -47,12 +47,17 @@ import {
   getHolds,
   getMoves,
   getVideoPlaybackUrl,
+  getStrategyForMove,
+  createStrategy,
+  updateStrategy,
   getEnvironmentForMove,
   getOutcomeForMove,
   startAssignment,
   completeAssignment,
   createEnvironment,
+  updateEnvironment,
   createOutcome,
+  updateOutcome,
 } from '../api/client';
 
 const CONFIG = {
@@ -79,8 +84,11 @@ const VIDEO = {
   total_frames: 900,
   width: 1080,
   height: 1920,
-  dataset: 'A',
   prep_status: 'ready',
+  irr_overlap: true,
+  irr_overlap_set_by: 'random',
+  rater_target: 3,
+  source_type: 'public_broadcast',
   access_role: 'rater',
   owner_user_id: 'admin',
 };
@@ -104,7 +112,7 @@ const MOVES = [
 ];
 
 const ASSIGNMENT = {
-  id: 11, video_id: 5, rater_user_id: 'u1', cohort: 'validated', status: 'in_progress',
+  id: 11, video_id: 5, rater_user_id: 'u1', status: 'in_progress',
   assigned_at: '2026-09-20T10:00:00Z', completed_at: null,
 };
 
@@ -115,17 +123,24 @@ beforeEach(() => {
     currentAssignment: ASSIGNMENT,
     currentVideo: VIDEO,
     assignments: [{ assignment: ASSIGNMENT, video: VIDEO, move_count: 2 }],
-    profile: { user_id: 'u1', display_name: 'Rater', tier: 'validated', is_admin: false },
+    profile: { user_id: 'u1', display_name: 'Rater', is_validated: true, is_admin: false },
+    // Pose rows in the store must not turn into pre-filled hold slots here.
+    csvData: [{ frame_number: '10' }, { frame_number: '40' }],
   });
   vi.mocked(getVideo).mockResolvedValue(VIDEO);
   vi.mocked(getHolds).mockResolvedValue(HOLDS);
   vi.mocked(getMoves).mockResolvedValue(MOVES);
   vi.mocked(getVideoPlaybackUrl).mockResolvedValue('https://r2.test/video.mp4');
+  vi.mocked(getStrategyForMove).mockResolvedValue(null);
   vi.mocked(getEnvironmentForMove).mockResolvedValue(null);
   vi.mocked(getOutcomeForMove).mockResolvedValue(null);
   vi.mocked(startAssignment).mockResolvedValue({ ...ASSIGNMENT, status: 'in_progress' });
   vi.mocked(createEnvironment).mockImplementation(async (d) => ({ id: 900, ...d }));
   vi.mocked(createOutcome).mockImplementation(async (d) => ({ id: 901, ...d }));
+  vi.mocked(createStrategy).mockImplementation(async (d) => ({ id: 950, ...d }));
+  vi.mocked(updateStrategy).mockImplementation(async (id, d) => ({ id, move_id: 21, ...d }));
+  vi.mocked(updateEnvironment).mockImplementation(async (id, d) => ({ id, move_id: 21, ...d }));
+  vi.mocked(updateOutcome).mockImplementation(async (id, d) => ({ id, move_id: 21, ...d }));
 });
 
 async function renderLoaded() {
@@ -153,6 +168,21 @@ describe('RatingView — read-only structure', () => {
     expect(screen.queryByText('Finish & Export')).not.toBeInTheDocument();
   });
 
+  it('is observer-only: no frame tagging, and the prepper\'s Strategy is not shown', async () => {
+    await renderLoaded();
+
+    expect(screen.queryByRole('button', { name: 'Tag Frames' })).not.toBeInTheDocument();
+    expect(screen.queryByTitle('Add frame tags')).not.toBeInTheDocument();
+    const card = screen.getByTestId('move-card-21');
+    expect(card).toHaveTextContent('Move 1');
+    expect(card).not.toHaveTextContent('Static');
+    expect(card).not.toHaveTextContent('Dyno');
+    expect(card).not.toHaveTextContent('Effort');
+    expect(card).not.toHaveTextContent('first'); // the prepper's note
+    // Strategy is one of the lenses the rater must finish.
+    expect(screen.getByTestId('rating-status-21')).toHaveTextContent('Strategy');
+  });
+
   it('never carries labels across videos: exiting resets the video-scoped store', async () => {
     await renderLoaded();
     useStore.setState({ frameTags: [{ id: 1 }], moves: MOVES });
@@ -170,37 +200,95 @@ describe('RatingView — read-only structure', () => {
   });
 });
 
+async function openMove(user, moveId) {
+  await user.click(within(screen.getByTestId(`move-card-${moveId}`)).getByRole('button', { name: /Rate|Edit rating/ }));
+  return screen.findByTestId('rater-move-form');
+}
+
+async function fillEnvironmentAndOutcome(user, form) {
+  const env = within(form).getByTestId('environment-lens');
+  await user.click(within(env).getByRole('radio', { name: /Steep/ }));
+  for (const slot of ['start_left', 'start_right', 'end']) {
+    await user.click(within(screen.getByTestId(`hold-slot-${slot}`)).getByRole('radio', { name: /Jug/ }));
+  }
+  await user.selectOptions(within(form).getByRole('combobox', { name: 'Hold for Start Left' }), '101');
+  const outcome = within(form).getByTestId('outcome-lens');
+  await user.click(within(outcome).getByRole('radio', { name: /Success/ }));
+  await user.click(within(outcome).getByRole('radio', { name: /Reached Controlled/ }));
+  await user.click(within(outcome).getByRole('radio', { name: /^High/ }));
+}
+
 describe('RatingView — rating a move', () => {
-  it('shows Strategy read-only and lets the rater save Environment + Outcome', async () => {
+  it('gives the rater editable Strategy fields with no effort input and no tagging', async () => {
     const user = userEvent.setup();
     await renderLoaded();
+    const form = await openMove(user, 21);
 
-    await user.click(within(screen.getByTestId('move-card-21')).getByRole('button', { name: 'Rate' }));
-
-    const form = await screen.findByTestId('rater-move-form');
-    // Strategy: displayed, not editable — no approach radios anywhere.
-    const strategy = within(form).getByTestId('strategy-summary');
-    expect(strategy).toHaveTextContent('Static');
-    expect(strategy).toHaveTextContent('Dyno');
-    expect(within(form).queryByRole('radio', { name: /Static/ })).not.toBeInTheDocument();
+    const strategy = within(form).getByTestId('strategy-lens');
+    expect(within(strategy).getByRole('radio', { name: /Static/ })).not.toBeChecked();
+    expect(within(strategy).getByRole('radio', { name: /Large/ })).toBeInTheDocument();
+    expect(within(strategy).getByRole('button', { name: 'Dyno' })).toBeInTheDocument();
+    expect(within(strategy).getByRole('group', { name: 'Form quality' })).toBeInTheDocument();
+    // No effort for raters, and no sensation tagging.
     expect(within(form).queryByRole('slider')).not.toBeInTheDocument();
+    expect(within(form).queryByText(/Effort/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Tag Frames' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('strategy-summary')).not.toBeInTheDocument();
+  });
 
-    // Hold slots pick only from the locked holds.
-    const leftSelect = within(form).getByRole('combobox', { name: 'Hold for Start Left' });
-    const options = within(leftSelect).getAllByRole('option').map((o) => o.textContent);
-    expect(options).toEqual(['No hold chosen', 'Hold #101', 'Hold #102']);
+  it('pre-fills no hold slot from the pose data: raters pick holds from the locked set', async () => {
+    const user = userEvent.setup();
+    await renderLoaded();
+    const form = await openMove(user, 21);
 
-    await user.click(within(form).getByRole('radio', { name: /Steep/ }));
-    for (const slot of ['start_left', 'start_right', 'end']) {
-      await user.click(within(screen.getByTestId(`hold-slot-${slot}`)).getByRole('radio', { name: /Jug/ }));
+    await waitFor(() => expect(getStrategyForMove).toHaveBeenCalledWith(21));
+    for (const label of ['Hold for Start Left', 'Hold for Start Right', 'Hold for End']) {
+      expect(within(form).getByRole('combobox', { name: label })).toHaveValue('');
     }
-    await user.selectOptions(leftSelect, '101');
-    await user.click(within(form).getByRole('radio', { name: /Success/ }));
-    await user.click(within(form).getByRole('radio', { name: /Reached Controlled/ }));
-    await user.click(within(form).getByRole('radio', { name: /^High/ }));
+    expect(within(form).queryByText('suggested')).not.toBeInTheDocument();
+    // Hold slots pick only from the locked holds.
+    const options = within(within(form).getByRole('combobox', { name: 'Hold for Start Left' }))
+      .getAllByRole('option')
+      .map((o) => o.textContent);
+    expect(options).toEqual(['No hold chosen', 'Hold #101', 'Hold #102']);
+  });
+
+  it('requires Strategy before saving', async () => {
+    const user = userEvent.setup();
+    await renderLoaded();
+    const form = await openMove(user, 21);
+
+    await fillEnvironmentAndOutcome(user, form);
     await user.click(within(form).getByRole('button', { name: 'Save Rating' }));
 
-    await waitFor(() => expect(createEnvironment).toHaveBeenCalled());
+    expect(await within(form).findByText('Please select Approach and Size')).toBeInTheDocument();
+    expect(createStrategy).not.toHaveBeenCalled();
+    expect(createEnvironment).not.toHaveBeenCalled();
+  });
+
+  it('creates Strategy + Environment + Outcome on first save, then updates all three', async () => {
+    const user = userEvent.setup();
+    await renderLoaded();
+    const form = await openMove(user, 21);
+
+    const strategy = within(form).getByTestId('strategy-lens');
+    await user.click(within(strategy).getByRole('radio', { name: /Static/ }));
+    await user.click(within(strategy).getByRole('radio', { name: /Small/ }));
+    await user.click(within(strategy).getByRole('button', { name: 'Dyno' }));
+    await user.click(within(strategy).getByRole('button', { name: '4' }));
+    await fillEnvironmentAndOutcome(user, form);
+    await user.click(within(form).getByRole('button', { name: 'Save Rating' }));
+
+    await waitFor(() => expect(createOutcome).toHaveBeenCalled());
+    expect(createStrategy).toHaveBeenCalledWith({
+      move_id: 21,
+      approach: 'static',
+      size: 'small',
+      move_tags: ['dyno'],
+      form_quality: 4,
+      confidence: null,
+    });
+    expect(createStrategy.mock.calls[0][0]).not.toHaveProperty('effort_level');
     expect(createEnvironment).toHaveBeenCalledWith(
       expect.objectContaining({
         move_id: 21,
@@ -215,6 +303,44 @@ describe('RatingView — rating a move', () => {
       confidence: 'high',
     });
     expect(await within(form).findByRole('status')).toHaveTextContent('Saved.');
+    // The card now counts the move as rated on all three lenses.
+    expect(screen.getByTestId('rating-counts')).toHaveTextContent('1 of 2 moves rated');
+
+    // Second save: PUT, never a second POST.
+    await user.click(within(strategy).getByRole('radio', { name: /Large/ }));
+    await user.click(within(strategy).getByRole('radio', { name: /^Low/ }));
+    await user.click(within(form).getByRole('button', { name: 'Update Rating' }));
+
+    await waitFor(() => expect(updateStrategy).toHaveBeenCalled());
+    expect(updateStrategy).toHaveBeenCalledWith(950, {
+      approach: 'static',
+      size: 'large',
+      move_tags: ['dyno'],
+      form_quality: 4,
+      confidence: 'low',
+    });
+    expect(updateEnvironment).toHaveBeenCalledWith(900, expect.objectContaining({ wall_angle: 'steep' }));
+    expect(updateOutcome).toHaveBeenCalledWith(901, expect.objectContaining({ result: 'success' }));
+    expect(createStrategy).toHaveBeenCalledTimes(1);
+    expect(createEnvironment).toHaveBeenCalledTimes(1);
+    expect(createOutcome).toHaveBeenCalledTimes(1);
+  });
+
+  it('loads an existing Strategy row and updates it', async () => {
+    vi.mocked(getStrategyForMove).mockResolvedValue({
+      id: 77, move_id: 21, approach: 'dynamic', size: 'large', move_tags: ['no_hands'], form_quality: 2, confidence: 'high',
+    });
+    const user = userEvent.setup();
+    await renderLoaded();
+    const form = await openMove(user, 21);
+
+    const strategy = within(form).getByTestId('strategy-lens');
+    await waitFor(() => expect(within(strategy).getByRole('radio', { name: /Dynamic/ })).toBeChecked());
+    expect(within(strategy).getByRole('button', { name: 'No Hands' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(strategy).getByRole('button', { name: '2' })).toHaveAttribute('aria-pressed', 'true');
+    // The rater's own No Hands tag hides the hand slots.
+    expect(screen.queryByTestId('hold-slot-start_left')).not.toBeInTheDocument();
+    expect(within(form).getByRole('button', { name: 'Update Rating' })).toBeInTheDocument();
   });
 });
 
@@ -224,8 +350,8 @@ describe('RatingView — Complete', () => {
       incomplete: true,
       detail: '2 of 2 moves are incomplete',
       missing: [
-        { move_id: 21, move_index: 0, missing: ['outcome'] },
-        { move_id: 22, move_index: 1, missing: ['environment', 'outcome'] },
+        { move_id: 21, move_index: 0, missing: ['strategy'] },
+        { move_id: 22, move_index: 1, missing: ['strategy', 'environment', 'outcome'] },
       ],
     });
     const user = userEvent.setup();
@@ -235,8 +361,8 @@ describe('RatingView — Complete', () => {
 
     const box = await screen.findByTestId('complete-error');
     expect(box).toHaveTextContent('2 of 2 moves are incomplete');
-    expect(box).toHaveTextContent('Move 1: missing Outcome');
-    expect(box).toHaveTextContent('Move 2: missing Environment and Outcome');
+    expect(box).toHaveTextContent('Move 1: missing Strategy');
+    expect(box).toHaveTextContent('Move 2: missing Strategy, Environment and Outcome');
     // Still open for rating.
     expect(screen.getByRole('button', { name: 'Complete' })).toBeInTheDocument();
     expect(useStore.getState().currentAssignment.status).toBe('in_progress');
@@ -264,5 +390,6 @@ describe('RatingView — Complete', () => {
     const form = await screen.findByTestId('rater-move-form');
     expect(within(form).queryByRole('button', { name: /Save Rating|Update Rating/ })).not.toBeInTheDocument();
     expect(within(form).getByRole('radio', { name: /Steep/ })).toBeDisabled();
+    expect(within(within(form).getByTestId('strategy-lens')).getByRole('radio', { name: /Static/ })).toBeDisabled();
   });
 });

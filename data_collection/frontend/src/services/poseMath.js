@@ -81,7 +81,7 @@ export const LEGACY_LANDMARK_ORDER = [
  * order would push left_shoulder from column 19 to column 23 and shift every
  * column after it. Appending instead makes the change purely additive: the
  * first 75 columns are byte-for-byte what they were, so a positional reader
- * keeps working and a name-based reader (SkeletonOverlay, the backend
+ * keeps working and a name-based reader (utils/csv, the backend
  * exporter's DictReader) is unaffected either way.
  */
 export const CSV_LANDMARK_ORDER = [
@@ -228,7 +228,7 @@ export function computeResult(rawLandmarks, videoWidth, videoHeight, timestampMs
 /**
  * Turn captured samples into contiguous CSV rows.
  *
- * Two invariants matter downstream: SkeletonOverlay indexes the parsed CSV by
+ * Two invariants matter downstream: HoldSuggestions indexes the parsed CSV by
  * position, so row N must be frame N; and frame numbers must line up with what
  * the player computes from currentTime. So frame_number comes from the
  * presentation time, duplicates are dropped, and any hole is filled with an

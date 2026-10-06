@@ -13,6 +13,7 @@ never creates tables outside of apply_schema_sql(), which exists so tests can
 build a fresh schema without the Supabase CLI.
 """
 import os
+import uuid
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime, timezone
@@ -24,7 +25,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 from .models import (
-    Video, Hold, Move, Environment, Outcome, FrameTag,
+    Video, Hold, Move, Environment, Outcome, FrameTag, Strategy, Athlete,
     RaterProfile, VideoAssignment, HOLD_SLOTS, POSE_STATUSES,
 )
 
@@ -225,6 +226,11 @@ class Database:
                 # the replay is always from scratch. Test-only, see above.
                 conn.execute('DROP TABLE IF EXISTS public.video_assignments CASCADE')
                 conn.execute('DROP TABLE IF EXISTS public.rater_profiles CASCADE')
+                # Single-dataset migration tables (CREATE TABLE IF NOT EXISTS):
+                # strategies hangs off moves, which the v3 base recreates, and
+                # athletes is referenced by videos.
+                conn.execute('DROP TABLE IF EXISTS public.strategies CASCADE')
+                conn.execute('DROP TABLE IF EXISTS public.athletes CASCADE')
             for path in paths:
                 conn.execute(path.read_text())
 
@@ -239,13 +245,17 @@ class Database:
                     user_id, filename, fps, total_frames, duration_ms,
                     width, height,
                     r2_video_key, r2_pose_csv_key, r2_export_key, uploaded_at,
-                    dataset, prep_status,
-                    route_grade, wall_type, climber_experience,
-                    climber_height_cm, climber_ape_index_cm, camera_angle, gym, notes,
+                    prep_status, irr_overlap, irr_overlap_set_by,
+                    source_type, source_url, clip_start_ms, clip_end_ms,
+                    license, event_name, event_date, athlete_id,
+                    route_grade, wall_type, camera_angle, notes,
                     pose_status, pose_error
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s, %s, %s, %s,
                         %s, %s)
                 RETURNING id
             ''', (
@@ -260,15 +270,20 @@ class Database:
                 video.r2_pose_csv_key,
                 video.r2_export_key,
                 video.uploaded_at or datetime.now(timezone.utc),
-                video.dataset or 'B',
                 video.prep_status or 'draft',
+                bool(video.irr_overlap),
+                video.irr_overlap_set_by,
+                video.source_type or 'public_broadcast',
+                video.source_url,
+                video.clip_start_ms,
+                video.clip_end_ms,
+                video.license,
+                video.event_name,
+                video.event_date,
+                video.athlete_id,
                 video.route_grade,
                 video.wall_type,
-                video.climber_experience,
-                video.climber_height_cm,
-                video.climber_ape_index_cm,
                 video.camera_angle,
-                video.gym,
                 video.notes,
                 video.pose_status or 'pending',
                 video.pose_error,
@@ -277,10 +292,14 @@ class Database:
 
     # Prep-pass fields an admin may set through update_video_fields().
     VIDEO_PREP_FIELDS = (
-        'dataset', 'prep_status',
-        'route_grade', 'wall_type', 'climber_experience',
-        'climber_height_cm', 'climber_ape_index_cm', 'camera_angle', 'gym', 'notes',
+        'prep_status', 'irr_overlap', 'irr_overlap_set_by',
+        'source_type', 'source_url', 'clip_start_ms', 'clip_end_ms',
+        'license', 'event_name', 'event_date', 'athlete_id',
+        'route_grade', 'wall_type', 'camera_angle', 'notes',
+        'camera_override', 'camera_override_note',
     )
+    # Never cleared by an empty string: these are NOT NULL.
+    _VIDEO_NON_NULLABLE = ('prep_status', 'source_type')
 
     def get_video_any(self, video_id: int) -> Optional[Video]:
         """Get a video by ID regardless of owner. Admin / post-access-check only."""
@@ -328,7 +347,7 @@ class Database:
         for key, value in fields.items():
             if key not in self.VIDEO_PREP_FIELDS or value is None:
                 continue
-            if isinstance(value, str) and value == '' and key not in ('dataset', 'prep_status'):
+            if isinstance(value, str) and value == '' and key not in self._VIDEO_NON_NULLABLE:
                 value = None
             updates[key] = value
         if not updates:
@@ -347,16 +366,33 @@ class Database:
     def get_videos_for_export(
         self,
         video_id: Optional[int] = None,
-        dataset: Optional[str] = None,
+        include_community: bool = False,
+        overlap_only: bool = False,
+        include_drafts: bool = False,
     ) -> List[Video]:
-        """Videos across every owner, for the admin exports."""
+        """Videos across every owner, for the admin exports.
+
+        By default only videos that passed mark-ready (ready / closed): a
+        draft may still be mid-prep or have failed the provenance / 18+ /
+        camera gate. Community videos (the dormant self-upload flow) are left
+        out unless asked for. A single video_id is returned whatever its
+        source or status.
+        """
         clauses, params = [], []
         if video_id is not None:
             clauses.append('id = %s')
             params.append(video_id)
-        if dataset:
-            clauses.append('dataset = %s')
-            params.append(dataset)
+        else:
+            # Paper clips: ready / closed unless drafts are asked for.
+            paper = "source_type <> 'community'"
+            if not include_drafts:
+                paper += " AND prep_status IN ('ready', 'closed')"
+            # Community videos are never marked ready by their owners, so
+            # asking for them means all of them.
+            clauses.append(f"(({paper}) OR source_type = 'community')" if include_community
+                           else f'({paper})')
+            if overlap_only:
+                clauses.append('irr_overlap')
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ''
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -467,6 +503,12 @@ class Database:
         width: Optional[int] = None,
         height: Optional[int] = None,
         r2_pose_csv_key: Optional[str] = None,
+        has_cut: Optional[bool] = None,
+        cut_frames: Optional[list] = None,
+        camera_motion_score: Optional[float] = None,
+        camera_drift: Optional[float] = None,
+        camera_zoom_range: Optional[float] = None,
+        camera_motion_frames_pct: Optional[float] = None,
     ) -> bool:
         """Apply the worker's outcome to the row.
 
@@ -492,6 +534,12 @@ class Database:
             ('width', width),
             ('height', height),
             ('r2_pose_csv_key', r2_pose_csv_key),
+            ('has_cut', has_cut),
+            ('cut_frames', Jsonb(list(cut_frames)) if cut_frames is not None else None),
+            ('camera_motion_score', camera_motion_score),
+            ('camera_drift', camera_drift),
+            ('camera_zoom_range', camera_zoom_range),
+            ('camera_motion_frames_pct', camera_motion_frames_pct),
         ):
             if value is not None:
                 sets.append(f'{column} = %s')
@@ -505,6 +553,20 @@ class Database:
                 tuple(params),
             )
             return cursor.rowcount > 0
+
+    CAMERA_CHECK_COLUMNS = ('has_cut', 'cut_frames', 'camera_motion_score', 'camera_drift',
+                            'camera_zoom_range', 'camera_motion_frames_pct')
+
+    def reset_camera_check(self, video_id: int) -> None:
+        """Forget a clip's camera metrics and any override before its pose is
+        (re)extracted: the next worker run measures the bytes now in R2, and
+        an override granted for the old bytes no longer applies."""
+        sets = ', '.join(f'{c} = NULL' for c in self.CAMERA_CHECK_COLUMNS)
+        with self.get_connection() as conn:
+            conn.execute(
+                f'UPDATE videos SET {sets}, camera_override = false, camera_override_note = NULL '
+                'WHERE id = %s', (video_id,)
+            )
 
     def get_videos_with_exports(self, user_id: str) -> List[Video]:
         """Get this user's videos that have an export stored in R2."""
@@ -1118,6 +1180,178 @@ class Database:
             )
             return cursor.rowcount > 0
 
+    # ==================== STRATEGY OPERATIONS (per rater) ====================
+
+    def create_strategy(self, strategy: Strategy) -> int:
+        """Create a rater's strategy row. Returns its id.
+
+        Raises psycopg UniqueViolation if the rater already has one on the move.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO strategies (
+                    move_id, user_id, approach, size, move_tags, form_quality,
+                    confidence, taxonomy_version, is_gold, labeled_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            ''', (
+                strategy.move_id,
+                strategy.user_id,
+                strategy.approach,
+                strategy.size,
+                Jsonb(list(strategy.move_tags or [])),
+                strategy.form_quality,
+                strategy.confidence or None,
+                strategy.taxonomy_version,
+                strategy.is_gold,
+                strategy.labeled_at or datetime.now(timezone.utc),
+            ))
+            return cursor.fetchone()['id']
+
+    def get_strategy(self, strategy_id: int, user_id: str) -> Optional[Strategy]:
+        """One of the caller's own strategy rows by id."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM strategies WHERE id = %s AND user_id = %s',
+                (strategy_id, user_id)
+            )
+            row = cursor.fetchone()
+            return self._row_to_strategy(row) if row else None
+
+    def get_strategy_for_move(self, move_id: int, user_id: str) -> Optional[Strategy]:
+        """The caller's own strategy row on a move."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM strategies WHERE move_id = %s AND user_id = %s',
+                (move_id, user_id)
+            )
+            row = cursor.fetchone()
+            return self._row_to_strategy(row) if row else None
+
+    def get_strategies_for_move_all(self, move_id: int) -> List[Strategy]:
+        """Every rater's strategy row on a move. Admin export only."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM strategies WHERE move_id = %s ORDER BY user_id', (move_id,)
+            )
+            return [self._row_to_strategy(row) for row in cursor.fetchall()]
+
+    def update_strategy(self, strategy: Strategy) -> bool:
+        """Update the caller's own strategy row. Returns success."""
+        if not strategy.id:
+            return False
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE strategies SET
+                    approach = %s,
+                    size = %s,
+                    move_tags = %s,
+                    form_quality = %s,
+                    confidence = %s,
+                    taxonomy_version = %s,
+                    labeled_at = %s
+                WHERE id = %s AND user_id = %s
+            ''', (
+                strategy.approach,
+                strategy.size,
+                Jsonb(list(strategy.move_tags or [])),
+                strategy.form_quality,
+                strategy.confidence or None,
+                strategy.taxonomy_version,
+                datetime.now(timezone.utc),
+                strategy.id,
+                strategy.user_id,
+            ))
+            return cursor.rowcount > 0
+
+    def delete_strategy(self, strategy_id: int, user_id: str) -> bool:
+        """Delete the caller's own strategy row. Returns success."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'DELETE FROM strategies WHERE id = %s AND user_id = %s',
+                (strategy_id, user_id)
+            )
+            return cursor.rowcount > 0
+
+    # ==================== ATHLETE OPERATIONS (admin only) ====================
+
+    ATHLETE_FIELDS = ('ifsc_profile_url', 'height_cm', 'height_source', 'birth_year', 'category')
+
+    def create_athlete(self, athlete: Athlete) -> Athlete:
+        """Insert an athlete. Raises UniqueViolation on a repeated profile URL."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO athletes (ifsc_profile_url, height_cm, height_source, birth_year, category)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING *
+            ''', (
+                athlete.ifsc_profile_url,
+                athlete.height_cm,
+                athlete.height_source or 'missing',
+                athlete.birth_year,
+                athlete.category,
+            ))
+            return self._row_to_athlete(cursor.fetchone())
+
+    def get_athlete(self, athlete_id: str) -> Optional[Athlete]:
+        """One athlete by id, or None (also None for a malformed id)."""
+        try:
+            uuid.UUID(str(athlete_id))
+        except (TypeError, ValueError):
+            return None
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM athletes WHERE athlete_id = %s', (str(athlete_id),))
+            row = cursor.fetchone()
+            return self._row_to_athlete(row) if row else None
+
+    def list_athletes(self) -> List[Athlete]:
+        """Every athlete, oldest first."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM athletes ORDER BY created_at, athlete_id')
+            return [self._row_to_athlete(row) for row in cursor.fetchall()]
+
+    def update_athlete(self, athlete_id: str, **fields) -> Optional[Athlete]:
+        """Set athlete fields. A None value is a no-op; '' clears a nullable
+        text field. Returns the row, or None if it does not exist."""
+        updates = {}
+        for key, value in fields.items():
+            if key not in self.ATHLETE_FIELDS or value is None:
+                continue
+            if value == '' and key in ('ifsc_profile_url', 'category'):
+                value = None
+            updates[key] = value
+        if not updates:
+            return self.get_athlete(athlete_id)
+        assignments = ', '.join(f'{k} = %s' for k in updates)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'UPDATE athletes SET {assignments} WHERE athlete_id = %s RETURNING *',
+                (*updates.values(), str(athlete_id))
+            )
+            row = cursor.fetchone()
+            return self._row_to_athlete(row) if row else None
+
+    def get_athletes_by_id(self, athlete_ids) -> dict:
+        """{athlete_id: Athlete} for the given ids (export helper)."""
+        ids = sorted({str(a) for a in athlete_ids if a})
+        if not ids:
+            return {}
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM athletes WHERE athlete_id::text = ANY(%s)', (ids,))
+            return {str(r['athlete_id']): self._row_to_athlete(r) for r in cursor.fetchall()}
+
     # ==================== RATER PROFILE OPERATIONS ====================
 
     def create_rater_profile(self, profile: RaterProfile) -> RaterProfile:
@@ -1126,7 +1360,7 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO rater_profiles (
-                    user_id, display_name, tier, years_climbing, bio,
+                    user_id, display_name, is_validated, years_climbing, bio,
                     highest_grade, research_background, validation_note, is_admin, created_at
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -1134,7 +1368,7 @@ class Database:
             ''', (
                 profile.user_id,
                 profile.display_name,
-                profile.tier or 'open',
+                bool(profile.is_validated),
                 profile.years_climbing,
                 profile.bio,
                 profile.highest_grade,
@@ -1167,7 +1401,7 @@ class Database:
 
     def update_rater_profile(self, user_id: str, **fields) -> Optional[RaterProfile]:
         """Set admin-controlled fields on a profile. Returns the row, or None."""
-        allowed = ('tier', 'validation_note', 'is_admin', 'display_name')
+        allowed = ('is_validated', 'validation_note', 'is_admin', 'display_name')
         updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
         if not updates:
             return self.get_rater_profile(user_id)
@@ -1184,7 +1418,7 @@ class Database:
     def update_rater_profile_self(self, user_id: str, **fields) -> Optional[RaterProfile]:
         """Set the rater-editable fields on a profile. Returns the row, or None.
 
-        tier / validation_note / is_admin are deliberately not in the allowed
+        is_validated / validation_note / is_admin are deliberately not in the allowed
         list: those are update_rater_profile (admin) only. An empty string on
         a nullable text field clears it.
         """
@@ -1216,13 +1450,12 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO video_assignments (video_id, rater_user_id, cohort, status, assigned_at)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO video_assignments (video_id, rater_user_id, status, assigned_at)
+                VALUES (%s, %s, %s, %s)
                 RETURNING *
             ''', (
                 assignment.video_id,
                 assignment.rater_user_id,
-                assignment.cohort,
                 assignment.status or 'assigned',
                 assignment.assigned_at or datetime.now(timezone.utc),
             ))
@@ -1287,6 +1520,71 @@ class Database:
             row = cursor.fetchone()
             return self._row_to_assignment(row) if row else None
 
+    def create_assignment_capped(self, assignment: VideoAssignment, target: int) -> Optional[VideoAssignment]:
+        """Insert an assignment only if the video has fewer than `target`.
+
+        One transaction with the video row locked (SELECT ... FOR UPDATE), so
+        two concurrent assigns cannot both see room for one more rater, and an
+        overlap change (which takes the same lock) cannot slip in between.
+        Returns None when the video is already at its target. Raises
+        UniqueViolation on a repeated (video, rater).
+        """
+        with self.get_connection() as conn:
+            with conn.transaction():
+                cursor = conn.cursor()
+                cursor.execute('SELECT irr_overlap FROM videos WHERE id = %s FOR UPDATE',
+                               (assignment.video_id,))
+                cursor.execute('SELECT COUNT(*) AS n FROM video_assignments WHERE video_id = %s',
+                               (assignment.video_id,))
+                if int(cursor.fetchone()['n']) >= target:
+                    return None
+                cursor.execute('''
+                    INSERT INTO video_assignments (video_id, rater_user_id, status, assigned_at)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING *
+                ''', (
+                    assignment.video_id,
+                    assignment.rater_user_id,
+                    assignment.status or 'assigned',
+                    assignment.assigned_at or datetime.now(timezone.utc),
+                ))
+                return self._row_to_assignment(cursor.fetchone())
+
+    def set_overlap_if_unassigned(self, video_id: int, irr_overlap: bool) -> Optional[Video]:
+        """Set the overlap flag (admin override) only while the video has no
+        assignments, atomically. Returns the row, or None if it has any."""
+        with self.get_connection() as conn:
+            with conn.transaction():
+                cursor = conn.cursor()
+                cursor.execute('SELECT id FROM videos WHERE id = %s FOR UPDATE', (video_id,))
+                cursor.execute('''
+                    UPDATE videos SET irr_overlap = %s, irr_overlap_set_by = 'admin_override'
+                    WHERE id = %s
+                      AND NOT EXISTS (SELECT 1 FROM video_assignments a WHERE a.video_id = %s)
+                    RETURNING *
+                ''', (irr_overlap, video_id, video_id))
+                row = cursor.fetchone()
+                return self._row_to_video(row) if row else None
+
+    def athlete_video_dates(self, athlete_id: str, statuses=('ready', 'closed')) -> List:
+        """event_date of every video of an athlete in the given prep statuses."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT event_date FROM videos WHERE athlete_id::text = %s AND prep_status = ANY(%s)',
+                (str(athlete_id), list(statuses)),
+            )
+            return [r['event_date'] for r in cursor.fetchall()]
+
+    def count_assignments(self, video_id: int) -> int:
+        """How many raters are assigned to a video."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT COUNT(*) AS n FROM video_assignments WHERE video_id = %s', (video_id,)
+            )
+            return int(cursor.fetchone()['n'])
+
     def delete_assignment(self, assignment_id: int) -> bool:
         """Delete an assignment. The rater's label rows are kept."""
         with self.get_connection() as conn:
@@ -1316,15 +1614,28 @@ class Database:
             uploaded_at=row['uploaded_at'],
             # Dataset A columns; .get so a database without that migration
             # reads back as the Dataset B defaults.
-            dataset=row.get('dataset') or 'B',
             prep_status=row.get('prep_status') or 'draft',
+            irr_overlap=bool(row.get('irr_overlap')),
+            irr_overlap_set_by=row.get('irr_overlap_set_by'),
+            source_type=row.get('source_type') or 'public_broadcast',
+            source_url=row.get('source_url'),
+            clip_start_ms=row.get('clip_start_ms'),
+            clip_end_ms=row.get('clip_end_ms'),
+            license=row.get('license'),
+            event_name=row.get('event_name'),
+            event_date=row.get('event_date'),
+            athlete_id=str(row['athlete_id']) if row.get('athlete_id') else None,
+            has_cut=row.get('has_cut'),
+            cut_frames=list(row.get('cut_frames') or []),
+            camera_motion_score=row.get('camera_motion_score'),
+            camera_drift=row.get('camera_drift'),
+            camera_zoom_range=row.get('camera_zoom_range'),
+            camera_motion_frames_pct=row.get('camera_motion_frames_pct'),
+            camera_override=bool(row.get('camera_override')),
+            camera_override_note=row.get('camera_override_note'),
             route_grade=row.get('route_grade'),
             wall_type=row.get('wall_type'),
-            climber_experience=row.get('climber_experience'),
-            climber_height_cm=row.get('climber_height_cm'),
-            climber_ape_index_cm=row.get('climber_ape_index_cm'),
             camera_angle=row.get('camera_angle'),
-            gym=row.get('gym'),
             notes=row.get('notes'),
             # .get again: a database without the pose_status migration reads
             # back as 'pending' rather than raising.
@@ -1421,12 +1732,42 @@ class Database:
         )
 
     @staticmethod
+    def _row_to_strategy(row: dict) -> Strategy:
+        """Convert database row to Strategy object."""
+        return Strategy(
+            id=row['id'],
+            move_id=row['move_id'],
+            user_id=str(row['user_id']),
+            approach=row['approach'],
+            size=row['size'],
+            move_tags=list(row['move_tags'] or []),
+            form_quality=row['form_quality'],
+            confidence=row['confidence'] or '',
+            taxonomy_version=row.get('taxonomy_version') or '',
+            is_gold=bool(row.get('is_gold')),
+            labeled_at=row.get('labeled_at'),
+        )
+
+    @staticmethod
+    def _row_to_athlete(row: dict) -> Athlete:
+        """Convert database row to Athlete object."""
+        return Athlete(
+            athlete_id=str(row['athlete_id']),
+            ifsc_profile_url=row.get('ifsc_profile_url'),
+            height_cm=row.get('height_cm'),
+            height_source=row.get('height_source') or 'missing',
+            birth_year=row.get('birth_year'),
+            category=row.get('category'),
+            created_at=row.get('created_at'),
+        )
+
+    @staticmethod
     def _row_to_rater_profile(row: dict) -> RaterProfile:
         """Convert database row to RaterProfile object."""
         return RaterProfile(
             user_id=str(row['user_id']),
             display_name=row['display_name'],
-            tier=row['tier'],
+            is_validated=bool(row.get('is_validated')),
             years_climbing=row['years_climbing'],
             bio=row['bio'],
             highest_grade=row['highest_grade'],
@@ -1443,7 +1784,6 @@ class Database:
             id=row['id'],
             video_id=row['video_id'],
             rater_user_id=str(row['rater_user_id']),
-            cohort=row['cohort'],
             status=row['status'],
             assigned_at=row['assigned_at'],
             completed_at=row['completed_at'],

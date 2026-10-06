@@ -56,7 +56,7 @@ Focus: Building the foundation for quality training data
 - [x] Frame tagging system (sensations: pain, instability, weakness, etc.)
 - [x] Body part selection for each tag
 - [x] Intensity levels (0-10) for tags
-- [x] Skeleton overlay on video
+- [x] Skeleton overlay on video (removed from the labeling UI in W2; the Python visualizer still draws it)
 - [x] Moves list with edit/delete functionality
 - [x] Export system (merges pose CSV + labels into ML-ready format)
 - [x] Auto video deletion after export (storage management)
@@ -181,7 +181,6 @@ dynalytics/
 │           ├── components/
 │           │   ├── VideoUpload.jsx
 │           │   ├── VideoPlayer.jsx
-│           │   ├── SkeletonOverlay.jsx
 │           │   ├── MoveForm.jsx
 │           │   ├── MovesList.jsx
 │           │   ├── TaggingMode.jsx
@@ -290,7 +289,6 @@ Open http://localhost:5173
 | `Space` | Play/Pause |
 | `[` | Mark move start |
 | `]` | Mark move end |
-| `S` | Toggle skeleton overlay |
 
 ## Data Output
 

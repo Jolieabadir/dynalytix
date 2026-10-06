@@ -14,6 +14,13 @@ from src.storage import r2
 from src.web import api as api_module
 from tests.conftest import make_jwt, requires_db  # noqa: F401 - `enqueued` fixture lives in conftest
 
+
+@pytest.fixture(autouse=True)
+def _community_flow(self_upload_on):
+    """These tests exercise the owner flow, i.e. the community self-upload
+    path, which only exists while SELF_UPLOAD_ENABLED is on."""
+    yield
+
 WORKER_SECRET = 'test-worker-secret'
 # The real enqueue, captured before any fixture replaces it.
 _real_enqueue = pose_queue.enqueue_pose_job
@@ -92,6 +99,13 @@ def finish_pose(client, user_id, video, csv_text=POSE_CSV, **overrides):
         'width': 1920,
         'height': 1080,
         'r2_pose_csv_key': key,
+        # A static, uncut clip as the worker's camera check reports it.
+        'has_cut': False,
+        'cut_frames': [],
+        'camera_motion_score': 0.0001,
+        'camera_drift': 0.001,
+        'camera_zoom_range': 1.0,
+        'camera_motion_frames_pct': 0.0,
     }
     body.update(overrides)
     response = client.post(

@@ -67,7 +67,6 @@ function MyQueue({ onOpen }) {
             <tr>
               <th>Video</th>
               <th>Moves</th>
-              <th>Cohort</th>
               <th>Status</th>
               <th>Assigned</th>
               <th />
@@ -78,7 +77,6 @@ function MyQueue({ onOpen }) {
               <tr key={assignment.id} data-testid={`queue-row-${assignment.id}`}>
                 <td className="cell-primary">{video.filename}</td>
                 <td>{move_count}</td>
-                <td>{assignment.cohort}</td>
                 <td>
                   <span className={`status-pill status-${assignment.status}`}>
                     {STATUS_LABEL[assignment.status] || assignment.status}

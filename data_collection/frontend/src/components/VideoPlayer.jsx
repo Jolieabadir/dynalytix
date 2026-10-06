@@ -1,8 +1,9 @@
 /**
- * VideoPlayer with skeleton and hold overlays.
+ * VideoPlayer with the hold overlay.
  *
- * Plays video with frame-accurate scrubbing, the pose skeleton, and the hold
- * boxes the labeler draws or the detector suggests.
+ * Plays video with frame-accurate scrubbing and the hold boxes the labeler
+ * draws or the detector suggests. (The pose skeleton overlay was removed in
+ * the single-dataset change; labelers judge the footage itself.)
  *
  * Keyboard note: the shortcut handler used to bail out on any INPUT, which was
  * fine when the labeling form was a modal that covered the video. Now the form
@@ -13,7 +14,6 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import useStore from '../store/useStore';
 import { fpsOf, timeToFrame, frameToTime } from '../utils/frames';
-import SkeletonOverlay from './SkeletonOverlay';
 import HoldOverlay from './HoldOverlay';
 import { createHold, deleteHold, updateHold } from '../api/client';
 import { useCoarsePointer } from '../utils/pointer';
@@ -34,7 +34,6 @@ function isTextEntry(element) {
 
 function VideoPlayer() {
   const videoRef = useRef(null);
-  const [showSkeleton, setShowSkeleton] = useState(true);
   const [holdError, setHoldError] = useState(null);
 
   const {
@@ -45,8 +44,6 @@ function VideoPlayer() {
     moveEnd,
     videoBlobUrl,
     videoPlaybackUrl,
-    csvData,
-    poseStatus,
     holds,
     showHoldOverlay,
     holdPickSlot,
@@ -74,14 +71,6 @@ function VideoPlayer() {
   // canonical set. The player still scrubs and picks holds; it just cannot
   // draw, delete, or mark move boundaries.
   const readOnly = Boolean(readOnlyStructure);
-
-  // The skeleton exists only once the server-side worker has finished and
-  // usePoseStatus (mounted in the header chip for every view that opens a
-  // video) has parsed its CSV into the store.
-  const poseReady =
-    poseStatus?.video_id === currentVideo?.id &&
-    poseStatus?.pose_status === 'done' &&
-    Boolean(csvData && csvData.length > 0);
 
   // Frame counter follows playback.
   useEffect(() => {
@@ -144,11 +133,6 @@ function VideoPlayer() {
         case ']':
           e.preventDefault();
           if (!readOnly) setMoveEnd(currentFrame);
-          break;
-        case 's':
-        case 'S':
-          e.preventDefault();
-          setShowSkeleton((prev) => !prev);
           break;
         case 'h':
         case 'H':
@@ -244,14 +228,6 @@ function VideoPlayer() {
         <div className="video-wrapper">
           <video ref={videoRef} src={videoBlobUrl || videoPlaybackUrl || undefined} playsInline />
 
-          {showSkeleton && poseReady && (
-            <SkeletonOverlay
-              videoRef={videoRef}
-              currentFrame={currentFrame}
-              csvData={csvData}
-            />
-          )}
-
           {showHoldOverlay && (
             <HoldOverlay
               holds={holds}
@@ -291,15 +267,6 @@ function VideoPlayer() {
           Frame: {currentFrame} / {currentVideo.total_frames} (
           {frameToTime(currentFrame, fps).toFixed(2)}s)
         </span>
-
-        <button
-          onClick={() => setShowSkeleton(!showSkeleton)}
-          className={`toggle-skeleton ${showSkeleton ? 'active' : ''}`}
-          title={poseReady ? 'Toggle skeleton (S key)' : 'The skeleton appears once the server has extracted the pose'}
-          disabled={!poseReady}
-        >
-          {showSkeleton ? '👁️ Hide' : '👁️ Show'} Skeleton{poseReady ? '' : ' (waiting for pose)'}
-        </button>
 
         <button
           onClick={() => setShowHoldOverlay(!showHoldOverlay)}

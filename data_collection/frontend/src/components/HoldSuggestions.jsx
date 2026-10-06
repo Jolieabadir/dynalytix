@@ -15,7 +15,7 @@ import { suggestHoldsForFrame, bodyPartsFor, sideFor } from '../services/holdSug
 /** Why no suggestion is available, in the labeller's terms. */
 const REASON_TEXT = {
   'waiting-for-pose':
-    'Waiting for pose — the server is still extracting the skeleton for this video.',
+    'Waiting for pose — the server is still extracting the pose for this video.',
   'pose-failed':
     'Pose extraction failed, so there is nothing to match against. Retry it from the header.',
   'no-holds':

@@ -1,11 +1,16 @@
 /**
- * RaterMoveForm — the three-lens panel for one canonical move (Dataset A).
+ * RaterMoveForm — the three-lens panel for one canonical move.
  *
- * The move itself (Strategy) was defined in prep and is shown read-only.
- * Environment and Outcome are the rater's own rows: loaded with GET (the API
- * only ever returns the caller's), created with POST the first time, updated
- * with PUT after that. Hold slots can only point at the video's locked holds
- * — via "Pick on video" or the dropdown, both fed from the same list.
+ * The canonical move only fixes the boundaries. Strategy, Environment and
+ * Outcome are all the rater's own rows: loaded with GET (the API only ever
+ * returns the caller's), created with POST the first time, updated with PUT
+ * after that. Strategy uses the same field group as the prep MoveForm, minus
+ * effort: raters label only what is observable (effort_level is never shown).
+ *
+ * Hold slots can only point at the video's locked holds — via "Pick on
+ * video" or the dropdown, both fed from the same list. Nothing is pre-filled
+ * from the pose data: an auto-suggested hold would anchor every rater on the
+ * same guess and inflate agreement, so raters pick each hold themselves.
  *
  * `locked` (assignment done, or video closed) shows the saved values with
  * every control disabled: the API answers 403 to writes at that point.
@@ -13,9 +18,12 @@
 import { useEffect, useState } from 'react';
 import useStore, { HOLD_SLOT_KEYS } from '../store/useStore';
 import { optionLabel } from '../utils/taxonomy';
-import { suggestHoldSlots } from '../services/holdAssignment';
-import { EnvironmentLens, OutcomeLens, StrategySummary } from './LensFields';
+import { EnvironmentLens, OutcomeLens, StrategyLens } from './LensFields';
+import { toggleMoveTagValue } from '../utils/strategy';
 import {
+  getStrategyForMove,
+  createStrategy,
+  updateStrategy,
   getEnvironmentForMove,
   getOutcomeForMove,
   createEnvironment,
@@ -24,7 +32,7 @@ import {
   updateOutcome,
 } from '../api/client';
 
-const EMPTY_SLOT = { hold_id: null, hold_type: '', hold_quality: [], suggested: false };
+const EMPTY_SLOT = { hold_id: null, hold_type: '', hold_quality: [] };
 const REQUIRED_SLOTS = ['start_left', 'start_right', 'end'];
 
 function slotsFromEnvironment(env, prefill) {
@@ -49,8 +57,6 @@ function RaterMoveForm({ move, moveIndex, onClose, onSaved, locked = false }) {
   const {
     config,
     holds,
-    csvData,
-    currentVideo,
     holdPickSlot,
     setHoldPickSlot,
     previousEnvironment,
@@ -58,8 +64,17 @@ function RaterMoveForm({ move, moveIndex, onClose, onSaved, locked = false }) {
   } = useStore();
 
   const [loadingExisting, setLoadingExisting] = useState(true);
+  const [existingStrategy, setExistingStrategy] = useState(null);
   const [existingEnv, setExistingEnv] = useState(null);
   const [existingOutcome, setExistingOutcome] = useState(null);
+
+  // Lens 2: the rater's own Strategy. Form quality starts unset (not 3) so
+  // no rater is anchored on a default.
+  const [approach, setApproach] = useState('');
+  const [size, setSize] = useState('');
+  const [moveTags, setMoveTags] = useState([]);
+  const [formQuality, setFormQuality] = useState(null);
+  const [strategyConfidence, setStrategyConfidence] = useState('');
 
   const [wallAngle, setWallAngle] = useState('');
   const [slots, setSlots] = useState(() => slotsFromEnvironment(null, null));
@@ -71,7 +86,8 @@ function RaterMoveForm({ move, moveIndex, onClose, onSaved, locked = false }) {
   const [error, setError] = useState(null);
   const [savedNote, setSavedNote] = useState(null);
 
-  const noHands = (move?.move_tags ?? []).includes('no_hands');
+  // The rater's own tags, not the prepper's: No Hands hides the hand slots.
+  const noHands = moveTags.includes('no_hands');
 
   // Load this rater's rows for the move. A 404 is "nothing yet" and the form
   // starts from the previous move's environment, like MoveForm does.
@@ -82,32 +98,24 @@ function RaterMoveForm({ move, moveIndex, onClose, onSaved, locked = false }) {
     setSavedNote(null);
     setHoldPickSlot(null);
 
-    Promise.all([getEnvironmentForMove(move.id), getOutcomeForMove(move.id)])
-      .then(([env, outcome]) => {
+    Promise.all([
+      getStrategyForMove(move.id),
+      getEnvironmentForMove(move.id),
+      getOutcomeForMove(move.id),
+    ])
+      .then(([strategy, env, outcome]) => {
         if (!active) return;
+        setExistingStrategy(strategy);
         setExistingEnv(env);
         setExistingOutcome(outcome);
+        setApproach(strategy?.approach || '');
+        setSize(strategy?.size || '');
+        setMoveTags(strategy?.move_tags || []);
+        setFormQuality(strategy?.form_quality ?? null);
+        setStrategyConfidence(strategy?.confidence || '');
         setWallAngle(env?.wall_angle || previousEnvironment.wall_angle || '');
-        let nextSlots = slotsFromEnvironment(env, env ? null : previousEnvironment);
-
-        // First time on this move: suggest holds from the pose data, marked
-        // as suggestions so a wrong guess is visible rather than adopted.
-        if (!env && holds?.length && csvData?.length && currentVideo?.width > 0 && currentVideo?.height > 0) {
-          const rowAt = (frame) => csvData.find((r) => Number(r.frame_number) === frame) ?? null;
-          const suggestion = suggestHoldSlots({
-            holds,
-            startRow: rowAt(move.frame_start),
-            endRow: rowAt(move.frame_end),
-            width: currentVideo.width,
-            height: currentVideo.height,
-          });
-          nextSlots = { ...nextSlots };
-          for (const slot of HOLD_SLOT_KEYS) {
-            const id = suggestion[slot];
-            if (id != null) nextSlots[slot] = { ...nextSlots[slot], hold_id: id, suggested: true };
-          }
-        }
-        setSlots(nextSlots);
+        // Hold ids are never pre-filled (see the header comment).
+        setSlots(slotsFromEnvironment(env, env ? null : previousEnvironment));
         setResult(outcome?.result || '');
         setReachDetail(outcome?.reach_detail || '');
         setConfidence(outcome?.confidence || '');
@@ -132,13 +140,13 @@ function RaterMoveForm({ move, moveIndex, onClose, onSaved, locked = false }) {
     if (assignedId == null) return;
     setSlots((prev) => ({
       ...prev,
-      [holdPickSlot.slot]: { ...prev[holdPickSlot.slot], hold_id: assignedId, suggested: false },
+      [holdPickSlot.slot]: { ...prev[holdPickSlot.slot], hold_id: assignedId },
     }));
     setHoldPickSlot(null);
   }, [holdPickSlot, setHoldPickSlot]);
 
   const updateSlot = (slot, patch) =>
-    setSlots((prev) => ({ ...prev, [slot]: { ...prev[slot], ...patch, suggested: false } }));
+    setSlots((prev) => ({ ...prev, [slot]: { ...prev[slot], ...patch } }));
 
   const toggleSlotQuality = (slot, quality) =>
     setSlots((prev) => {
@@ -150,7 +158,6 @@ function RaterMoveForm({ move, moveIndex, onClose, onSaved, locked = false }) {
           hold_quality: current.includes(quality)
             ? current.filter((q) => q !== quality)
             : [...current, quality],
-          suggested: false,
         },
       };
     });
@@ -162,8 +169,18 @@ function RaterMoveForm({ move, moveIndex, onClose, onSaved, locked = false }) {
     onClose();
   };
 
+  const toggleMoveTag = (tag) => setMoveTags((prev) => toggleMoveTagValue(prev, tag));
+
   const handleSave = async () => {
     if (locked) return;
+    if (!approach || !size) {
+      setError('Please select Approach and Size');
+      return;
+    }
+    if (formQuality == null) {
+      setError('Please choose a Form Quality (1–5)');
+      return;
+    }
     if (!wallAngle) {
       setError('Please select Wall Angle');
       return;
@@ -200,8 +217,30 @@ function RaterMoveForm({ move, moveIndex, onClose, onSaved, locked = false }) {
           ];
         })
       );
+      const strategyFields = {
+        approach,
+        size,
+        move_tags: moveTags,
+        form_quality: formQuality,
+        confidence: strategyConfidence || null,
+      };
       const envFields = { wall_angle: wallAngle, ...slotPayload };
       const outcomeFields = { result, reach_detail: reachDetail, confidence };
+
+      let strategy;
+      if (existingStrategy) {
+        strategy = await updateStrategy(existingStrategy.id, strategyFields);
+      } else {
+        try {
+          strategy = await createStrategy({ move_id: move.id, ...strategyFields });
+        } catch (err) {
+          // Already created (a reload mid-save): fetch it and update instead.
+          if (err.response?.status !== 409) throw err;
+          const found = await getStrategyForMove(move.id);
+          strategy = await updateStrategy(found.id, strategyFields);
+        }
+      }
+      setExistingStrategy(strategy);
 
       let env;
       if (existingEnv) {
@@ -235,7 +274,7 @@ function RaterMoveForm({ move, moveIndex, onClose, onSaved, locked = false }) {
       setPreviousEnvironment(envFields);
       setHoldPickSlot(null);
       setSavedNote('Saved.');
-      onSaved?.(move.id, { environment: true, outcome: true });
+      onSaved?.(move.id, { strategy: true, environment: true, outcome: true });
     } catch (err) {
       console.error('Failed to save rating:', err);
       const status = err.response?.status;
@@ -288,7 +327,20 @@ function RaterMoveForm({ move, moveIndex, onClose, onSaved, locked = false }) {
         )}
         {loadingExisting && <div className="move-form-loading">Loading your labels…</div>}
 
-        <StrategySummary config={config} move={move} />
+        <StrategyLens
+          config={config}
+          approach={approach}
+          onApproach={setApproach}
+          size={size}
+          onSize={setSize}
+          moveTags={moveTags}
+          onToggleTag={toggleMoveTag}
+          formQuality={formQuality}
+          onFormQuality={setFormQuality}
+          confidence={strategyConfidence}
+          onConfidence={setStrategyConfidence}
+          disabled={disabled}
+        />
 
         <EnvironmentLens
           config={config}
@@ -323,7 +375,7 @@ function RaterMoveForm({ move, moveIndex, onClose, onSaved, locked = false }) {
         </button>
         {!locked && (
           <button onClick={handleSave} className="btn-primary" disabled={saving || loadingExisting}>
-            {saving ? 'Saving…' : existingEnv || existingOutcome ? 'Update Rating' : 'Save Rating'}
+            {saving ? 'Saving…' : existingStrategy || existingEnv || existingOutcome ? 'Update Rating' : 'Save Rating'}
           </button>
         )}
       </div>

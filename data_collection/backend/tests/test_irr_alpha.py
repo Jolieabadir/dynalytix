@@ -1,6 +1,7 @@
 """
 scripts/irr_alpha.py on a hand-built long export: perfect agreement is 1,
-disagreement is lower, missing values and single-rater units are handled.
+disagreement is lower, missing values and single-rater units are handled,
+and only the random overlap subset (irr_overlap = true) counts by default.
 """
 import csv
 import io
@@ -13,23 +14,24 @@ from scripts import irr_alpha  # noqa: E402
 from src.labeling.exporter import LONG_COLUMNS  # noqa: E402
 
 
-def long_rows(entries):
+def long_rows(entries, overlap=True):
     """entries: (video_id, move_id, rater, lens, field, value)."""
     rows = []
     for video_id, move_id, rater, lens, field, value in entries:
         rows.append({
-            'video_id': str(video_id), 'dataset': 'A', 'move_id': str(move_id),
-            'move_index': str(move_id), 'rater_user_id': rater, 'rater_tier': 'validated',
-            'cohort': 'validated', 'lens': lens, 'field': field, 'value': value,
+            'video_id': str(video_id), 'irr_overlap': 'true' if overlap else 'false',
+            'source_type': 'public_broadcast', 'move_id': str(move_id),
+            'move_index': str(move_id), 'rater_user_id': rater,
+            'lens': lens, 'field': field, 'value': value,
             'taxonomy_version': '3.1.0', 'is_gold': 'false',
         })
     return rows
 
 
-def write_csv(tmp_path, rows):
-    path = tmp_path / 'long.csv'
+def write_csv(tmp_path, rows, columns=None, name='long.csv'):
+    path = tmp_path / name
     with open(path, 'w', newline='') as handle:
-        writer = csv.DictWriter(handle, fieldnames=LONG_COLUMNS)
+        writer = csv.DictWriter(handle, fieldnames=columns or LONG_COLUMNS, extrasaction='ignore')
         writer.writeheader()
         writer.writerows(rows)
     return str(path)
@@ -109,3 +111,57 @@ def test_cli_prints_table_and_writes_json(tmp_path, capsys):
     assert 'wall_angle' in printed and 'nominal' in printed
     assert out.exists()
     assert irr_alpha.main([path, '--lens', 'outcome']) == 1  # nothing left after filter
+
+
+def test_only_the_overlap_subset_counts_by_default(tmp_path, capsys):
+    """Single-rater videos carry no agreement information; they are dropped
+    unless --all-videos. Here a disagreeing 'pair' on a single-rated video
+    (impossible in practice, but it proves the filter) would lower alpha."""
+    agree = [(1, m, r, 'outcome', 'result', 'success' if m % 2 else 'fall')
+             for m in (1, 2, 3) for r in ('a', 'b', 'c')]
+    noise = [(2, m, r, 'outcome', 'result', 'success' if r == 'a' else 'fall')
+             for m in (1, 2, 3) for r in ('a', 'b')]
+    path = write_csv(tmp_path, long_rows(agree) + long_rows(noise, overlap=False))
+
+    subset = irr_alpha.read_long(path)
+    assert {r['video_id'] for r in subset} == {'1'}
+    assert irr_alpha.coverage(subset) == {'n_videos': 1, 'n_moves': 3, 'n_raters': 3}
+    assert irr_alpha.compute(subset)[0]['alpha'] == 1.0
+
+    everything = irr_alpha.read_long(path, overlap_only=False)
+    assert {r['video_id'] for r in everything} == {'1', '2'}
+    assert irr_alpha.compute(everything)[0]['alpha'] < 1.0
+
+    assert irr_alpha.main([path]) == 0
+    assert 'overlap subset - 1 videos, 3 moves, 3 raters' in capsys.readouterr().out
+    assert irr_alpha.main([path, '--all-videos']) == 0
+    assert 'all videos - 2 videos' in capsys.readouterr().out
+
+
+def test_old_export_without_irr_overlap_is_refused(tmp_path, capsys):
+    entries = [(1, m, r, 'outcome', 'result', 'success') for m in (1, 2) for r in ('a', 'b')]
+    old_columns = [c for c in LONG_COLUMNS if c != 'irr_overlap']
+    path = write_csv(tmp_path, long_rows(entries), columns=old_columns, name='old.csv')
+    with pytest.raises(ValueError, match='irr_overlap'):
+        irr_alpha.read_long(path)
+    assert irr_alpha.main([path]) == 2
+    assert irr_alpha.main([path, '--all-videos']) == 0
+
+
+def test_move_tags_empty_set_agrees_and_partial_overlap_gets_per_tag_credit(tmp_path):
+    entries = []
+    for move in (1, 2, 3, 4):
+        a = {1: '', 2: 'dyno|mantle', 3: 'dyno', 4: 'heel_hook'}[move]
+        b = {1: '', 2: 'dyno', 3: 'dyno', 4: 'heel_hook'}[move]
+        entries.append((1, move, 'a', 'strategy', 'move_tags', a))
+        entries.append((1, move, 'b', 'strategy', 'move_tags', b))
+    rows = irr_alpha.read_long(write_csv(tmp_path, long_rows(entries)))
+    by_field = {(r['lens'], r['field']): r for r in irr_alpha.compute(rows)}
+
+    whole = by_field[('strategy', 'move_tags')]
+    assert whole['n_units_used'] == 4  # the empty set on move 1 is a value, not missing
+    assert whole['alpha'] < 1.0       # move 2 differs as a set
+
+    assert by_field[('strategy', 'move_tags:dyno')]['alpha'] == 1.0     # both applied dyno on 2 and 3
+    assert by_field[('strategy', 'move_tags:heel_hook')]['alpha'] == 1.0
+    assert by_field[('strategy', 'move_tags:mantle')]['alpha'] < 1.0    # only a applied it

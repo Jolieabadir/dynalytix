@@ -431,17 +431,6 @@ body {
   max-height: 70vh;
 }
 
-/* Skeleton overlay canvas - must match video exactly */
-.video-container canvas,
-.video-wrapper canvas {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-
 .video-controls {
   display: flex;
   justify-content: center;
@@ -498,32 +487,6 @@ body {
   font-size: 0.85rem;
   font-weight: 600;
   color: var(--text-secondary);
-}
-
-.toggle-skeleton {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  background: white;
-  border: 1px solid var(--border-light);
-  padding: var(--space-xs) var(--space-md);
-  border-radius: var(--radius-full);
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.toggle-skeleton:hover {
-  background: var(--success-soft);
-  border-color: var(--success);
-}
-
-.toggle-skeleton.active {
-  background: var(--success-soft);
-  border-color: var(--success);
-  color: var(--accent-sage-dark);
 }
 
 /* Timeline */
@@ -3015,3 +2978,11 @@ body {
   background: rgba(255, 214, 10, 0.1);
   border: 1px solid rgba(255, 214, 10, 0.3);
 }
+
+/* Camera check (W2 worker) */
+.status-pill.camera-ok { background: rgba(34, 197, 94, 0.15); color: #16a34a; }
+.status-pill.camera-fail { background: rgba(239, 68, 68, 0.15); color: #dc2626; }
+.status-pill.camera-overridden { background: rgba(234, 179, 8, 0.18); color: #a16207; }
+.camera-cell .missing-list { margin: 4px 0; }
+.camera-override-form { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.camera-override-form input { min-width: 0; flex: 1 1 120px; }

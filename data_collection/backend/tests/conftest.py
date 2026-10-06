@@ -96,8 +96,8 @@ def clean_db(db):
     """Truncate every data table so each test starts empty."""
     with db.get_connection() as conn:
         conn.execute(
-            'TRUNCATE frame_tags, outcomes, environments, moves, holds, videos, '
-            'video_assignments, rater_profiles '
+            'TRUNCATE frame_tags, outcomes, environments, strategies, moves, holds, '
+            'videos, athletes, video_assignments, rater_profiles '
             'RESTART IDENTITY CASCADE'
         )
     return db
@@ -248,3 +248,19 @@ def enqueued(monkeypatch):
 
     monkeypatch.setattr(pose_queue, 'enqueue_pose_job', fake_enqueue)
     return calls
+
+
+@pytest.fixture
+def self_upload_on(monkeypatch):
+    """Turn on the dormant community self-upload flow (SELF_UPLOAD_ENABLED).
+
+    Tests of the owner flow (a non-admin uploading and labeling their own
+    video) use this; with the flag off those routes are admin-only.
+    """
+    monkeypatch.setenv('SELF_UPLOAD_ENABLED', 'true')
+
+
+@pytest.fixture
+def self_upload_off(monkeypatch):
+    """The production default: self-upload switched off."""
+    monkeypatch.delenv('SELF_UPLOAD_ENABLED', raising=False)

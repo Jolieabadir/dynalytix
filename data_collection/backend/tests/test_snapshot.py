@@ -16,7 +16,7 @@ pytestmark = requires_db
 
 EXPECTED_TABLES = {
     'videos', 'holds', 'moves', 'environments', 'outcomes', 'frame_tags',
-    'rater_profiles', 'video_assignments', 'schema_version',
+    'rater_profiles', 'video_assignments', 'schema_version', 'strategies', 'athletes',
 }
 
 
@@ -43,7 +43,7 @@ def test_snapshot_writes_one_csv_per_public_table(clean_db, dsn):
     assert len(rows) == 1
     assert rows[0]['user_id'] == user
     assert rows[0]['notes'] == 'has,comma "and quotes"'
-    assert rows[0]['dataset'] == 'B'
+    assert rows[0]['source_type'] == 'public_broadcast'
     profiles = list(csv.DictReader(io.StringIO(uploaded['snapshots/2026-09-22/rater_profiles.csv'].decode())))
     assert profiles[0]['display_name'] == 'R'
     # An empty table still produces a header-only file.
