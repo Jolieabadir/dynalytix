@@ -187,7 +187,7 @@ function AdminView({ onOpenVideo }) {
       <section className="admin-section">
         <h3>Videos</h3>
         {loading ? (
-          <p>Loading…</p>
+          <p className="queue-empty">Loading…</p>
         ) : items.length === 0 ? (
           <p className="queue-empty">No videos yet.</p>
         ) : (
