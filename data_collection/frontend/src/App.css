@@ -3346,3 +3346,94 @@ button:focus-visible {
   .athlete-create-form,
   .queue-empty { margin-left: var(--space-md); margin-right: var(--space-md); }
 }
+
+/* ==========================================================================
+   LABELING DENSITY
+   One sticky bar at a time (the progress strip), a calmer side panel with
+   real section spacing, and smaller option chips.
+   ========================================================================== */
+.app-header { position: relative; top: auto; }
+@media (max-width: 1500px) { .app-header-titles p { display: none; } }
+
+.define-mode { padding: 1rem var(--space-xl) var(--space-2xl); max-width: 1400px; margin: 0 auto; }
+.define-mode .progress-strip {
+  top: 8px;
+  margin: 0 0 0.75rem;
+  padding: 0.55rem 0.9rem;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 18px;
+  box-shadow: 0 6px 20px rgba(106, 90, 106, 0.08);
+}
+.define-mode .onboarding-banner { margin: 0 0 0.75rem; padding: 0.5rem 0.85rem; font-size: 0.85rem; }
+.main-area { gap: 1.25rem; }
+.main-area.with-panel { align-items: start; }
+.video-player { border: none; border-radius: 20px; }
+
+.side-column { position: sticky; top: 76px; align-self: start; }
+.move-form-panel { max-height: calc(100vh - 96px); }
+.move-form-panel .move-form-header { padding: 0.85rem 1.1rem; }
+.move-form-panel .move-form-header h2 { font-size: 1.05rem; }
+.move-form-panel .move-form-content { padding: 0.5rem 1.1rem 1.25rem; }
+.move-form-panel .move-form-footer { padding: 0.75rem 1.1rem; background: rgba(255, 255, 255, 0.9); }
+
+.lens-section { padding: 1rem 0 1.1rem; border-bottom: 1px solid var(--border-light); }
+.lens-section:last-child { border-bottom: none; }
+.lens-title {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #4a4a4a;
+  letter-spacing: -0.01em;
+}
+.lens-section .form-field { gap: 0.4rem; margin-bottom: 0.9rem; }
+.lens-section .form-field:last-child { margin-bottom: 0; }
+.form-label {
+  margin-bottom: 0.1rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-sage-dark);
+}
+
+.radio-group,
+.checkbox-group,
+.tags-group { gap: 0.35rem; }
+.radio-label,
+.checkbox-label {
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid var(--border-medium);
+}
+.radio-label:has(input:checked),
+.checkbox-label:has(input:checked) {
+  background: var(--blush);
+  border-color: var(--dusty-rose);
+}
+.tag-btn { padding: 0.3rem 0.65rem; font-size: 0.8rem; border-radius: 999px; }
+.infotip-trigger { width: 14px; height: 14px; margin-left: 0.25rem; }
+
+.hold-slot {
+  margin: 1.1rem 0 0.75rem;
+  padding: 0.75rem 0.85rem 0.85rem;
+  background: rgba(253, 248, 244, 0.7);
+}
+.hold-slot-legend { padding: 0 0.35rem; font-size: 0.8rem; }
+.hold-slot .form-field { margin-bottom: 0.7rem; }
+.hold-slot-pick { margin-bottom: 0.5rem; }
+
+@media (max-width: 1100px) {
+  .define-mode { padding: 0.75rem var(--space-md) var(--space-xl); }
+  .side-column { position: static; }
+  .move-form-panel { max-height: none; }
+}
+.define-mode .video-meta-panel {
+  margin: 0 0 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.8);
+}
+.define-mode .progress-strip .btn-primary,
+.define-mode .progress-strip .btn-secondary { padding: 0.5rem 1.1rem; font-size: 0.85rem; }
