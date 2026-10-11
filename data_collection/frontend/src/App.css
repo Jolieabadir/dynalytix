@@ -3437,3 +3437,15 @@ button:focus-visible {
 }
 .define-mode .progress-strip .btn-primary,
 .define-mode .progress-strip .btn-secondary { padding: 0.5rem 1.1rem; font-size: 0.85rem; }
+
+/* ---------- Hold labeling: hint + undo ---------- */
+.hold-hint { line-height: 1.45; }
+.hold-hint strong { color: var(--text-primary); font-weight: 600; }
+.hold-hint.empty {
+  padding: 0.45rem 0.7rem;
+  border-left: 3px solid var(--accent-sage);
+  border-radius: 6px;
+  background: var(--success-soft);
+  color: var(--text-secondary);
+}
+.video-controls .undo-hold:disabled { opacity: 0.4; cursor: default; }

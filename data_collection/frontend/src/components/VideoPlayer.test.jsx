@@ -63,3 +63,34 @@ describe('VideoPlayer — no skeleton', () => {
     expect(useStore.getState().showHoldOverlay).toBe(!before.showHoldOverlay);
   });
 });
+
+describe('VideoPlayer — undo hold edits', () => {
+  const HOLD = { id: 7, bbox_x: 0.1, bbox_y: 0.1, bbox_w: 0.2, bbox_h: 0.2, source: 'detected' };
+
+  it('starts disabled and brings a deleted hold back', async () => {
+    const { createHold, deleteHold } = await import('../api/client');
+    deleteHold.mockResolvedValue();
+    createHold.mockResolvedValue({ ...HOLD, id: 8 });
+    useStore.setState({ holds: [HOLD] });
+    render(<VideoPlayer />);
+
+    const undo = screen.getByRole('button', { name: 'Undo last hold edit' });
+    expect(undo).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete hold 7' }));
+    await vi.waitFor(() => expect(undo).not.toBeDisabled());
+    expect(useStore.getState().holds).toEqual([]);
+
+    fireEvent.click(undo);
+    await vi.waitFor(() => expect(useStore.getState().holds).toEqual([{ ...HOLD, id: 8 }]));
+    expect(createHold).toHaveBeenCalledWith(1, {
+      bbox_x: 0.1, bbox_y: 0.1, bbox_w: 0.2, bbox_h: 0.2, source: 'detected',
+    });
+    expect(undo).toBeDisabled();
+  });
+
+  it('says to box the holds first when there are none', () => {
+    render(<VideoPlayer />);
+    expect(screen.getByText('First, box the holds.')).toBeInTheDocument();
+  });
+});
