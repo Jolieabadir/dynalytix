@@ -32,9 +32,14 @@ function isTextEntry(element) {
   return ['text', 'email', 'password', 'search', 'url', 'tel', 'number'].includes(type);
 }
 
+const NO_HISTORY = [];
+
 function VideoPlayer() {
   const videoRef = useRef(null);
   const [holdError, setHoldError] = useState(null);
+  // Hold edits made this session, newest last, so a stray click or tap can be
+  // taken back. Tagged with its video so switching videos starts it empty.
+  const [history, setHistory] = useState({ videoId: null, entries: [] });
 
   const {
     currentVideo,
@@ -72,6 +77,18 @@ function VideoPlayer() {
   // draw, delete, or mark move boundaries.
   const readOnly = Boolean(readOnlyStructure);
 
+  const videoId = currentVideo?.id ?? null;
+  const holdHistory = history.videoId === videoId ? history.entries : NO_HISTORY;
+  const setHoldHistory = useCallback(
+    (update) =>
+      setHistory((h) => ({
+        videoId,
+        entries: update(h.videoId === videoId ? h.entries : []),
+      })),
+    [videoId]
+  );
+  const pushHistory = (entry) => setHoldHistory((h) => [...h.slice(-49), entry]);
+
   // Frame counter follows playback.
   useEffect(() => {
     const video = videoRef.current;
@@ -108,10 +125,57 @@ function VideoPlayer() {
     }
   }, [setIsPlaying]);
 
+  /**
+   * Take back the last hold edit. A deleted hold comes back as a new row with
+   * a new id, so older history entries for it are re-pointed at that id.
+   */
+  const undoHoldEdit = useCallback(async () => {
+    const entry = holdHistory[holdHistory.length - 1];
+    if (!entry) return;
+    setHoldHistory((h) => h.slice(0, -1));
+    setHoldError(null);
+    const { bbox_x, bbox_y, bbox_w, bbox_h } = entry.hold;
+    try {
+      if (entry.type === 'create') {
+        removeHold(entry.hold.id);
+        await deleteHold(entry.hold.id);
+      } else if (entry.type === 'delete') {
+        const restored = await createHold(videoId, {
+          bbox_x,
+          bbox_y,
+          bbox_w,
+          bbox_h,
+          source: entry.hold.source,
+        });
+        addHold(restored);
+        setHoldHistory((h) =>
+          h.map((e) =>
+            e.hold.id === entry.hold.id ? { ...e, hold: { ...e.hold, id: restored.id } } : e
+          )
+        );
+      } else if (entry.type === 'resize') {
+        const saved = await updateHold(entry.hold.id, { bbox_x, bbox_y, bbox_w, bbox_h });
+        removeHold(entry.hold.id);
+        addHold(saved);
+      }
+    } catch (err) {
+      console.error('Failed to undo hold edit:', err);
+      setHoldError(err.response?.data?.detail || 'Could not undo that.');
+    }
+  }, [holdHistory, setHoldHistory, videoId, addHold, removeHold]);
+
   // Shortcuts. Live while the labeling panel is open — see isTextEntry.
   useEffect(() => {
     const handleKeyPress = (e) => {
       if (isTextEntry(e.target)) return;
+
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
+        if (!readOnly && holdHistory.length) {
+          e.preventDefault();
+          undoHoldEdit();
+        }
+        return;
+      }
 
       switch (e.key) {
         case 'ArrowLeft':
@@ -163,6 +227,8 @@ function VideoPlayer() {
     holdPickSlot,
     setHoldPickSlot,
     readOnly,
+    holdHistory,
+    undoHoldEdit,
   ]);
 
   const handleCreateMove = () => {
@@ -174,6 +240,7 @@ function VideoPlayer() {
     try {
       const created = await createHold(currentVideo.id, { ...box, source: 'manual' });
       addHold(created);
+      pushHistory({ type: 'create', hold: created });
     } catch (err) {
       console.error('Failed to create hold:', err);
       setHoldError(err.response?.data?.detail || 'Could not save that hold.');
@@ -187,6 +254,7 @@ function VideoPlayer() {
     removeHold(hold.id);
     try {
       await deleteHold(hold.id);
+      pushHistory({ type: 'delete', hold });
     } catch (err) {
       console.error('Failed to delete hold:', err);
       addHold(hold);
@@ -209,6 +277,7 @@ function VideoPlayer() {
       const saved = await updateHold(hold.id, box);
       removeHold(hold.id);
       addHold(saved);
+      pushHistory({ type: 'resize', hold });
     } catch (err) {
       console.error('Failed to resize hold:', err);
       removeHold(hold.id);
@@ -275,13 +344,33 @@ function VideoPlayer() {
         >
           {showHoldOverlay ? '🪨 Hide' : '🪨 Show'} Holds ({holds.length})
         </button>
+
+        {!readOnly && (
+          <button
+            onClick={undoHoldEdit}
+            disabled={!holdHistory.length}
+            className="undo-hold"
+            title={touch ? 'Undo last hold edit' : 'Undo last hold edit (⌘Z / Ctrl+Z)'}
+            aria-label="Undo last hold edit"
+          >
+            ↶ Undo
+          </button>
+        )}
       </div>
 
       {showHoldOverlay && !readOnly && (
-        <p className="hold-hint">
+        <p className={`hold-hint ${holds.length === 0 ? 'empty' : ''}`}>
+          {holds.length === 0 ? (
+            <>
+              <strong>First, box the holds.</strong> Mark every hold the climber uses so
+              moves can point at them.{' '}
+            </>
+          ) : (
+            <>Box every hold the climber uses — dashed boxes are detector guesses. </>
+          )}
           {touch
-            ? 'Tap the video to add a hold; tap it again to select, pinch to resize, press and hold to delete. Swipe left or right to step a frame.'
-            : 'Drag on the video to add a hold; click a hold to delete it.'}
+            ? 'Tap to add · tap a box, then pinch to resize · press and hold to delete · swipe to step a frame.'
+            : 'Drag a box around a hold to add it · click a box to delete it · ⌘Z to undo.'}
         </p>
       )}
       {showHoldOverlay && readOnly && (
